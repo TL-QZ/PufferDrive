@@ -695,7 +695,7 @@ class PuffeRL:
             losses["importance"] += ratio.mean().item() / self.total_minibatches
 
             profile("learn", epoch)
-            loss.backward()
+            (loss / self.accumulate_minibatches).backward()
             if (mb + 1) % self.accumulate_minibatches == 0:
                 torch.nn.utils.clip_grad_norm_(self.policy.parameters(), config["max_grad_norm"])
                 self.optimizer.step()
@@ -810,7 +810,7 @@ class PuffeRL:
                     losses[key] += value
 
                 profile("learn", epoch)
-                loss.backward()
+                (loss / self.accumulate_minibatches).backward()
                 total_minibatches += 1
                 pending_minibatches += 1
 
