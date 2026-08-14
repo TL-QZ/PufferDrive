@@ -200,6 +200,9 @@ pufferlib/resources/drive/output_agent.gif pufferlib/resources/drive/output.gif 
 
 # Local artifacts and outputs
 artifacts/
+# Generated training and evaluation logs
+*.csv
+*.html
 # Local drive renders
 pufferlib/resources/drive/output*.gif
 *.mp4
