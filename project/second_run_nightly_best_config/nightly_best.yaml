@@ -1,0 +1,23 @@
+# Multi-agent "best launch" nightly training program config.
+#
+# This is the isolated local multi-GPU version of
+# scripts/cluster_configs/nightly_best.yaml. launch.sh derives per-rank vector
+# and optimizer batch sizes from the requested GPU count.
+
+# Full training scale. The defaults are sized to run on-premise for dev;
+# the scale knobs for a real training run live here.
+policy.action_type: discrete
+env.num_agents: 3200
+train.compile: true
+
+# Night-sized run: the default 500B-step schedule doesn't finish overnight.
+train.total_timesteps: 10_000_000_000
+train.checkpoint_interval: 500
+
+# Run the catalog-defined fast CARLA evaluation every 100 training epochs.
+train.evaluation_interval_epochs: 100
+train.evaluation_benchmarks: carla_fast
+
+wandb: True
+wandb_project: pufferdrive
+wandb_group: pufferdrive
