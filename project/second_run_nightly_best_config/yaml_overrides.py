@@ -1,5 +1,6 @@
 """Print a flat YAML mapping as Hydra command-line overrides."""
 
+import json
 import sys
 
 import yaml
@@ -12,6 +13,10 @@ def hydra_value(value):
         return "null"
     if isinstance(value, (dict, list)):
         raise TypeError("Only scalar values are supported")
+    if isinstance(value, str) and "," in value:
+        # Hydra treats an unquoted comma as a sweep even when the shell passed
+        # the entire key=value pair as one argv element.
+        return json.dumps(value)
     return str(value)
 
 

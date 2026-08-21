@@ -75,3 +75,28 @@ Metrics are shown in raw units without duration or population normalization.
 CARLA episodes last 600 seconds, while nuPlan episodes last 20 seconds, so use
 caution when comparing duration-dependent metrics such as
 `num_goals_reached` and `multi_lane_time` across benchmarks.
+
+## Before and after nuPlan fine-tuning
+
+`plot_finetune_comparison.py` compares one original CARLA-trained model with
+the corresponding model after nuPlan-single fine-tuning. It uses the same
+three final evaluation benchmarks and four aggregate metric figures as the
+benchmark comparison above, but each benchmark has two bars: before and after
+fine-tuning.
+
+Choose the training seed with `--seed`:
+
+```bash
+source .venv/bin/activate
+python project/metric_analysis/plot_finetune_comparison.py --seed 0
+```
+
+The default outputs for seed 0 are written to
+`project/metric_analysis/output/finetune_comparison/seed0`. A different output
+directory can be supplied with `--output-dir`.
+
+The available pairs are listed explicitly in `ORIGINAL_RUN_BY_SEED` and
+`FINETUNED_RUN_BY_SEED` near the top of the script. To compare a future seed,
+add its original and fine-tuned experiment directories to those dictionaries,
+then pass that seed on the command line. Requesting a seed without both entries
+produces an error listing the configured paired seeds.
