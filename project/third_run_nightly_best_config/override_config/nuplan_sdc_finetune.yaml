@@ -1,0 +1,53 @@
+# Two-GPU SDC-only fine-tuning of a third-run CARLA checkpoint on nuPlan replay.
+# The source checkpoint supplies the policy architecture; this file defines the
+# new optimizer/run state and the replay-specific environment.
+
+policy.actor_head_layer_norm: false
+policy.critic_head_layer_norm: false
+
+env.simulation_mode: replay
+env.control_mode: control_sdc_only
+env.sdc_controller: policy
+env.non_sdc_controller: replay
+env.non_vehicle_controller: replay
+env.init_mode: create_all_valid
+env.map_dir: data/nuplan_train
+env.num_maps: 10000
+env.num_agents: 16
+env.dt: 0.1
+env.scenario_length: 200
+env.resample_frequency: 200
+env.termination_mode: 0
+env.terminate_on_goal: 0
+env.use_neighbor_cache: 0
+env.reset_accel_on_stop: false
+env.reward_log_sampling: false
+
+vec.num_envs: 8
+vec.batch_size: 4
+
+train.total_timesteps: 100000000
+train.learning_rate: 0.0001
+train.anneal_lr: true
+train.gamma: 0.9996665555
+train.gae_lambda: 0.9830475725
+train.update_epochs: 3
+train.batch_size: auto
+train.minibatch_size: 12800
+train.max_minibatch_size: 12800
+train.bptt_horizon: 200
+train.use_value_bootstrapping: true
+train.checkpoint_interval: 100
+train.evaluation_interval_epochs: 500
+train.evaluation_benchmarks: carla_fast,nuplan_single
+
+eval.benchmark_config: project/third_run_nightly_best_config/override_config/evaluation_benchmarks.yaml
+eval.action_selection: mean
+eval.num_agents: 50
+eval.render_scenarios: false
+eval.render_filter: null
+eval.capture_observations: false
+
+wandb: true
+wandb_project: pufferdrive
+wandb_group: nuplan_sdc_finetune

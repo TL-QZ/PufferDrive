@@ -1,0 +1,31 @@
+# Two-GPU CARLA/Gigaflow baseline for the temporally aligned third run.
+# Scale and optimizer batching match the second run; dt-dependent settings use
+# 0.1 seconds so CARLA training and every evaluation benchmark share one clock.
+
+policy.action_type: discrete
+policy.actor_head_layer_norm: false
+policy.critic_head_layer_norm: false
+
+env.num_agents: 3200
+env.dt: 0.1
+env.scenario_length: 7680
+env.resample_frequency: 768000
+env.reset_accel_on_stop: false
+env.reward_log_sampling: false
+
+train.compile: true
+train.total_timesteps: 10_000_000_000
+train.gamma: 0.9996665555
+train.gae_lambda: 0.9830475725
+train.bptt_horizon: 128
+train.use_value_bootstrapping: true
+train.checkpoint_interval: 500
+train.evaluation_interval_epochs: 100
+train.evaluation_benchmarks: carla_fast
+
+eval.benchmark_config: project/third_run_nightly_best_config/override_config/evaluation_benchmarks.yaml
+eval.action_selection: mean
+
+wandb: true
+wandb_project: pufferdrive
+wandb_group: pufferdrive
