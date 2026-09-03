@@ -1,6 +1,6 @@
 # PufferDrive Codebase Learning Report
 
-Last updated: 2026-08-02.
+Last updated: 2026-08-24.
 
 This report is written for a new reader who knows only this much: PufferDrive is doing self-play reinforcement learning
 for driving, and some datasets/maps are converted into binary files. It explains what the repo contains, how the pieces
@@ -927,6 +927,58 @@ The backbone class is:
 ```text
 pufferlib/ocean/torch.py::DriveBackbone
 ```
+
+### Does The Policy Receive One Timestep Or A History?
+
+**With the default configuration, the policy receives one current observation snapshot per agent, not a historical
+sequence.** The relevant switch is:
+
+```yaml
+rnn_name: null
+```
+
+At rollout time, `PuffeRL.evaluate()` passes the just-received observation batch directly to
+`policy.forward_eval()`. For the feed-forward `Drive` policy, the effective input shape is:
+
+```text
+[agents_in_inference_batch, observation_dim]
+```
+
+For one agent at simulator timestep `t`, the action and value therefore depend on only that agent's current flat
+observation `o_t`:
+
+```text
+current C state at t -> compute_observations() -> o_t -> MLP policy -> action a_t, value V(o_t)
+```
+
+There is no frame stacking, no input shaped like `[t-127, ..., t]`, and no recurrent hidden state on this path. The
+snapshot is not devoid of temporal information, however: its current-state fields include speed, steering angle,
+longitudinal/lateral acceleration, and seconds stopped. Those values are consequences or summaries of earlier simulator
+steps, but the raw observations from those earlier steps are not supplied to the network.
+
+The rollout buffer can make this easy to misread. It stores:
+
+```text
+observations[segments, bptt_horizon, observation_dim]
+```
+
+and the default `bptt_horizon` is 128. This preserves temporal order for reward/return and advantage computation. It does
+**not** make the default MLP a sequence model. Because `rnn_name` is null, `PuffeRL.train()` selects
+`_train_ppo_transition()`, which reshapes the buffer to:
+
+```text
+[segments * bptt_horizon, observation_dim]
+```
+
+and samples individual transitions for the policy update. Thus, `bptt_horizon=128` is a rollout/storage horizon in the
+default run; no backpropagation through a 128-observation history occurs in the policy.
+
+The codebase does have an optional historical path. Setting `rnn_name: Recurrent` wraps the policy in
+`LSTMWrapper` (and currently also requires `policy.shared_network: true`). During inference, each call still receives the
+current `o_t`, but the LSTM carries hidden and cell state from preceding calls. During training, the wrapper consumes
+`[trajectory_batch, time, observation_dim]`, with the time dimension governed by `bptt_horizon`. On that path, history
+influences the decision through the recurrent state rather than by concatenating all earlier raw observations into one
+large observation vector.
 
 Architecture:
 
