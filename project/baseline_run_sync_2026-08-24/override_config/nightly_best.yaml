@@ -1,0 +1,31 @@
+# Two-GPU CARLA/Gigaflow baseline on the August 24 upstream sync.
+# The complete second-run 0.3-second training clock is restored, while the
+# separate benchmark configuration intentionally remains at 0.1 seconds.
+
+policy.action_type: discrete
+policy.actor_head_layer_norm: false
+policy.critic_head_layer_norm: false
+
+env.num_agents: 3200
+env.dt: 0.3
+env.scenario_length: 2560
+env.resample_frequency: 256000
+env.reset_accel_on_stop: false
+env.reward_log_sampling: false
+
+train.compile: true
+train.total_timesteps: 10_000_000_000
+train.gamma: 0.999
+train.gae_lambda: 0.95
+train.bptt_horizon: 128
+train.use_value_bootstrapping: true
+train.checkpoint_interval: 500
+train.evaluation_interval_epochs: 100
+train.evaluation_benchmarks: carla_fast
+
+eval.benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
+eval.action_selection: mean
+
+wandb: true
+wandb_project: pufferdrive
+wandb_group: baseline_run_sync_2026-08-24
