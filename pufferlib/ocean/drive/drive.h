@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <math.h>
+#include <limits.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -215,6 +216,9 @@ struct Drive {
     int scenario_length;
     int log_length;
     float log_dt;
+    bool resample_replay_to_dt;
+    bool init_step_spread;
+    char load_error[256];
     int num_objects;
     int num_objects_of_interest;
     int *objects_of_interest;
@@ -2893,17 +2897,16 @@ void remove_bad_trajectories(Drive *env) {
     env->timestep = 0;
 }
 
-void init(Drive *env) {
+int init(Drive *env) {
     env->human_agent_idx = 0;
     env->timestep = 0;
+    if (load_map_binary(env->map_name, env) != 0) {
+        return -1;
+    }
     struct SharedMapData *shared = env->use_map_cache ? map_cache_lookup(env) : NULL;
     if (shared != NULL) {
         // Cache hit: load only the per-env data (agents, traffic-control elements),
         // then discard the freshly-loaded geometry and borrow the shared copy.
-        if (load_map_binary(env->map_name, env) != 0) {
-            fprintf(stderr, "[ERROR] -> Failed to load map binary: %s\n", env->map_name);
-            return;
-        }
         for (int i = 0; i < env->num_road_elements; i++) {
             free_road_element(&env->road_elements[i]);
         }
@@ -2918,13 +2921,10 @@ void init(Drive *env) {
         shared->ref_count++;
     } else {
         // Cache miss (or caching off): load and build the geometry as usual.
-        if (load_map_binary(env->map_name, env) != 0) {
-            fprintf(stderr, "[ERROR] -> Failed to load map binary: %s\n", env->map_name);
-            return;
-        }
         if (init_grid_map(env) != 0) {
             fprintf(stderr, "[ERROR] -> Failed to build grid map for map: %s\n", env->map_name);
-            return;
+            snprintf(env->load_error, sizeof(env->load_error), "grid_map initialization failed");
+            return -1;
         }
         int vision_half_range = (int) ceilf(
             fmaxf(fmaxf(env->obs_range_road_front_m, env->obs_range_road_behind_m), env->obs_range_road_side_m)
@@ -3033,6 +3033,7 @@ void init(Drive *env) {
             generate_new_goals_from_route(env, agent);
         }
     }
+    return 0;
 }
 
 void c_close(Drive *env) {
@@ -3082,7 +3083,11 @@ static int compute_observation_size(Drive *env) {
 }
 
 void allocate(Drive *env) {
-    init(env);
+    if (init(env) != 0) {
+        fprintf(stderr, "Failed to initialize %s: %s\n", env->map_name, env->load_error);
+        c_close(env);
+        abort();
+    }
     int max_obs = compute_observation_size(env);
     env->observations = (float *) calloc(env->active_agent_count * max_obs, sizeof(float));
     env->actions = (float *) calloc(env->active_agent_count * 2, sizeof(float));
@@ -3157,8 +3162,9 @@ void c_get_global_ground_truth_trajectories(
         id_out[i] = get_track_id_or_placeholder(env, agent_idx);
         scenario_id_out[i] = 0; // TODO: FIXME
 
-        for (int t = env->init_step; t < agent->trajectory_size; t++) {
-            int out_idx = i * (agent->trajectory_size - env->init_step) + (t - env->init_step);
+        int state_count = env->resample_replay_to_dt ? env->scenario_length + 1 : agent->trajectory_size;
+        for (int t = env->init_step; t < state_count; t++) {
+            int out_idx = i * (state_count - env->init_step) + (t - env->init_step);
             // Add world means back to get original world coordinates
             x_out[out_idx] = agent->log_trajectory_x[t] + env->world_mean_x;
             y_out[out_idx] = agent->log_trajectory_y[t] + env->world_mean_y;

@@ -5,6 +5,7 @@ env:
   offroad_behavior: stop
   traffic_light_behavior: stop
   dt: 0.1
+  resample_replay_to_dt: false
   reset_accel_on_stop: false
   reward_randomization: false
   reward_log_sampling: false

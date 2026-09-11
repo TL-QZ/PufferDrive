@@ -254,7 +254,7 @@ append `run_name`. Give each new experiment an explicit distinct directory.
 | CLI / experiment launcher | Dotted overrides, dedicated output roots | Change the selected experiment; consult its saved config. |
 | Checkpoint/evaluation merge | Saved architecture plus benchmark settings | Can supersede initial defaults; see the evaluation and checkpoint sections. |
 
-The [post-sync baseline notes](../baseline_run_sync_2026-08-24/contexts_and_notes.md) describe an
+The [post-sync baseline notes](../baseline_run_sync_2026-08-24/docs/contexts_and_notes.md) describe an
 experiment-specific workflow. Its settings are not the generic defaults of this guide.
 
 ## Data, Maps, And Scenario Modes

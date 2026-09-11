@@ -79,6 +79,7 @@ class Drive(pufferlib.PufferEnv):
         goal_speed=3.0,
         scenario_length=None,
         resample_frequency=91,
+        resample_replay_to_dt=False,
         num_maps=100,
         num_agents=512,
         min_agents_per_env=32,
@@ -216,6 +217,16 @@ class Drive(pufferlib.PufferEnv):
         self.human_agent_idx = human_agent_idx
         self.scenario_length = scenario_length
         self.resample_frequency = resample_frequency
+        self.resample_replay_to_dt = bool(resample_replay_to_dt)
+        if self.resample_replay_to_dt:
+            if simulation_mode != "replay":
+                raise ValueError("resample_replay_to_dt requires simulation_mode=replay")
+            if init_step != 0 or init_step_spread:
+                raise ValueError("resample_replay_to_dt requires init_step=0 and init_step_spread=false")
+            if not np.isfinite(dt) or dt <= 0:
+                raise ValueError("resample_replay_to_dt: dt must be finite and positive")
+            if scenario_length is None or scenario_length <= 0:
+                raise ValueError("resample_replay_to_dt: scenario_length must be positive")
         if use_neighbor_cache not in (0, 1):
             raise ValueError(f"use_neighbor_cache must be 0 (off) or 1 (on). Got: {use_neighbor_cache}")
         self.use_neighbor_cache = use_neighbor_cache
@@ -456,6 +467,10 @@ class Drive(pufferlib.PufferEnv):
             non_vehicle_controller=self.non_vehicle_controller,
             simulation_mode=self.simulation_mode,
             init_step=self.init_step,
+            init_step_spread=self.init_step_spread,
+            resample_replay_to_dt=self.resample_replay_to_dt,
+            dt=self.dt,
+            scenario_length=self.scenario_length,
             seed=self.random_seed,
             min_agents_per_env=self.min_agents_per_env,
             max_agents_per_env=self.max_agents_per_env,
@@ -474,24 +489,31 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         super().__init__(buf=buf)
-        env_ids = []
-        for i in range(num_envs):
-            cur = agent_offsets[i]
-            nxt = agent_offsets[i + 1]
-            env_seed = self.eval_scenario_seeds[i] if self.eval_scenario_seeds is not None else self.random_seed
-            env_id = binding.env_init(
-                self.observations[cur:nxt],
-                self.actions[cur:nxt],
-                self.rewards[cur:nxt],
-                self.terminals[cur:nxt],
-                self.truncations[cur:nxt],
-                self.masks[cur:nxt],
-                env_seed,
-                **self._env_init_kwargs(self.map_files[map_ids[i]], nxt - cur),
-            )
-            env_ids.append(env_id)
+        self.c_envs = None
+        self._create_c_envs()
 
-        self.c_envs = binding.vectorize(*env_ids)
+    def _create_c_envs(self, pair_start=0):
+        """Create a batch atomically; rejected scenarios release earlier instances."""
+        env_ids = []
+        try:
+            for env_idx in range(self.num_envs):
+                start = self.agent_offsets[env_idx]
+                end = self.agent_offsets[env_idx + 1]
+                env_seed = (
+                    self.eval_scenario_seeds[pair_start + env_idx]
+                    if self.eval_scenario_seeds is not None else self.random_seed
+                )
+                env_ids.append(binding.env_init(
+                    self.observations[start:end], self.actions[start:end],
+                    self.rewards[start:end], self.terminals[start:end],
+                    self.truncations[start:end], self.masks[start:end], env_seed,
+                    **self._env_init_kwargs(self.map_files[self.map_ids[env_idx]], end - start),
+                ))
+            self.c_envs = binding.vectorize(*env_ids)
+        except Exception:
+            for env_id in env_ids:
+                binding.env_close(env_id)
+            raise
 
     def _env_init_kwargs(self, map_file, max_agents):
         # render_mode_flag: 0 = live viewer (RENDER_WINDOW), 1 = headless batch
@@ -546,6 +568,8 @@ class Drive(pufferlib.PufferEnv):
             "obs_slots_traffic_controls_n": self.obs_slots_traffic_controls_n,
             "traffic_control_scope": self.traffic_control_scope,
             "dt": self.dt,
+            "resample_replay_to_dt": self.resample_replay_to_dt,
+            "init_step_spread": self.init_step_spread,
             "spawn_initial_speed": self.spawn_initial_speed,
             "goal_speed": self.goal_speed,
             "scenario_length": int(self.scenario_length) if self.scenario_length is not None else None,
@@ -629,6 +653,8 @@ class Drive(pufferlib.PufferEnv):
         return self.observations, []
 
     def step(self, actions):
+        if self.c_envs is None:
+            raise RuntimeError("Cannot step a closed Drive or a batch rejected during map loading")
         if self._eval_exhausted:
             self.rewards[:] = 0
             self.terminals[:] = 0
@@ -663,6 +689,7 @@ class Drive(pufferlib.PufferEnv):
                     self._eval_exhausted = True
                     return (self.observations, self.rewards, self.terminals, self.truncations, info)
                 binding.vec_close(self.c_envs)
+                self.c_envs = None
                 # Pairs already replayed this sweep; slice the rest so a deferred
                 # scene resumes exactly where the previous batch stopped.
                 pair_start = self.starting_map_counter - self.starting_map_counter_init
@@ -681,6 +708,10 @@ class Drive(pufferlib.PufferEnv):
                     non_vehicle_controller=self.non_vehicle_controller,
                     simulation_mode=self.simulation_mode,
                     init_step=self.init_step,
+                    init_step_spread=self.init_step_spread,
+                    resample_replay_to_dt=self.resample_replay_to_dt,
+                    dt=self.dt,
+                    scenario_length=self.scenario_length,
                     map_files=self.map_files,
                     seed=self.random_seed,
                     min_agents_per_env=self.min_agents_per_env,
@@ -694,27 +725,7 @@ class Drive(pufferlib.PufferEnv):
                 self.num_envs = num_envs
                 # In eval mode, don't wrap counter - allows termination condition to work correctly
                 self.starting_map_counter = self.starting_map_counter + num_envs
-                env_ids = []
-                for i in range(num_envs):
-                    cur = agent_offsets[i]
-                    nxt = agent_offsets[i + 1]
-                    env_seed = (
-                        self.eval_scenario_seeds[pair_start + i]
-                        if self.eval_scenario_seeds is not None
-                        else self.random_seed
-                    )
-                    env_id = binding.env_init(
-                        self.observations[cur:nxt],
-                        self.actions[cur:nxt],
-                        self.rewards[cur:nxt],
-                        self.terminals[cur:nxt],
-                        self.truncations[cur:nxt],
-                        self.masks[cur:nxt],
-                        env_seed,
-                        **self._env_init_kwargs(self.map_files[map_ids[i]], nxt - cur),
-                    )
-                    env_ids.append(env_id)
-                self.c_envs = binding.vectorize(*env_ids)
+                self._create_c_envs(pair_start)
 
                 binding.vec_reset(self.c_envs)
                 if self.capture_replay:
@@ -762,13 +773,15 @@ class Drive(pufferlib.PufferEnv):
             dict with keys 'x', 'y', 'z', 'heading', 'valid', 'id', 'scenario_id' containing numpy arrays.
         """
         num_agents = self.num_agents
+        # Enabled replay exports the initial state plus each requested transition.
+        state_count = self.scenario_length - self.init_step + int(self.resample_replay_to_dt)
 
         trajectories = {
-            "x": np.zeros((num_agents, self.scenario_length - self.init_step), dtype=np.float32),
-            "y": np.zeros((num_agents, self.scenario_length - self.init_step), dtype=np.float32),
-            "z": np.zeros((num_agents, self.scenario_length - self.init_step), dtype=np.float32),
-            "heading": np.zeros((num_agents, self.scenario_length - self.init_step), dtype=np.float32),
-            "valid": np.zeros((num_agents, self.scenario_length - self.init_step), dtype=np.int32),
+            "x": np.zeros((num_agents, state_count), dtype=np.float32),
+            "y": np.zeros((num_agents, state_count), dtype=np.float32),
+            "z": np.zeros((num_agents, state_count), dtype=np.float32),
+            "heading": np.zeros((num_agents, state_count), dtype=np.float32),
+            "valid": np.zeros((num_agents, state_count), dtype=np.int32),
             "id": np.zeros(num_agents, dtype=np.int32),
             "scenario_id": np.zeros(num_agents, dtype=np.int32),
         }
@@ -943,7 +956,9 @@ class Drive(pufferlib.PufferEnv):
         )
 
     def close(self):
-        binding.vec_close(self.c_envs)
+        if self.c_envs is not None:
+            binding.vec_close(self.c_envs)
+            self.c_envs = None
 
     def get_state(self):
         try:

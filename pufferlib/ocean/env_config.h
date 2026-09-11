@@ -37,6 +37,7 @@ typedef struct {
     int goal_source;
     int obs_goal_lane_distance;
     int scenario_length;
+    int resample_replay_to_dt;
     int termination_mode;
     int init_step;
     int init_mode;
@@ -190,6 +191,13 @@ static int handler(void *config, const char *section, const char *name, const ch
         env_config->goal_speed = atof(value);
     } else if (MATCH("env", "dt")) {
         env_config->dt = atof(value);
+    } else if (MATCH("env", "resample_replay_to_dt")) {
+        if (strcmp(value, "true") != 0 && strcmp(value, "false") != 0
+            && strcmp(value, "1") != 0 && strcmp(value, "0") != 0) {
+            fprintf(stderr, "resample_replay_to_dt must be true, false, 1, or 0\n");
+            return 0;
+        }
+        env_config->resample_replay_to_dt = strcmp(value, "true") == 0 || strcmp(value, "1") == 0;
     } else if (MATCH("env", "scenario_length")) {
         env_config->scenario_length = atoi(value);
     } else if (MATCH("env", "termination_mode")) {

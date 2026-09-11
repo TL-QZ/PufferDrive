@@ -175,7 +175,7 @@ converts the experiment YAML into command-line overrides. Generated runs are wri
 
 ## 4. Run the baseline in order
 
-Use [baseline_run_sync_2026-08-24](../baseline_run_sync_2026-08-24/contexts_and_notes.md).
+Use [baseline_run_sync_2026-08-24](../baseline_run_sync_2026-08-24/docs/contexts_and_notes.md).
 Its configs are in `override_config/`, with launchers in `train/`, `eval/`, and `render/`.
 Older experiment folders are historical recipes; do not mix their configs or checkpoints into this run.
 

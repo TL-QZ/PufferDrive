@@ -1,0 +1,7 @@
+{
+  "cuda_available": false,
+  "device_count": 0,
+  "source_run": "/common/users/ql236/auto_driving/PufferDrive/experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0",
+  "session_limit_seconds": 2700,
+  "status": "blocked: exactly two usable CUDA GPUs are required"
+}

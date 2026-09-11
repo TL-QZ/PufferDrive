@@ -188,6 +188,7 @@ static PyObject *env_init(PyObject *self, PyObject *args, PyObject *kwargs) {
 
     PyObject *empty_args = PyTuple_New(0);
     my_init(env, empty_args, kwargs);
+    Py_DECREF(empty_args);
     Py_DECREF(kwargs);
     if (PyErr_Occurred()) {
         return NULL;
@@ -1048,9 +1049,32 @@ static PyObject *vec_get_global_agent_state(PyObject *self, PyObject *args) {
     Py_RETURN_NONE;
 }
 
+static int validate_resampled_trajectory_outputs(PyObject *args, int agent_count, int state_count) {
+    for (int argument_idx = 1; argument_idx < 8; argument_idx++) {
+        PyObject *argument = PyTuple_GetItem(args, argument_idx);
+        if (!PyArray_Check(argument)) {
+            PyErr_SetString(PyExc_TypeError, "Ground-truth outputs must be NumPy arrays");
+            return -1;
+        }
+        PyArrayObject *array = (PyArrayObject *) argument;
+        int expected_dims = argument_idx <= 5 ? 2 : 1;
+        int expected_type = argument_idx <= 4 ? NPY_FLOAT32 : NPY_INT32;
+        if (PyArray_NDIM(array) != expected_dims || PyArray_TYPE(array) != expected_type
+            || !PyArray_ISCARRAY(array) || PyArray_DIM(array, 0) != agent_count) {
+            PyErr_SetString(PyExc_ValueError, "Invalid resampled ground-truth output shape, dtype or layout");
+            return -1;
+        }
+        if (expected_dims == 2 && PyArray_DIM(array, 1) != state_count) {
+            PyErr_Format(PyExc_ValueError, "Resampled ground-truth output requires %d states", state_count);
+            return -1;
+        }
+    }
+    return 0;
+}
+
 static PyObject *get_ground_truth_trajectories(PyObject *self, PyObject *args) {
-    if (PyTuple_Size(args) != 7) {
-        PyErr_SetString(PyExc_TypeError, "get_ground_truth_trajectories requires 7 arguments");
+    if (PyTuple_Size(args) != 8) {
+        PyErr_SetString(PyExc_TypeError, "get_ground_truth_trajectories requires 8 arguments");
         return NULL;
     }
 
@@ -1060,6 +1084,11 @@ static PyObject *get_ground_truth_trajectories(PyObject *self, PyObject *args) {
     }
 
     Drive *drive = (Drive *) env;
+
+    if (drive->resample_replay_to_dt
+        && validate_resampled_trajectory_outputs(args, drive->active_agent_count, drive->scenario_length + 1) != 0) {
+        return NULL;
+    }
 
     // Get the numpy arrays from arguments
     PyObject *x_arr = PyTuple_GetItem(args, 1);
@@ -1106,6 +1135,28 @@ static PyObject *vec_get_global_ground_truth_trajectories(PyObject *self, PyObje
     VecEnv *vec = unpack_vecenv(args);
     if (!vec) {
         return NULL;
+    }
+
+    int resampled_state_count = 0;
+    int total_agent_count = 0;
+    for (int env_idx = 0; env_idx < vec->num_envs; env_idx++) {
+        Drive *drive = (Drive *) vec->envs[env_idx];
+        total_agent_count += drive->active_agent_count;
+        if (drive->resample_replay_to_dt) {
+            resampled_state_count = drive->scenario_length + 1;
+        }
+    }
+    if (resampled_state_count > 0) {
+        for (int env_idx = 0; env_idx < vec->num_envs; env_idx++) {
+            Drive *drive = (Drive *) vec->envs[env_idx];
+            if (!drive->resample_replay_to_dt || drive->scenario_length + 1 != resampled_state_count) {
+                PyErr_SetString(PyExc_ValueError, "Ground-truth export requires a uniform resampled time grid");
+                return NULL;
+            }
+        }
+        if (validate_resampled_trajectory_outputs(args, total_agent_count, resampled_state_count) != 0) {
+            return NULL;
+        }
     }
 
     // Get the numpy arrays from arguments

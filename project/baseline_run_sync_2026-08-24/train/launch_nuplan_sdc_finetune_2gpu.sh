@@ -38,9 +38,9 @@ PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PROJECT_DIR}/../.." && pwd)"
 CONFIG="${PROJECT_DIR}/override_config/nuplan_sdc_finetune.yaml"
 EXPERIMENT_ROOT="${REPO_ROOT}/experiments/baseline_run_sync_2026-08-24"
-FINETUNE_ROOT="${EXPERIMENT_ROOT}/nuplan_sdc_finetune"
+FINETUNE_ROOT="${EXPERIMENT_ROOT}/nuplan_sdc_finetune_dt03"
 CARLA_RUN_NAME_PREFIX="baseline_run_sync_2026-08-24"
-RUN_NAME_PREFIX="baseline_run_sync_2026-08-24_nuplan_sdc_finetune"
+RUN_NAME_PREFIX="baseline_run_sync_2026-08-24_nuplan_sdc_finetune_dt03"
 DEFAULT_RUN_NAME="${RUN_NAME_PREFIX}_$(date +%Y-%m-%d_%H-%M-%S)_seed${SOURCE_SEED}"
 RUN_NAME="${RUN_NAME:-${DEFAULT_RUN_NAME}}"
 
@@ -99,7 +99,16 @@ fi
 source "${REPO_ROOT}/.venv/bin/activate"
 cd "${REPO_ROOT}"
 
-mapfile -t CONFIG_ARGS < <(python "${PROJECT_DIR}/yaml_overrides.py" "${CONFIG}")
+CONFIG_COMMAND=(python "${SCRIPT_DIR}/finetune_config.py")
+if [[ -n "${RESOURCE_CONFIG:-}" ]]; then
+    CONFIG_COMMAND+=(--resources "${RESOURCE_CONFIG}")
+fi
+if [[ -f "${RESUME_STATE_PATH}" ]]; then
+    CONFIG_COMMAND+=(--resume-run "${RUN_DIR}")
+fi
+# Capture first so a rejected resume cannot disappear inside process substitution.
+CONFIG_OUTPUT="$("${CONFIG_COMMAND[@]}")"
+mapfile -t CONFIG_ARGS <<< "${CONFIG_OUTPUT}"
 CONFIG_ARGS+=(
     "load_model_path=${INITIAL_MODEL_PATH}"
     "train.seed=${SOURCE_SEED}"

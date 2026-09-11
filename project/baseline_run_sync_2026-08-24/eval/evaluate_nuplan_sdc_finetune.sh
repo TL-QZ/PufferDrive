@@ -26,11 +26,11 @@ SEED="$1"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 REPO_ROOT="$(cd "${PROJECT_DIR}/../.." && pwd)"
-FINETUNE_ROOT="${REPO_ROOT}/experiments/baseline_run_sync_2026-08-24/nuplan_sdc_finetune"
+FINETUNE_ROOT="${REPO_ROOT}/experiments/baseline_run_sync_2026-08-24/nuplan_sdc_finetune_dt03"
 BENCHMARK_CONFIG="${PROJECT_DIR}/override_config/evaluation_benchmarks.yaml"
 
 shopt -s nullglob
-RUN_DIRS=("${FINETUNE_ROOT}"/baseline_run_sync_2026-08-24_nuplan_sdc_finetune_*_seed"${SEED}")
+RUN_DIRS=("${FINETUNE_ROOT}"/baseline_run_sync_2026-08-24_nuplan_sdc_finetune_dt03_*_seed"${SEED}")
 shopt -u nullglob
 if (( ${#RUN_DIRS[@]} != 1 )); then
     echo "Expected exactly one completed synced-baseline fine-tune for seed ${SEED}; found ${#RUN_DIRS[@]}." >&2
