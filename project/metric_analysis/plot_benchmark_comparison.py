@@ -27,60 +27,6 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_SCENARIOS_PER_SUMMARY = 1_000
 EXPECTED_EPISODES_PER_SUMMARY = 1_000
 
-BENCHMARK_JSON_BY_MODEL_SEED = {
-    "carla": {
-        0: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_15-33-43_seed0/"
-            "eval/carla_final_model_mean_metrics/20260815-200339/evaluation_summary.json"
-        ),
-        1: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_15-40-12_seed1/"
-            "eval/carla_final_model_mean_metrics/20260815-200501/evaluation_summary.json"
-        ),
-        2: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_16-05-25_seed2/"
-            "eval/carla_final_model_mean_metrics/20260815-200548/evaluation_summary.json"
-        ),
-    },
-    "nuplan_single": {
-        0: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_15-33-43_seed0/"
-            "eval/nuplan_single_final_model_mean_metrics/20260815-200339/evaluation_summary.json"
-        ),
-        1: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_15-40-12_seed1/"
-            "eval/nuplan_single_final_model_mean_metrics/20260815-200501/evaluation_summary.json"
-        ),
-        2: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_16-05-25_seed2/"
-            "eval/nuplan_single_final_model_mean_metrics/20260815-200548/evaluation_summary.json"
-        ),
-    },
-    "nuplan_multi": {
-        0: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_15-33-43_seed0/"
-            "eval/nuplan_multi_final_model_mean_metrics/20260815-200339/evaluation_summary.json"
-        ),
-        1: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_15-40-12_seed1/"
-            "eval/nuplan_multi_final_model_mean_metrics/20260815-200501/evaluation_summary.json"
-        ),
-        2: Path(
-            "experiments/second_run_nightly_best_config/"
-            "nightly_best_local_2gpu_2026-08-14_16-05-25_seed2/"
-            "eval/nuplan_multi_final_model_mean_metrics/20260815-200548/evaluation_summary.json"
-        ),
-    },
-}
-
 BENCHMARK_LABELS = {
     "carla": "CARLA",
     "nuplan_single": "nuPlan single",
@@ -162,6 +108,21 @@ SEED_COLORS = {
 def parse_args() -> argparse.Namespace:
     default_output_dir = REPO_ROOT / "project/metric_analysis/output/benchmark_comparison"
     parser = argparse.ArgumentParser(description=__doc__)
+    for benchmark in BENCHMARK_LABELS:
+        parser.add_argument(
+            f"--{benchmark.replace('_', '-')}-json",
+            type=Path,
+            nargs="+",
+            required=True,
+            help=f"{BENCHMARK_LABELS[benchmark]} summaries in model-seed order",
+        )
+    parser.add_argument(
+        "--model-seed",
+        type=int,
+        choices=SEED_COLORS,
+        nargs="+",
+        help="Seed label for each set of benchmark JSONs (default: 0, 1, ...)",
+    )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -171,16 +132,37 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_benchmark_metrics() -> list[dict[str, str | int | float]]:
+def resolve_input_jsons(args: argparse.Namespace) -> dict[str, dict[int, Path]]:
+    """Pair each benchmark JSON with its model-seed label."""
+    supplied = {
+        benchmark: getattr(args, f"{benchmark}_json")
+        for benchmark in BENCHMARK_LABELS
+    }
+    path_counts = {len(paths) for paths in supplied.values()}
+    if len(path_counts) != 1 or not 1 <= next(iter(path_counts)) <= len(SEED_COLORS):
+        raise ValueError("Supply the same number of JSON paths (1-3) for each benchmark.")
+    path_count = next(iter(path_counts))
+    model_seeds = args.model_seed or list(range(path_count))
+    if len(model_seeds) != path_count or len(set(model_seeds)) != path_count:
+        raise ValueError("Supply one unique --model-seed for each set of benchmark JSONs.")
+    return {
+        benchmark: dict(zip(model_seeds, paths, strict=True))
+        for benchmark, paths in supplied.items()
+    }
+
+
+def load_benchmark_metrics(
+    json_by_benchmark_and_seed: dict[str, dict[int, Path]],
+) -> list[dict[str, str | int | float]]:
     """Load and validate one aggregate record per benchmark and model seed."""
     plotted_metrics = {metric for metrics in METRIC_GROUPS.values() for metric in metrics}
     required_json_metrics = plotted_metrics - {"infractions_per_scenario"}
     required_json_metrics.add("total_infractions")
     records = []
 
-    for benchmark, json_by_model_seed in BENCHMARK_JSON_BY_MODEL_SEED.items():
-        for model_seed, relative_json_path in json_by_model_seed.items():
-            json_path = REPO_ROOT / relative_json_path
+    for benchmark, json_by_model_seed in json_by_benchmark_and_seed.items():
+        for model_seed, json_path in json_by_model_seed.items():
+            json_path = json_path.resolve()
             if not json_path.is_file():
                 raise FileNotFoundError(
                     f"Missing metrics JSON for benchmark {benchmark!r}, model seed "
@@ -246,7 +228,7 @@ def load_benchmark_metrics() -> list[dict[str, str | int | float]]:
             )
             records.append(record)
 
-    expected_record_count = len(BENCHMARK_JSON_BY_MODEL_SEED) * len(SEED_COLORS)
+    expected_record_count = sum(len(paths) for paths in json_by_benchmark_and_seed.values())
     if len(records) != expected_record_count:
         raise ValueError(f"Expected {expected_record_count} aggregate records, found {len(records)}")
     return records
@@ -256,14 +238,18 @@ def add_metric_bars(
     axis: plt.Axes,
     data: list[dict[str, str | int | float]],
     metric: str,
+    model_seeds: list[int],
 ) -> None:
     """Draw three side-by-side model-seed aggregate bars for each benchmark."""
-    benchmark_order = list(BENCHMARK_JSON_BY_MODEL_SEED)
+    benchmark_order = list(BENCHMARK_LABELS)
     benchmark_positions = list(range(len(benchmark_order)))
-    seed_offsets = {0: -0.24, 1: 0.0, 2: 0.24}
+    seed_offsets = {
+        seed: (index - (len(model_seeds) - 1) / 2) * 0.24
+        for index, seed in enumerate(model_seeds)
+    }
     maximum_value = 0.0
 
-    for model_seed in SEED_COLORS:
+    for model_seed in model_seeds:
         values_by_benchmark = []
         for benchmark in benchmark_order:
             matching_records = [
@@ -325,13 +311,14 @@ def plot_metric_group(
     group_name: str,
     metrics: list[str],
     output_dir: Path,
+    model_seeds: list[int],
 ) -> Path:
     columns = 2
     rows = math.ceil(len(metrics) / columns)
     figure, axes = plt.subplots(rows, columns, figsize=(14, 4.6 * rows), squeeze=False)
 
     for axis, metric in zip(axes.flat, metrics, strict=False):
-        add_metric_bars(axis, data, metric)
+        add_metric_bars(axis, data, metric, model_seeds)
 
     for unused_axis in list(axes.flat)[len(metrics) :]:
         unused_axis.set_visible(False)
@@ -343,10 +330,15 @@ def plot_metric_group(
             alpha=0.72,
             label=f"Model seed {seed}",
         )
-        for seed in SEED_COLORS
+        for seed in model_seeds
     ]
     figure.suptitle(GROUP_TITLES[group_name], fontsize=16, y=0.995)
-    figure.legend(handles=legend_handles, loc="upper center", bbox_to_anchor=(0.5, 0.955), ncol=3)
+    figure.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.955),
+        ncol=len(model_seeds),
+    )
     figure.tight_layout(rect=(0, 0, 1, 0.89))
 
     output_path = output_dir / f"{group_name}.png"
@@ -357,14 +349,18 @@ def plot_metric_group(
 
 def main() -> None:
     args = parse_args()
+    try:
+        input_jsons = resolve_input_jsons(args)
+        data = load_benchmark_metrics(input_jsons)
+    except (FileNotFoundError, ValueError) as error:
+        raise SystemExit(f"Error: {error}") from error
+
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    data = load_benchmark_metrics()
-    print("Loaded 9 aggregate JSON records across 3 benchmarks and 3 model seeds.")
-
+    model_seeds = sorted(input_jsons["carla"])
+    print(f"Loaded {len(data)} aggregate JSON records for {len(model_seeds)} model seed(s).")
     for group_name, metrics in METRIC_GROUPS.items():
-        output_path = plot_metric_group(data, group_name, metrics, output_dir)
+        output_path = plot_metric_group(data, group_name, metrics, output_dir, model_seeds)
         print(f"Wrote {output_path}")
 
 

@@ -1,36 +1,32 @@
 # CARLA metric analysis
 
-`plot_carla_metrics.py` compares the three trained model seeds on the CARLA
+`plot_carla_metrics.py` compares one to three trained model seeds on the CARLA
 evaluation. It produces one figure for each metric group, with an independently
-scaled subplot for every metric. Each town has three side-by-side box plots,
-one per model seed, and each box contains 125 scenario results.
+scaled subplot for every metric. Each town has one box per supplied model seed;
+a standard 1,000-scenario evaluation contributes 125 results per town.
 
-From the repository root, run:
+From the repository root, supply one to three CSVs in model-seed order:
 
 ```bash
 source .venv/bin/activate
-python project/metric_analysis/plot_carla_metrics.py
+python project/metric_analysis/plot_carla_metrics.py \
+    --carla-csv path/to/episode_metrics.csv \
+    --model-seed 0 \
+    --output-dir path/to/output
 ```
 
-The default outputs are written to `project/metric_analysis/output/carla`:
+If `--output-dir` is omitted, outputs are written to
+`project/metric_analysis/output/carla`:
 
 - `infraction_metrics.png`
 - `goal_completion_metrics.png`
 - `motion_lane_comfort_metrics.png`
 - `puffer_score_metrics.png`
 
-Use a different output directory when needed:
-
-```bash
-python project/metric_analysis/plot_carla_metrics.py --output-dir /tmp/carla-metric-plots
-```
-
 ## Seed labels
 
-The plot legend's model seeds 0, 1, and 2 come from the three training-run
-directories configured near the top of the script. The `seed` column inside
-each CSV is instead the per-scenario simulation seed, so it is not used as the
-legend grouping variable.
+The plot legend uses `--model-seed`. The `seed` column inside each CSV is the
+per-scenario simulation seed, so it is not used as the legend grouping variable.
 
 ## Metric selection
 
@@ -42,24 +38,20 @@ annotated as broken because its current value is always 1.
 ## CARLA and nuPlan benchmark comparison
 
 `plot_benchmark_comparison.py` compares CARLA, nuPlan single, and nuPlan multi
-across the same three trained model seeds. It reads the aggregate
+across one to three trained model seeds. It reads the aggregate
 `metrics_mean` values from each run's `evaluation_summary.json`. Each benchmark
-has three side-by-side bars, one per model seed, with compact value labels.
+has one bar per model seed, with compact value labels.
 
-From the repository root, run:
-
-```bash
-source .venv/bin/activate
-python project/metric_analysis/plot_benchmark_comparison.py
-```
-
-The four figures are written to
-`project/metric_analysis/output/benchmark_comparison` by default. Override the
-location when needed:
+Pass one summary per benchmark. List multiple paths in seed order when comparing
+two or three seeds:
 
 ```bash
 python project/metric_analysis/plot_benchmark_comparison.py \
-    --output-dir /tmp/benchmark-comparison-plots
+    --carla-json path/to/carla/evaluation_summary.json \
+    --nuplan-single-json path/to/nuplan_single/evaluation_summary.json \
+    --nuplan-multi-json path/to/nuplan_multi/evaluation_summary.json \
+    --model-seed 0 \
+    --output-dir path/to/output
 ```
 
 The goal and completion figure also plots `n`, the mean number of controlled
@@ -84,19 +76,10 @@ three final evaluation benchmarks and four aggregate metric figures as the
 benchmark comparison above, but each benchmark has two bars: before and after
 fine-tuning.
 
-Choose the training seed with `--seed`:
-
-```bash
-source .venv/bin/activate
-python project/metric_analysis/plot_finetune_comparison.py --seed 0
-```
-
 The default outputs for seed 0 are written to
 `project/metric_analysis/output/finetune_comparison/seed0`. A different output
 directory can be supplied with `--output-dir`.
 
-The available pairs are listed explicitly in `ORIGINAL_RUN_BY_SEED` and
-`FINETUNED_RUN_BY_SEED` near the top of the script. To compare a future seed,
-add its original and fine-tuned experiment directories to those dictionaries,
-then pass that seed on the command line. Requesting a seed without both entries
-produces an error listing the configured paired seeds.
+Supply the six `--before-<benchmark>-json` and `--after-<benchmark>-json`
+options; use `--help` for the complete command. The baseline experiment wrapper
+in `project/baseline_run_sync_2026-08-24/plot` fills these paths automatically.

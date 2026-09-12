@@ -25,24 +25,6 @@ from matplotlib.patches import Patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
-CARLA_CSV_BY_MODEL_SEED = {
-    0: Path(
-        "experiments/second_run_nightly_best_config/"
-        "nightly_best_local_2gpu_2026-08-14_15-33-43_seed0/"
-        "eval/carla_final_model_mean_metrics/20260815-200339/episode_metrics.csv"
-    ),
-    1: Path(
-        "experiments/second_run_nightly_best_config/"
-        "nightly_best_local_2gpu_2026-08-14_15-40-12_seed1/"
-        "eval/carla_final_model_mean_metrics/20260815-200501/episode_metrics.csv"
-    ),
-    2: Path(
-        "experiments/second_run_nightly_best_config/"
-        "nightly_best_local_2gpu_2026-08-14_16-05-25_seed2/"
-        "eval/carla_final_model_mean_metrics/20260815-200548/episode_metrics.csv"
-    ),
-}
-
 METRIC_GROUPS = {
     "infraction_metrics": [
         "offroad_rate",
@@ -117,6 +99,20 @@ def parse_args() -> argparse.Namespace:
     default_output_dir = REPO_ROOT / "project/metric_analysis/output/carla"
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
+        "--carla-csv",
+        type=Path,
+        nargs="+",
+        required=True,
+        help="CARLA episode_metrics.csv files in model-seed order",
+    )
+    parser.add_argument(
+        "--model-seed",
+        type=int,
+        choices=SEED_COLORS,
+        nargs="+",
+        help="Seed label for each CSV (default: 0, 1, ...)",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=default_output_dir,
@@ -125,15 +121,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def load_carla_metrics() -> tuple[pd.DataFrame, list[str]]:
-    """Load the three model runs and verify that their town sets match."""
+def resolve_input_csvs(args: argparse.Namespace) -> dict[int, Path]:
+    model_seeds = args.model_seed or list(range(len(args.carla_csv)))
+    if not 1 <= len(args.carla_csv) <= len(SEED_COLORS):
+        raise ValueError("Supply 1-3 CARLA CSV files.")
+    if len(model_seeds) != len(args.carla_csv) or len(set(model_seeds)) != len(model_seeds):
+        raise ValueError("Supply one unique --model-seed for each CARLA CSV.")
+    return dict(zip(model_seeds, args.carla_csv, strict=True))
+
+
+def load_carla_metrics(csv_by_model_seed: dict[int, Path]) -> tuple[pd.DataFrame, list[str]]:
+    """Load model runs and verify that their town sets match."""
     required_metrics = [metric for metrics in METRIC_GROUPS.values() for metric in metrics]
     required_columns = {"map_name", *required_metrics}
     frames = []
     maps_by_model_seed = {}
 
-    for model_seed, relative_csv_path in CARLA_CSV_BY_MODEL_SEED.items():
-        csv_path = REPO_ROOT / relative_csv_path
+    for model_seed, csv_path in csv_by_model_seed.items():
+        csv_path = csv_path.resolve()
         if not csv_path.is_file():
             raise FileNotFoundError(f"Missing CARLA metrics CSV: {csv_path}")
 
@@ -171,12 +176,16 @@ def add_metric_boxplots(
     data: pd.DataFrame,
     metric: str,
     map_order: list[str],
+    model_seeds: list[int],
 ) -> None:
-    """Draw three side-by-side model-seed boxes for each CARLA town."""
+    """Draw side-by-side model-seed boxes for each CARLA town."""
     map_positions = list(range(len(map_order)))
-    seed_offsets = {0: -0.24, 1: 0.0, 2: 0.24}
+    seed_offsets = {
+        seed: (index - (len(model_seeds) - 1) / 2) * 0.24
+        for index, seed in enumerate(model_seeds)
+    }
 
-    for model_seed in CARLA_CSV_BY_MODEL_SEED:
+    for model_seed in model_seeds:
         values_by_map = [
             data.loc[
                 (data["model_seed"] == model_seed) & (data["map_name"] == map_name),
@@ -231,23 +240,29 @@ def plot_metric_group(
     group_name: str,
     metrics: list[str],
     output_dir: Path,
+    model_seeds: list[int],
 ) -> Path:
     columns = 2
     rows = math.ceil(len(metrics) / columns)
     figure, axes = plt.subplots(rows, columns, figsize=(16, 4.6 * rows), squeeze=False)
 
     for axis, metric in zip(axes.flat, metrics, strict=False):
-        add_metric_boxplots(axis, data, metric, map_order)
+        add_metric_boxplots(axis, data, metric, map_order, model_seeds)
 
     for unused_axis in list(axes.flat)[len(metrics) :]:
         unused_axis.set_visible(False)
 
     legend_handles = [
         Patch(facecolor=SEED_COLORS[seed], edgecolor=SEED_COLORS[seed], alpha=0.72, label=f"Model seed {seed}")
-        for seed in CARLA_CSV_BY_MODEL_SEED
+        for seed in model_seeds
     ]
     figure.suptitle(GROUP_TITLES[group_name], fontsize=16, y=0.995)
-    figure.legend(handles=legend_handles, loc="upper center", bbox_to_anchor=(0.5, 0.955), ncol=3)
+    figure.legend(
+        handles=legend_handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.955),
+        ncol=len(model_seeds),
+    )
     figure.tight_layout(rect=(0, 0, 1, 0.89))
 
     output_path = output_dir / f"{group_name}.png"
@@ -258,14 +273,29 @@ def plot_metric_group(
 
 def main() -> None:
     args = parse_args()
+    try:
+        input_csvs = resolve_input_csvs(args)
+        data, map_order = load_carla_metrics(input_csvs)
+    except (FileNotFoundError, ValueError) as error:
+        raise SystemExit(f"Error: {error}") from error
+
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    data, map_order = load_carla_metrics()
-    print(f"Loaded {len(data):,} rows across {len(map_order)} CARLA maps and 3 model seeds.")
+    model_seeds = sorted(input_csvs)
+    print(
+        f"Loaded {len(data):,} rows across {len(map_order)} CARLA maps "
+        f"and {len(model_seeds)} model seed(s)."
+    )
 
     for group_name, metrics in METRIC_GROUPS.items():
-        output_path = plot_metric_group(data, map_order, group_name, metrics, output_dir)
+        output_path = plot_metric_group(
+            data,
+            map_order,
+            group_name,
+            metrics,
+            output_dir,
+            model_seeds,
+        )
         print(f"Wrote {output_path}")
 
 

@@ -1,8 +1,4 @@
-"""Compare a CARLA-trained model before and after nuPlan fine-tuning.
-
-The selected training seed must have both an original run and a fine-tuned run
-listed in the two dictionaries near the top of this file.
-"""
+"""Compare a CARLA-trained model before and after nuPlan fine-tuning."""
 
 from __future__ import annotations
 
@@ -25,29 +21,6 @@ from matplotlib.patches import Patch
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 EXPECTED_SCENARIO_COUNT = 1_000
-
-# Add future seeds here after both evaluations have completed.
-ORIGINAL_RUN_BY_SEED = {
-    0: Path(
-        "experiments/second_run_nightly_best_config/"
-        "nightly_best_local_2gpu_2026-08-14_15-33-43_seed0"
-    ),
-    1: Path(
-        "experiments/second_run_nightly_best_config/"
-        "nightly_best_local_2gpu_2026-08-14_15-40-12_seed1"
-    ),
-    2: Path(
-        "experiments/second_run_nightly_best_config/"
-        "nightly_best_local_2gpu_2026-08-14_16-05-25_seed2"
-    ),
-}
-
-FINETUNED_RUN_BY_SEED = {
-    0: Path(
-        "experiments/second_run_nightly_best_config/nuplan_sdc_finetune/"
-        "nuplan_sdc_finetune_2026-08-20_18-21-53_seed0"
-    ),
-}
 
 BENCHMARKS = {
     "carla": "CARLA",
@@ -139,6 +112,14 @@ def parse_args() -> argparse.Namespace:
         default=0,
         help="Training seed whose original and fine-tuned runs should be compared (default: 0)",
     )
+    for model_stage in MODEL_STAGES:
+        for benchmark in BENCHMARKS:
+            parser.add_argument(
+                f"--{model_stage}-{benchmark.replace('_', '-')}-json",
+                type=Path,
+                required=True,
+                help=f"{MODEL_STAGES[model_stage]} {BENCHMARKS[benchmark]} summary",
+            )
     parser.add_argument(
         "--output-dir",
         type=Path,
@@ -148,33 +129,15 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_run_pair(seed: int) -> dict[str, Path]:
-    """Return the two run directories configured for one training seed."""
-    paired_seeds = sorted(set(ORIGINAL_RUN_BY_SEED) & set(FINETUNED_RUN_BY_SEED))
-    if seed not in paired_seeds:
-        available = ", ".join(str(value) for value in paired_seeds) or "none"
-        raise ValueError(
-            f"Seed {seed} does not have both runs configured. "
-            f"Available paired seeds: {available}."
-        )
-
+def resolve_summary_paths(args: argparse.Namespace) -> dict[str, dict[str, Path]]:
+    """Collect the six explicit before/after benchmark paths."""
     return {
-        "before": REPO_ROOT / ORIGINAL_RUN_BY_SEED[seed],
-        "after": REPO_ROOT / FINETUNED_RUN_BY_SEED[seed],
+        model_stage: {
+            benchmark: getattr(args, f"{model_stage}_{benchmark}_json")
+            for benchmark in BENCHMARKS
+        }
+        for model_stage in MODEL_STAGES
     }
-
-
-def find_summary(run_dir: Path, benchmark: str) -> Path:
-    """Find the single final evaluation summary for one benchmark."""
-    summary_paths = sorted(
-        run_dir.glob(f"eval/{benchmark}_final_model_mean_metrics/*/evaluation_summary.json")
-    )
-    if len(summary_paths) != 1:
-        raise ValueError(
-            f"Expected one final {benchmark!r} evaluation summary under {run_dir}, "
-            f"found {len(summary_paths)}: {summary_paths}"
-        )
-    return summary_paths[0]
 
 
 def load_summary_record(
@@ -226,17 +189,14 @@ def load_summary_record(
     return record
 
 
-def load_comparison_metrics(seed: int) -> list[dict[str, str | float]]:
+def load_comparison_metrics(
+    summary_paths: dict[str, dict[str, Path]],
+) -> list[dict[str, str | float]]:
     """Load the three benchmark summaries for both model stages."""
-    run_pair = resolve_run_pair(seed)
     records = []
 
-    for model_stage, run_dir in run_pair.items():
-        if not run_dir.is_dir():
-            raise FileNotFoundError(f"Missing {MODEL_STAGES[model_stage]} run: {run_dir}")
-
-        for benchmark in BENCHMARKS:
-            summary_path = find_summary(run_dir, benchmark)
+    for model_stage, paths_by_benchmark in summary_paths.items():
+        for benchmark, summary_path in paths_by_benchmark.items():
             records.append(load_summary_record(summary_path, benchmark, model_stage))
 
     if len(records) != 6:
@@ -356,7 +316,7 @@ def main() -> None:
 
     # Validate and load everything before creating output files.
     try:
-        records = load_comparison_metrics(args.seed)
+        records = load_comparison_metrics(resolve_summary_paths(args))
     except (FileNotFoundError, ValueError) as error:
         raise SystemExit(f"Error: {error}") from error
     output_dir = (
