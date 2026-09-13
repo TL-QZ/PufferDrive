@@ -9,6 +9,9 @@ Start with the document that matches what you are doing:
    resume, evaluation, rendering, and verification commands.
 3. [Baseline context and notes](contexts_and_notes.md) — understand the complete
    CARLA-to-nuPlan experiment, timing contract, controller matrix, and naming.
+4. [nuPlan self-play from scratch](nuplan_selfplay_workflow.md) — launch the
+   independent 10B-transition vehicle self-play baseline, evaluate its final
+   checkpoint, and inspect GPU sizing and deferred issues.
 
 The implementation changes core loading code because replay resampling must
 happen before agent selection. Experiment settings, launchers, sizing, and

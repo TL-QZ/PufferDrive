@@ -1,0 +1,67 @@
+# From-scratch vehicle self-play over the complete nuPlan training pool.
+# GPU-qualified on two RTX A6000s, September 11, 2026. See docs/nuplan_selfplay_workflow.md.
+load_model_path: null
+load_id: null
+rnn_name: null
+policy.action_type: discrete
+policy.actor_head_layer_norm: false
+policy.critic_head_layer_norm: false
+
+env.action_type: discrete
+env.simulation_mode: replay
+env.control_mode: control_vehicles
+env.sdc_controller: policy
+env.non_sdc_controller: policy
+env.non_vehicle_controller: replay
+env.init_mode: create_all_valid
+env.map_dir: data/nuplan_train
+env.num_maps: 169715
+env.num_agents: 512
+env.max_agents_per_env: 300
+env.dt: 0.3
+env.resample_replay_to_dt: true
+env.init_step: 0
+env.init_step_spread: false
+env.scenario_length: 66
+env.resample_frequency: 66
+env.termination_mode: 0
+env.terminate_on_goal: 0
+env.use_neighbor_cache: 0
+env.reset_accel_on_stop: false
+env.reward_log_sampling: false
+
+vec.num_envs: 20
+vec.num_workers: 20
+vec.batch_size: 10
+
+train.total_timesteps: 10000000000
+train.learning_rate: 0.0005
+train.anneal_lr: true
+train.gamma: 0.999
+train.gae_lambda: 0.95
+train.update_epochs: 3
+train.compile: true
+train.amp: true
+train.precision: bfloat16
+train.cpu_offload: false
+train.batch_size: auto
+train.minibatch_size: 128000
+train.max_minibatch_size: 32000
+train.bptt_horizon: 128
+train.use_value_bootstrapping: true
+train.resume_state_path: null
+# Rounded up to whole global rollouts: 26.2144M and 102.23616M transitions.
+train.checkpoint_interval: 10
+train.evaluation_interval_epochs: 39
+train.evaluation_benchmarks: carla_fast,nuplan_single,nuplan_multi
+
+eval.benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
+eval.action_selection: mean
+eval.num_agents: 300
+eval.render_scenarios: false
+eval.render_filter: null
+eval.capture_observations: false
+
+wandb: true
+wandb_project: pufferdrive
+wandb_group: baseline_run_sync_2026-08-24_nuplan_selfplay_dt03

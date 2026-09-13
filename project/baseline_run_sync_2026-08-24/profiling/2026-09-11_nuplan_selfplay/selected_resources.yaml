@@ -1,0 +1,7 @@
+env.num_agents: 512
+train.checkpoint_interval: 10
+train.evaluation_interval_epochs: 39
+train.max_minibatch_size: 32000
+vec.batch_size: 10
+vec.num_envs: 20
+vec.num_workers: 20
