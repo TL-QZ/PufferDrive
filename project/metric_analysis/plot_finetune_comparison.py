@@ -1,4 +1,4 @@
-"""Compare a CARLA-trained model before and after nuPlan fine-tuning."""
+"""Compare CARLA-trained, nuPlan-fine-tuned, and nuPlan-self-play models."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import json
 import math
 import os
 import tempfile
+from itertools import product
 from pathlib import Path
 
 # Matplotlib needs a writable cache directory on shared machines.
@@ -29,13 +30,21 @@ BENCHMARKS = {
 }
 
 MODEL_STAGES = {
-    "before": "Before fine-tuning",
-    "after": "After fine-tuning",
+    "carla_trained": "CARLA-trained",
+    "nuplan_finetuned": "nuPlan fine-tuned",
+    "nuplan_self_play": "nuPlan self-play",
 }
 
 STAGE_COLORS = {
-    "before": "#4C78A8",
-    "after": "#F58518",
+    "carla_trained": "#4C78A8",
+    "nuplan_finetuned": "#F58518",
+    "nuplan_self_play": "#54A24B",
+}
+
+LEGACY_STAGES = {"carla_trained": "before", "nuplan_finetuned": "after"}
+LEGACY_LABELS = {
+    "carla_trained": "Before fine-tuning",
+    "nuplan_finetuned": "After fine-tuning",
 }
 
 METRIC_GROUPS = {
@@ -110,14 +119,21 @@ def parse_args() -> argparse.Namespace:
         "--seed",
         type=int,
         default=0,
-        help="Training seed whose original and fine-tuned runs should be compared (default: 0)",
+        help="Training seed to label in the figures (default: 0)",
+    )
+    parser.add_argument(
+        "--models", nargs="+", choices=MODEL_STAGES,
+        help="Models in plot order; omission preserves the legacy before/after comparison",
     )
     for model_stage in MODEL_STAGES:
+        prefixes = [model_stage.replace("_", "-")]
+        if model_stage in LEGACY_STAGES:
+            prefixes.append(LEGACY_STAGES[model_stage])
         for benchmark in BENCHMARKS:
+            option = f"{benchmark.replace('_', '-')}-json"
             parser.add_argument(
-                f"--{model_stage}-{benchmark.replace('_', '-')}-json",
+                *(f"--{prefix}-{option}" for prefix in prefixes),
                 type=Path,
-                required=True,
                 help=f"{MODEL_STAGES[model_stage]} {BENCHMARKS[benchmark]} summary",
             )
     parser.add_argument(
@@ -126,17 +142,28 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Directory for generated PNG files",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.legacy_comparison = args.models is None
+    args.models = list(LEGACY_STAGES) if args.models is None else args.models
+    if len(set(args.models)) != len(args.models):
+        parser.error("--models must contain distinct model names")
+    return args
 
 
 def resolve_summary_paths(args: argparse.Namespace) -> dict[str, dict[str, Path]]:
-    """Collect the six explicit before/after benchmark paths."""
+    """Require all benchmark paths for selected models, and no others."""
+    for model_stage, benchmark in product(MODEL_STAGES, BENCHMARKS):
+        path = getattr(args, f"{model_stage}_{benchmark}_json")
+        if model_stage in args.models and path is None:
+            raise ValueError(f"Missing summary path for {model_stage} / {benchmark}")
+        if model_stage not in args.models and path is not None:
+            raise ValueError(f"Summary supplied for unselected model {model_stage}: {path}")
     return {
         model_stage: {
             benchmark: getattr(args, f"{model_stage}_{benchmark}_json")
             for benchmark in BENCHMARKS
         }
-        for model_stage in MODEL_STAGES
+        for model_stage in args.models
     }
 
 
@@ -192,15 +219,21 @@ def load_summary_record(
 def load_comparison_metrics(
     summary_paths: dict[str, dict[str, Path]],
 ) -> list[dict[str, str | float]]:
-    """Load the three benchmark summaries for both model stages."""
+    """Load all selected summaries before any figures are written."""
     records = []
 
-    for model_stage, paths_by_benchmark in summary_paths.items():
-        for benchmark, summary_path in paths_by_benchmark.items():
+    for model_stage, benchmark in product(summary_paths, BENCHMARKS):
+        summary_path = summary_paths[model_stage][benchmark]
+        try:
             records.append(load_summary_record(summary_path, benchmark, model_stage))
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                f"{model_stage} / {benchmark} at {summary_path}: {error}"
+            ) from error
 
-    if len(records) != 6:
-        raise ValueError(f"Expected 6 aggregate records, found {len(records)}")
+    expected_count = len(summary_paths) * len(BENCHMARKS)
+    if len(records) != expected_count:
+        raise ValueError(f"Expected {expected_count} aggregate records, found {len(records)}")
     return records
 
 
@@ -208,14 +241,18 @@ def add_metric_bars(
     axis: plt.Axes,
     records: list[dict[str, str | float]],
     metric: str,
+    models: list[str],
 ) -> None:
-    """Draw before-and-after bars for each evaluation benchmark."""
+    """Draw centered model groups for each evaluation benchmark."""
     benchmark_order = list(BENCHMARKS)
     benchmark_positions = list(range(len(benchmark_order)))
-    stage_offsets = {"before": -0.14, "after": 0.14}
+    stage_offsets = {
+        model: (index - (len(models) - 1) / 2) * 0.28
+        for index, model in enumerate(models)
+    }
     maximum_value = 0.0
 
-    for model_stage in MODEL_STAGES:
+    for model_stage in models:
         values = []
         for benchmark in benchmark_order:
             matches = [
@@ -275,13 +312,15 @@ def plot_metric_group(
     group_name: str,
     metrics: list[str],
     output_dir: Path,
+    model_labels: dict[str, str],
+    legacy_comparison: bool,
 ) -> Path:
     columns = 2
     rows = math.ceil(len(metrics) / columns)
     figure, axes = plt.subplots(rows, columns, figsize=(14, 4.6 * rows), squeeze=False)
 
     for axis, metric in zip(axes.flat, metrics, strict=False):
-        add_metric_bars(axis, records, metric)
+        add_metric_bars(axis, records, metric, list(model_labels))
 
     for unused_axis in list(axes.flat)[len(metrics) :]:
         unused_axis.set_visible(False)
@@ -291,17 +330,20 @@ def plot_metric_group(
             facecolor=STAGE_COLORS[stage],
             edgecolor=STAGE_COLORS[stage],
             alpha=0.75,
-            label=MODEL_STAGES[stage],
+            label=model_labels[stage],
         )
-        for stage in MODEL_STAGES
+        for stage in model_labels
     ]
-    figure.suptitle(f"{GROUP_TITLES[group_name]} — Seed {seed}", fontsize=16, y=0.995)
+    title = GROUP_TITLES[group_name]
+    if not legacy_comparison:
+        title = title.replace("Fine-Tuning Comparison", "Baseline Comparison")
+    figure.suptitle(f"{title} — Seed {seed}", fontsize=16, y=0.995)
     figure.tight_layout(rect=(0, 0, 1, 0.89))
     legend = figure.legend(
         handles=legend_handles,
         loc="upper center",
         bbox_to_anchor=(0.5, 0.955),
-        ncol=2,
+        ncol=len(model_labels),
     )
     legend.set_zorder(1000)
 
@@ -322,13 +364,22 @@ def main() -> None:
     output_dir = (
         args.output_dir.resolve()
         if args.output_dir is not None
-        else REPO_ROOT / f"project/metric_analysis/output/finetune_comparison/seed{args.seed}"
+        else REPO_ROOT / "project/metric_analysis/output" / (
+            f"finetune_comparison/seed{args.seed}" if args.legacy_comparison
+            else f"self_play_comparison/seed{args.seed}/{'__'.join(args.models)}"
+        )
     )
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    print(f"Loaded 6 aggregate records for training seed {args.seed}.")
+    model_labels = LEGACY_LABELS if args.legacy_comparison else {
+        model: MODEL_STAGES[model] for model in args.models
+    }
+    print(f"Loaded {len(records)} aggregate records for training seed {args.seed}.")
     for group_name, metrics in METRIC_GROUPS.items():
-        output_path = plot_metric_group(records, args.seed, group_name, metrics, output_dir)
+        output_path = plot_metric_group(
+            records, args.seed, group_name, metrics, output_dir,
+            model_labels, args.legacy_comparison,
+        )
         print(f"Wrote {output_path}")
 
 

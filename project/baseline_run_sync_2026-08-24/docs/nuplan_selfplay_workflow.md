@@ -105,6 +105,35 @@ No evaluation-engine or benchmark changes are included in this launcher addition
 The final script selects full `carla`, not `carla_fast`; that does not establish
 that the underlying issue cannot affect standalone CARLA evaluation.
 
+## Render selected evaluation failures
+
+Preview seed 0's nuPlan multi-vehicle failures, capped at 10 replays:
+
+```bash
+CUDA_VISIBLE_DEVICES=1 DRY_RUN=1 \
+  project/baseline_run_sync_2026-08-24/render/render_nuplan_selfplay_failures.sh \
+  0 nuplan_multi all_infractions 10
+```
+
+Remove `DRY_RUN=1` to render. The arguments are seed (`0|1|2`), benchmark
+(`carla|nuplan_single|nuplan_multi`), optional failure mode, and optional render
+limit. Modes are `all_infractions` (default), `collision`, `at_fault_collision`,
+`offroad`, and `red_light`. The default limit is `null` (all matching failures);
+set the fourth argument or `MAX_RENDERED_FAILURES` to a positive integer to cap it.
+
+The launcher requires exactly one self-play run and uses its latest timestamped
+standalone final-evaluation `episode_metrics.csv`, matching the existing render
+launchers. It prints the chosen CSV and copies it into a new
+`failure_analysis/<mode>/<timestamp>/` directory before replaying selected failures.
+The original evaluation CSV is preserved. Open the printed HTML index at
+`failure_analysis/<mode>/<timestamp>/failures/rendered_replays/index.html`.
+Outputs are interactive HTML and replay data, not video files.
+
+Rendering uses the evaluator's mean-action settings: the discrete policy sends
+continuous controls, `dt=0.1`, and replay resampling is disabled. Observation
+capture is enabled for the replay panels; W&B is disabled. A dry run creates no
+analysis directory and does not construct an environment or use the GPU.
+
 ## Resources and profiling
 
 The September 11, 2026 probe used two RTX A6000s (44.55 GiB visible memory each).

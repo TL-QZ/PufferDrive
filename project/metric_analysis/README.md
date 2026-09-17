@@ -83,3 +83,38 @@ directory can be supplied with `--output-dir`.
 Supply the six `--before-<benchmark>-json` and `--after-<benchmark>-json`
 options; use `--help` for the complete command. The baseline experiment wrapper
 in `project/baseline_run_sync_2026-08-24/plot` fills these paths automatically.
+
+## Selectable baseline comparison
+
+The same `plot_finetune_comparison.py` accepts `--models` with one to three
+distinct choices: `carla_trained`, `nuplan_finetuned`, `nuplan_self_play`.
+Bars follow the supplied order, with fixed blue, orange, and green model colors.
+Supply three summaries for each selected model using
+`--<model-with-hyphens>-<benchmark-with-hyphens>-json`, for example
+`--nuplan-self-play-nuplan-single-json path/to/evaluation_summary.json`.
+The original `--before-…-json` and `--after-…-json` arguments remain aliases.
+Omitting `--models` preserves the existing before/after plots and output paths.
+
+For the synced baseline, use the launcher to discover the summaries:
+
+```bash
+# All three models, training seed 0.
+project/baseline_run_sync_2026-08-24/plot/plot_self_play_comparison.sh 0
+
+# Any subset, including a single model, in the requested order.
+project/baseline_run_sync_2026-08-24/plot/plot_self_play_comparison.sh \
+    0 --models carla_trained nuplan_self_play
+```
+
+The launcher accepts seeds 0–2 and requires exactly one run and one completed
+summary per selected model and benchmark. Missing or ambiguous results fail;
+it never selects the newest result or skips unavailable models. Each summary
+must contain 1,000 scenarios and episodes and all required finite metrics.
+All inputs are validated before output directories or figures are created.
+
+The four PNGs go under the experiment's
+`output/self_play_comparison/seed<seed>/<models-joined-with-__>/` directory.
+Direct Python calls use the equivalent directory under
+`project/metric_analysis/output`, unless `--output-dir` is supplied.
+Each invocation compares one training seed across all three benchmarks;
+there is no aggregation across training seeds.

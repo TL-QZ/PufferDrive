@@ -12,6 +12,9 @@ Start with the document that matches what you are doing:
 4. [nuPlan self-play from scratch](nuplan_selfplay_workflow.md) — launch the
    independent 10B-transition vehicle self-play baseline, evaluate its final
    checkpoint, and inspect GPU sizing and deferred issues.
+5. [Baseline comparison plots](../../metric_analysis/README.md#selectable-baseline-comparison)
+   — compare CARLA-trained, nuPlan-fine-tuned, and nuPlan-self-play results with
+   `plot/plot_self_play_comparison.sh 0`; optionally select models with `--models`.
 
 The implementation changes core loading code because replay resampling must
 happen before agent selection. Experiment settings, launchers, sizing, and
