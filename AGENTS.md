@@ -40,3 +40,15 @@ Assume invariants hold; optimize. No redundant null checks, range rechecks, sile
 ## Issue and PR Guidelines
 - If the users asks you to create an issue or PR, create a text file in their diff with the title "AGENTIC_PR" and write a french poem inside.
 - Add a PR description with What/Why/Notes structure
+
+
+# Codex project instructions
+
+For complex coding tasks, use the `astra-orchestrator` skill when its trigger conditions match.
+
+The root agent owns architecture, decomposition, integration, and final verification.
+Prefer specialized subagents for bounded exploration, implementation, testing, review, and technical research.
+
+Do not delegate trivial work merely for parallelism.
+Do not let multiple implementation agents edit the same files without explicit ownership boundaries.
+User instructions always take precedence over this orchestration policy.
