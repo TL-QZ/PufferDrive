@@ -1,0 +1,335 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\usepackage{parskip}
+\usepackage{xcolor}
+\usepackage{longtable}
+\usepackage{booktabs}
+\usepackage[authoryear,round]{natbib}
+
+\providecommand{\tightlist}{%
+  \setlength{\itemsep}{0pt}\setlength{\parskip}{0pt}}
+
+\title{ACT-JEPA + IPPO/MAPPO for Multi-Agent Autonomous Driving\\
+\large Research Project Proposal, Draft}
+\author{}
+\date{2026-09-17}
+
+\begin{document}
+
+\maketitle
+
+\hypertarget{research-objective-and-central-question}{%
+\section{Research Objective and Central Question}\label{research-objective-and-central-question}}
+
+\textbf{Primary question:} In multi-agent autonomous driving, does routing state through a self-supervised, noise-filtering latent space (a Multi-Agent ACT-JEPA world model), via sequential distillation or joint optimization, improve control accuracy and/or reduce simulator sample complexity relative to a strong IPPO/MAPPO baseline acting directly on raw state?
+
+\textbf{Long-term goal:} a hybrid IPPO(MAPPO)+JEPA policy family that keeps IPPO/MAPPO's proven multi-agent self-play training dynamics while gaining JEPA's claimed robustness to state noise and occlusion, without introducing test-time latency. The policy remains a single feedforward pass at inference; no latent-space MPC/CEM search is performed at test time.
+
+\textbf{Why this is non-obvious:} JEPA's noise-filtering benefit is empirically established for high-dimensional visual/video input (I-JEPA, V-JEPA 2), but has not been demonstrated for \emph{already-compact, low-dimensional vector state} trained via \emph{multi-agent self-play}. It's plausible the benefit shrinks once state is already structured and low-noise; this project tests that rather than assuming it.
+
+\textbf{Motivating hypothesis, observation modality as a moderating variable:} the vector-state setting evaluated here is deliberately the \emph{hardest case} for the latent-representation hypothesis to win, because raw state is already low-dimensional and largely clean. As the observation signal shifts toward perceptual input (camera and LiDAR streams, as in real autonomous-vehicle stacks, rather than privileged simulator state vectors), the argument for routing through a self-supervised latent space is expected to become \emph{more} pressing, not less: high-dimensional visual/point-cloud input carries far more task-irrelevant variance (lighting, texture, sensor artifacts, weather) for a policy to overfit to, which is the failure mode I-JEPA and V-JEPA 2 are designed to filter out at that end of the spectrum. This project's vector-state result should therefore be read as a \textbf{conservative lower bound} on the value of latent representation for this hybrid architecture: a null or weak result at the vector-state level does not rule out, and, on this hypothesis, would even be \emph{expected alongside}, a stronger effect once the same architecture is extended to raw perceptual input. This motivates treating the perceptual (camera/LiDAR) setting as a natural and expected next step (Section 8), not a separate, unrelated extension.
+
+\textbf{Motivating hypothesis, data-availability asymmetry between self-play and demonstration data:} a second, independent motivation for this project's hybrid framing is practical rather than representational. Self-play (Condition A, and the \(\mathcal{D}_{\text{sim}}\) side of Conditions B and C, Section 4.1) requires no human-labeled data at all, only simulator compute; Gigaflow (Section 2.1) generates 4.4 billion state transitions per hour on a single node. Behavior cloning requires large, diverse human driving demonstrations, and this data does not scale the same way: it is expensive to instrument, covers a narrower and less controllable distribution of scenarios than a simulator can generate on demand, and the largest available public corpus (the Waymo Open Motion Dataset, Section 2.4) is small relative to what a self-play simulator produces in a single hour. This asymmetry is why \(\mathcal{D}_{\text{human}}\) is used in this project's design as a fixed, comparatively scarce supplement, for the behavior-cloning term in Condition C and the optional human/sim blend in the dual-pool variant (Section 6), rather than as the primary source of training signal for any condition. The practical question this raises, separate from the noise-filtering question above, is whether the latent-space architecture lets a small amount of human data go further (better calibration to human-like driving style, better sample efficiency when it is blended in) than using it for behavior cloning directly on raw state would.
+
+\textbf{Motivating hypothesis, a structural gap between self-play and human behavior:} a third motivation is that self-play alone has no mechanism for closing the gap between the behavior it converges to and actual human driving behavior, and this gap is expected to persist regardless of simulation scale, not just at current scale. Gigaflow (Section 2.1) is the relevant anchor here: it trains entirely via self-play with no human data at any stage, and reports a zero-shot WOSAC realism score of 0.62 rather than a fine-tuned one, since the paper includes no human-data adaptation step. Its authors flag combining large-scale self-play with imitation learning on recorded human scenarios as a possible future direction, without implementing or evaluating it. A self-play policy optimizes toward whatever equilibrium a reward function and population dynamics produce; nothing in that process pulls the result toward the human behavioral distribution if the two diverge, since self-play was never given a signal to match it. This project's Condition C tests the combination Gigaflow's authors identify as open directly, a joint self-play-plus-imitation objective in latent space, rather than treating self-play and human data as two disconnected training stages; Condition B's core formulation distills only from the self-play teacher (Section 5), but its optional dual-pool variant (Section 6) blends in the same human data, giving a second, sequential way of testing whether the gap narrows.
+
+\textbf{Sub-questions, in dependency order:}
+1. Does adding a JEPA-style latent representation change accuracy and/or sample efficiency vs.~IPPO/MAPPO alone?
+2. If so, is the gain better captured by \emph{sequential} teacher-student distillation (bounded, offline simulator use) or \emph{joint} end-to-end optimization (ongoing simulator use, possibly tighter latent-policy alignment)?
+3. Does the latent space's claimed noise/occlusion robustness actually materialize under synthetic sensor degradation, and does it explain any observed gain?
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{related-work-and-positioning}{%
+\section{Related Work and Positioning}\label{related-work-and-positioning}}
+
+\hypertarget{multi-agent-policy-optimization}{%
+\subsection{Multi-agent policy optimization}\label{multi-agent-policy-optimization}}
+
+\citet{yu2021mappo} introduce MAPPO (centralized value function with global-state input, decentralized policy execution) and IPPO (fully decentralized value and policy, local observations only), evaluated on Multi-Agent Particle Environments ($\leq$6 agents), StarCraft Multi-Agent Challenge ($\leq$30 agents), Google Research Football (22 agents), and full-scale Hanabi ($\leq$5 agents). Its central finding is that PPO-based methods, with the right implementation choices (value normalization, controlled epoch count and mini-batching, appropriate value-function input), are \emph{competitive with or superior to} strong off-policy MARL baselines (QMix, MADDPG) \textbf{at comparable sample efficiency}, not that PPO is unusually sample-efficient in absolute terms.
+
+\textbf{Relevance and gaps for this project:}
+\begin{itemize}
+\item All benchmarks are (a) far smaller in agent count than dense urban traffic and (b) \emph{fully cooperative with shared reward}. Autonomous driving with heterogeneous, non-cooperative traffic participants (human drivers not on the ego vehicle's team) does not straightforwardly satisfy either condition.
+\item Gigaflow (below) demonstrates that large-scale, shared-parameter self-play PPO produces strong emergent driving behavior even in a \emph{general-sum} traffic setting, without invoking MAPPO's cooperative-reward formalism explicitly. This project's use of ``MAPPO'' should therefore be understood, and stated, as a centralized-critic self-play PPO variant used to generate training data/teacher behavior, not a literal application of \citeauthor{yu2021mappo}'s cooperative-game setting. \textbf{Design choice:} begin with the centralized-critic setting to avoid IPPO's harder implicit-intent-modeling burden on individual agents, while treating this as a simplification to revisit as agent heterogeneity increases.
+\end{itemize}
+
+\citet{cusumanotowner2025gigaflow} introduce Gigaflow, a batched self-play simulator generating 4.4 billion state transitions/hour (42 years of driving experience/hour) on a single 8-GPU node; a full training run covers 1.6 billion km. All agents share a single compact policy network trained via self-play PPO in dense urban traffic (up to 150 interacting agents), achieving state-of-the-art results on three independent benchmarks without human data. \textbf{This is the paper's empirical anchor for feasibility of large-scale self-play in driving}, and the source of the ``billions of km'' sample-complexity problem this project is trying to reduce. This is a claim about \emph{driving-scale realism}, separate from \citet{yu2021mappo}'s findings about PPO's relative sample efficiency against other MARL algorithms.
+
+\textbf{Relevance and gaps for this project:} Gigaflow trains entirely via self-play, with no human data used at any training stage, and reports a zero-shot Waymo Open Sim Agents Challenge (WOSAC) realism meta-metric score of 0.62, evaluated without any human-data adaptation step. This leaves an open question the Gigaflow authors identify but do not address: a self-play policy optimizes toward whatever behavior a reward function and population dynamics converge to, with no mechanism pulling that equilibrium toward the actual human behavioral distribution if the two diverge, so a gap between self-play and human driving behavior is expected on structural grounds regardless of simulation scale, not only as an artifact of insufficient training. Conditions B and C are two concrete instances of the combination Gigaflow's authors flag as unexplored, self-play plus imitation learning, using a shared latent representation rather than raw state or a separate fine-tuning stage (Section 1).
+
+\hypertarget{jepa-and-latent-space-world-models}{%
+\subsection{JEPA and latent-space world models}\label{jepa-and-latent-space-world-models}}
+
+\citet{lecun2022jepa} proposes JEPA: context and target encoders plus a latent predictor, trained via energy minimization in representation space rather than pixel/input reconstruction, motivated by the claim that this allows the model to discard unpredictable, task-irrelevant detail.
+
+\citet{assran2023ijepa} introduce I-JEPA, applying this architecture to self-supervised learning from images.
+
+\citet{assran2025vjepa2} extend it to video with V-JEPA 2, pretrained on \textasciitilde1M hours of video via self-supervised masked prediction, then extended (V-JEPA 2-AC) with an action-conditioned predictor trained on a small amount of robot interaction data (\textless62 hours), and deployed \textbf{zero-shot for robot manipulation via planning within a model-predictive-control loop}. This is the direct precedent for ``JEPA + MPC'' as a real, demonstrated combination. It is also the primary source for the MPC-latency concern this project deliberately avoids by keeping ACT-JEPA's decoder feedforward-only.
+
+\citet{vujinovic2025actjepa} combine action-chunking (from \citet{zhao2023act}'s ACT, below) with a JEPA-style auxiliary objective that predicts future \emph{latent} observation sequences rather than raw states. Evaluated on single-agent robot manipulation benchmarks (Push-T, ManiSkill, Meta-World) via imitation learning; outperforms an ACT baseline by roughly 2-10\% success rate depending on environment, and AR-transformer baselines by a larger margin. \textbf{The action decoder in the original paper is a single non-autoregressive feedforward pass: no test-time search or planning loop.} This project's contribution is extending this architecture to (a) the multi-agent setting (per-agent identity encoding, occlusion/missing-agent masking) and (b) self-play-trained autonomous driving, neither of which appears in the original paper.
+
+\citet{zhao2023act} introduce Action Chunking with Transformers (ACT): a transformer trained to output a generative model over short action sequences (chunks) rather than single-step actions, evaluated on six real-world bimanual manipulation tasks with 80-90\% success from 10 minutes of demonstrations each.
+
+\citet{kenneweg2025jeparl} combine JEPA with PPO for image-based control, demonstrated on the classical Cart Pole task, and study model collapse and its mitigation. \textbf{Correction to earlier draft framing:} this is a small-scale, single-agent proof-of-concept, not a demonstrated ``modern robotics architecture.'' Cite it accurately as an early feasibility result for JEPA+PPO, not as evidence the combination is established practice at scale.
+
+\textbf{Relevance and gaps for this project:} \citeauthor{kenneweg2025jeparl}'s central technical contribution is diagnosing a specific failure mode rather than proposing an architecture to copy: when actor and critic losses backpropagate through the same encoder that produces the JEPA prediction, the encoder can collapse to a constant output paired with an identity predictor, which trivially satisfies the JEPA loss. Their fix is an explicit batch-wise variance regularization term added to the total loss, on top of the EMA target encoder. This is a direct precedent for a specific risk in this project's Condition C, addressed in Section 5.
+
+\citet{chen2023trajmae} introduce a masked-autoencoder pretraining scheme for multi-agent trajectory prediction (Traj-MAE): separate masking strategies for the trajectory encoder and a map encoder, with a continual-learning mechanism to address catastrophic forgetting across masking ratios. This is the source of the ``Traj-MAE-style'' masking strategy referenced for \(M_{\text{agent}}\) in Section 3.
+
+\citet{wu2023mtm} train a single transformer (MTM, Masked Trajectory Models) to reconstruct randomly masked state/action sequences, and show the same trained network can be repurposed at inference time as a forward dynamics model, an inverse dynamics model, or an offline RL policy, depending on which positions are masked. This is the source of the ``MTM-style'' masking strategy referenced for \(M_{\text{agent}}\) in Section 3; the analogy in this project is masking by occluded or missing agent slot rather than by timestep.
+
+\hypertarget{model-based-rl-and-offline-policy-learning}{%
+\subsection{Model-based RL and offline policy learning}\label{model-based-rl-and-offline-policy-learning}}
+
+\citet{janner2019mbpo} train a learned dynamics model and generate short ``imagined'' rollouts for policy optimization (MBPO), reducing real-environment sample complexity. Directly relevant prior art for the ``vector world model'' argument in this project's earlier drafts, and a natural non-JEPA baseline to compare against.
+
+\citet{peng2019awr} and \citet{nair2020awac} derive the closed-form advantage-weighted policy \(\pi^*(\mathbf{A}\mid\mathbf{z}) \propto \mu(\mathbf{A}\mid\mathbf{z})\exp(A/\beta)\) used in this project's Condition C (Section 5). 
+
+\hypertarget{simulation-and-evaluation-infrastructure}{%
+\subsection{Simulation and evaluation infrastructure}\label{simulation-and-evaluation-infrastructure}}
+
+\citet{kazemkhani2025gpudrive} introduce GPUDrive, a GPU-accelerated multi-agent simulator (Madrona engine) supporting heterogeneous agent behaviors, built for training on the Waymo Open Motion Dataset.
+
+\citet{emergelab_pufferdrive} provide PufferDrive, a PufferLib-based fork/continuation compatible with GPUDrive's data format, providing a Waymo Open Sim Agents Challenge (WOSAC) evaluation harness and a human-replay evaluation mode (\texttt{-\/-eval.human-replay-eval}) where a trained policy controls only the ego vehicle while all other agents replay logged human trajectories. This is the evaluation harness referenced in Section 7.
+
+\citet{ettinger2021waymo} introduce the Waymo Open Motion Dataset, the large-scale interactive motion forecasting dataset this project's offline evaluation is built on.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{problem-setting-and-notation}{%
+\section{Problem Setting and Notation}\label{problem-setting-and-notation}}
+
+Let \(N\) active agents be tracked at each discrete timestep \(t\), lookahead horizon \(K=16\).
+
+\begin{itemize}
+\tightlist
+\item
+  \(\mathbf{s}_t \in \mathbb{R}^{N \times D_s}\): raw vector state (positions, velocities, headings, lane geometry).
+\item
+  \(\tilde{\mathbf{s}}_t = \mathbf{s}_t + \eta_t\): state corrupted by sensor/occlusion noise \(\eta_t\) (robustness evaluation only, Section 7).
+\item
+  \(\mathbf{a}_{t,i} = [a_{t,i}, \delta_{t,i}]^\top\): continuous control (acceleration, steering) for agent \(i\). \emph{(Notation fix: the IDM longitudinal-acceleration exponent is renamed \(\eta_{\text{idm}}\), so \(\delta\) denotes steering only, throughout.)}
+\item
+  \(\mathbf{A}_{t:t+K} \in \mathbb{R}^{N \times K \times 2}\): the action-chunk tensor.
+\item
+  \(M_{\text{agent}} \in \{0,1\}^N\): active/visible-agent mask, used for missing/occluded agents as in the earlier masked-trajectory draft (Traj-MAE-style, Chen et al.~2023, and MTM-style, Wu et al.~2023, masking strategies; Section 2.2). Its use in the decoder's query construction is specified in Section 4.6.
+\item
+  \(\mathcal{D}_{\text{sim}}\): the simulator data source. A buffer of transitions \((\mathbf{s}_t, \mathbf{A}_t^K, r_t, \mathbf{s}_{t+K})\) collected by rolling out a policy in the driving simulator (Gigaflow/GPUDrive/PufferDrive). Its statistical relationship to the policy being trained differs by condition, and this difference is the on-policy/off-policy distinction referenced throughout Sections 4 to 6: in Condition A, \(\mathcal{D}_{\text{sim}}\) is generated on-policy and discarded after each PPO update, as required by \(L^{\text{CLIP}}\); in Condition B Stage 2, it is a static buffer collected once from the frozen teacher and never refreshed; in Condition C, it is a growing replay buffer that can mix transitions from several past policy versions, since AWAC (Section 2.3) is derived to tolerate off-policy data.
+\item
+  \(\mathcal{D}_{\text{human}}\): the human demonstration data source. A fixed, offline dataset of logged human driving trajectories (Waymo Open Motion Dataset), providing pairs \((\mathbf{s}_t, \mathbf{A}_t^K)\) with no associated reward or simulator access. It is off-policy relative to every condition's learned policy by construction, since it was never generated by that policy, and it does not grow during training.
+\end{itemize}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{proposed-models}{%
+\section{Proposed Models}\label{proposed-models}}
+
+This section defines the latent space and its variants, and the named model components (encoders, predictor, decoder) that the loss functions in Section 5 are built from. The goal is a single consistent notation, since the original conceptual drafts used slightly different symbols across proposals (some used \(Z_t\), \(\hat{Z}_{t+K}\), \(Z_{t+K}^{\text{target}}\); this document standardizes on \(\mathbf{z}_t\), \(\hat{\mathbf{z}}_{t+K}\), \(\bar{\mathbf{z}}_{t+K}\)).
+
+\hypertarget{training-data-sources-on-policy-and-off-policy-regimes}{%
+\subsection{Training data sources: on-policy and off-policy regimes}\label{training-data-sources-on-policy-and-off-policy-regimes}}
+
+Two distinct data sources feed the losses in Section 5, and keeping them separate is what makes the on-policy/off-policy character of each condition explicit rather than implicit in the loss formulas.
+
+\begin{itemize}
+\tightlist
+\item
+  \(\mathcal{D}_{\text{sim}}\) (defined in Section 3) supplies the reinforcement-learning signal: \(L^{\text{CLIP}}\) in Condition A, and \(\mathcal{L}_{\text{AWAC}}\) in Condition C. What differs across conditions is not the symbol but the collection policy that fills the buffer. Condition A requires fresh, on-policy rollouts, discarded every update, which is what drives its simulator sample-complexity cost. Condition C's use of AWAC is a deliberate departure from that requirement: AWAC's closed-form advantage-weighted update (Section 2.3) is designed to learn from a replay buffer populated by a mixture of past policies, so \(\mathcal{D}_{\text{sim}}\) in Condition C can be off-policy without changing the loss.
+\item
+  \(\mathcal{D}_{\text{human}}\) (defined in Section 3) supplies the behavior-cloning signal, \(\mathcal{L}_{\text{BC}}\) in Condition C and the human-data blend in the optional dual-pool variant (Section 6). It is always off-policy, fixed in size, and never touches the simulator.
+\item
+  Condition B's \(\mathcal{L}_{\text{distill}}\) (Section 5) uses neither symbol directly: its supervision comes from a static rollout buffer generated once by the frozen teacher \(\pi_\theta^{\text{PPO}}\) (itself trained on-policy against \(\mathcal{D}_{\text{sim}}\) in Stage 1), which is why Stage 2 requires no further simulator access.
+\end{itemize}
+
+This distinction is also what the falsification criterion (Section 7) is testing indirectly: if Condition A's on-policy sample cost cannot be reduced without a loss of accuracy or robustness by moving to the off-policy/offline regimes of B or C, the added architectural complexity of the latent space is not justified by the sample-efficiency argument that motivates this project.
+
+\hypertarget{the-latent-space-and-its-variants}{%
+\subsection{The latent space and its variants}\label{the-latent-space-and-its-variants}}
+
+All latents live in \(\mathcal{Z} = \mathbb{R}^{N \times D_z}\), one \(D_z\)-dimensional vector per agent. Three distinct latent quantities appear in this project, and they are produced by different components at different points in time:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Context latent, \(\mathbf{z}_t\).} The encoding of the current (possibly noisy) state at time \(t\): \(\mathbf{z}_t = f_\theta(\tilde{\mathbf{s}}_t)\). This is what the policy and the predictor condition on.
+\item
+  \textbf{Predicted future latent, \(\hat{\mathbf{z}}_{t+K}\).} The latent predictor's forecast of what the state will encode to \(K\) steps ahead, conditioned on the action chunk taken: \(\hat{\mathbf{z}}_{t+K} = h_\psi(\mathbf{z}_t, \mathbf{A}_t^K)\). This is a prediction, produced without access to \(\mathbf{s}_{t+K}\).
+\item
+  \textbf{Target latent, \(\bar{\mathbf{z}}_{t+K}\).} The encoding of the actual future state at \(t+K\), produced by the target encoder: \(\bar{\mathbf{z}}_{t+K} = g_\phi(\mathbf{s}_{t+K})\). This is the label the predicted latent is trained to match; the target encoder sees the clean future state, not \(\tilde{\mathbf{s}}_{t+K}\), since it is not the component being evaluated for noise robustness.
+\end{itemize}
+
+The JEPA training signal is the discrepancy between \(\hat{\mathbf{z}}_{t+K}\) and \(\bar{\mathbf{z}}_{t+K}\) (Section 5, \(\mathcal{L}_{\text{JEPA}}\)). No decoder ever maps a latent back to raw state; the architecture is non-generative throughout, consistent with the JEPA formulation in Section 2.2.
+
+\hypertarget{context-encoder-f_theta}{%
+\subsection{\texorpdfstring{Context encoder, \(f_\theta\)}{Context encoder, f theta}}\label{context-encoder-f_theta}}
+
+\[f_\theta: \mathbb{R}^{N \times D_s} \rightarrow \mathbb{R}^{N \times D_z}, \qquad \mathbf{z}_t = f_\theta(\tilde{\mathbf{s}}_t)\]
+
+Maps the (possibly noise-corrupted) current state to the context latent, per agent. This is the encoder used at both training and inference time by the policy and the predictor. Its parameters \(\theta\) are updated directly by gradient descent on the training losses in Section 5. The hypothesis under test (Section 1) is that \(f_\theta\) learns to discard the task-irrelevant part of \(\eta_t\), so that \(\mathbf{z}_t\) is a more stable input to the policy than \(\tilde{\mathbf{s}}_t\) itself.
+
+\hypertarget{target-encoder-g_phi}{%
+\subsection{\texorpdfstring{Target encoder, \(g_\phi\)}{Target encoder, g phi}}\label{target-encoder-g_phi}}
+
+\[g_\phi: \mathbb{R}^{N \times D_s} \rightarrow \mathbb{R}^{N \times D_z}, \qquad \bar{\mathbf{z}}_{t+K} = g_\phi(\mathbf{s}_{t+K})\]
+
+Structurally identical to \(f_\theta\), but its parameters \(\phi\) are never updated by gradient descent. Instead, \(\phi\) tracks \(\theta\) by an exponential moving average:
+
+\[\phi \leftarrow \tau \phi + (1-\tau)\theta, \qquad \tau \in [0.99, 1.0)\]
+
+The EMA update is what prevents representation collapse: if the same encoder produced both the prediction target and the prediction, the trivial solution (a constant latent for every input) would satisfy the loss. A slowly-updated, gradient-decoupled target encoder removes that degenerate optimum. \(g_\phi\) is used only during training, to produce \(\bar{\mathbf{z}}_{t+K}\) as a label; it is not part of the inference-time policy.
+
+\hypertarget{latent-predictor-world-model-h_psi}{%
+\subsection{\texorpdfstring{Latent predictor / world model, \(h_\psi\)}{Latent predictor / world model, h psi}}\label{latent-predictor-world-model-h_psi}}
+
+\[h_\psi: \mathcal{Z} \times \mathbb{R}^{N \times K \times 2} \rightarrow \mathcal{Z}, \qquad \hat{\mathbf{z}}_{t+K} = h_\psi(\mathbf{z}_t, \mathbf{A}_t^K)\]
+
+Projects the current context latent forward by \(K\) steps, conditioned on the action chunk the agents are about to take. It is non-generative: it never reconstructs \(\mathbf{s}_{t+K}\), only \(\bar{\mathbf{z}}_{t+K}\)'s representation of it. This is the component that carries the ``world model'' role in this architecture, and the one whose output (\(\hat{\mathbf{z}}_{t+K}\)) directly supplies the latent-space critics \(Q_\xi\) and \(V_\zeta\), and the advantage \(\mathrm{Adv}(\mathbf{z}_t,\mathbf{A}_t^K)\) built from them, in Condition C (Section 5).
+
+\hypertarget{action-chunking-decoder-pi_omega-and-the-multi-agent-query-tensor}{%
+\subsection{\texorpdfstring{Action-chunking decoder, \(\pi_\omega\), and the multi-agent query tensor}{Action-chunking decoder, pi omega, and the multi-agent query tensor}}\label{action-chunking-decoder-pi_omega-and-the-multi-agent-query-tensor}}
+
+\[\pi_\omega: \mathcal{Z} \rightarrow \mathbb{R}^{N \times K \times 2}, \qquad \hat{\mathbf{A}}_t^K = \pi_\omega(\mathbf{z}_t)\]
+
+A non-autoregressive transformer decoder that emits the full \(K\)-step action chunk for all \(N\) agents in a single forward pass, following ACT-JEPA's feedforward decoding (Section 2.2); there is no autoregressive rollout and no test-time search.
+
+The decoder attends over a \textbf{query tensor} built from three additive components, one base tensor and two positional/identity encodings, so that a single shared decoder can be queried per agent and per future timestep:
+
+\begin{itemize}
+\tightlist
+\item
+  \textbf{Base time-slot matrix}, \(\mathbf{M}_{\text{chunk}} \in \mathbb{R}^{K \times D_z}\): a learnable matrix, one row per lookahead step \(k \in \{0, \dots, K-1\}\), shared across agents.
+\item
+  \textbf{Temporal positional encoding}, \(\mathbf{P}_{\text{time}} \in \mathbb{R}^{K \times D_z}\), sinusoidal:
+  \[\mathbf{P}_{\text{time}}[k, 2i] = \sin\!\left(\frac{k}{10000^{2i/D_z}}\right), \qquad \mathbf{P}_{\text{time}}[k, 2i+1] = \cos\!\left(\frac{k}{10000^{2i/D_z}}\right)\]
+\item
+  \textbf{Agent identity encoding}, \(\mathbf{E}_{\text{agent}} \in \mathbb{R}^{N \times D_z}\): a learned embedding lookup, \(\mathbf{E}_{\text{agent}}[n] = \text{EmbeddingUnit}(n)\), one vector per agent slot.
+\end{itemize}
+
+These are combined additively per agent \(n\) and timestep \(k\):
+
+\[\mathbf{q}_{n,k} = \mathbf{m}_k + \mathbf{P}_{\text{time}}[k] + \mathbf{E}_{\text{agent}}[n]\]
+
+and flattened to a \([(N \cdot K), D_z]\) query set fed to the decoder's attention layer, alongside \(\mathbf{z}_t\) as the conditioning context. The agent mask \(M_{\text{agent}}\) (Section 3) is applied at this stage: queries for masked (occluded or inactive) agent slots are excluded from the attention computation, so the decoder is not forced to produce action predictions for agents it has no evidence about. This is the mechanism referenced but not previously specified for the missing-agent handling described in Section 1 and Section 3.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{candidate-architectures-three-competing-conditions}{%
+\section{Candidate Architectures: Three Competing Conditions}\label{candidate-architectures-three-competing-conditions}}
+
+Formalized as \textbf{competing hypotheses run side by side}, not a settled design choice. All three conditions draw on the \(\mathcal{D}_{\text{sim}}\) and \(\mathcal{D}_{\text{human}}\) data sources and the on-policy/off-policy distinction defined in Section 4.1.
+
+\textbf{Condition A: IPPO/MAPPO baseline (no JEPA).}
+\[\pi_\theta^{\text{PPO}}: \mathbf{s}_t \mapsto \mathbf{a}_t, \quad \text{trained via } L^{\text{CLIP}}(\theta) \text{ with a centralized value function } V_\phi(\mathbf{s}_t^{\text{global}})\]
+\(L^{\text{CLIP}}(\theta)\) is the standard PPO clipped surrogate objective \citep{schulman2017ppo}, unmodified from its usual single-agent form except for the centralized critic input. \(V_\phi(\mathbf{s}_t^{\text{global}})\) is a state-value critic with parameters \(\phi\), conditioned on the concatenated global state across all \(N\) agents rather than any single agent's local observation, which is what makes this MAPPO rather than IPPO (Section 2.1). Can likely reuse or closely follow Gigaflow's released self-play policy, or a PufferDrive-native retrain, rather than being built from scratch.
+
+\textbf{Condition B: Teacher-Student distillation (sequential; minimizes simulator access).}
+\[\text{Stage 1: } \pi_\theta^{\text{PPO}} \text{ trained to convergence (= Condition A)}\]
+\[\text{Stage 2 (offline, static rollout buffer, no further simulator interaction):}\]
+\[\mathcal{L}_{\text{distill}} = \lambda_{\text{action}}\,\mathbb{E}\left[\|\pi_\omega(f_{\theta}(\mathbf{s}_t)) - \pi_\theta^{\text{PPO}}(\mathbf{s}_t)\|_1\right] + \lambda_{\text{jepa}}\,\mathcal{L}_{\text{JEPA}}\]
+\(\mathcal{L}_{\text{distill}}\) is a weighted sum of an action-matching term (the student decoder's output against the frozen teacher's action on the same state) and the JEPA term defined below. \(\lambda_{\text{action}}\) and \(\lambda_{\text{jepa}}\) are fixed scalar weights, set by hyperparameter search rather than derived.
+
+\begin{figure}
+\centering
+\includegraphics[width=\linewidth]{condition_B_block_diagram.png}
+\caption{Condition B block diagram: Stage 1 online centralized-critic self-play produces the frozen teacher; Stage 2 offline distillation trains the context encoder, target encoder, predictor, and decoder against the JEPA and distillation losses.}
+\end{figure}
+
+\textbf{Figure 1.} Condition B, teacher-student distillation. Stage 1 (top) is identical to Condition A. Stage 2 (bottom) trains \(f_\theta\), \(g_\phi\), \(h_\psi\), and \(\pi_\omega\) offline against a static buffer, using the frozen teacher's actions as the distillation target.
+
+\textbf{Condition C: Unified joint-loss model (concurrent optimization).}
+\[\mathcal{L}_{\text{Joint}}(\theta,\phi,\psi,\omega) = \lambda_{\text{jepa}}\mathcal{L}_{\text{JEPA}} + \lambda_{\text{bc}}\mathcal{L}_{\text{BC}} + \lambda_{\text{rl}}\mathcal{L}_{\text{AWAC}}\]
+\(\lambda_{\text{jepa}}\), \(\lambda_{\text{bc}}\), and \(\lambda_{\text{rl}}\) are fixed scalar weights on the three loss terms below, again set by hyperparameter search.
+
+\[\mathcal{L}_{\text{JEPA}} = \mathbb{E}\left[\left\|\hat{\mathbf{z}}_{t+K}/\|\hat{\mathbf{z}}_{t+K}\|_2 - \bar{\mathbf{z}}_{t+K}/\|\bar{\mathbf{z}}_{t+K}\|_2\right\|_2^2\right], \quad \bar{\mathbf{z}}_{t+K} = g_\phi(\mathbf{s}_{t+K}),\ \phi \leftarrow \tau\phi + (1-\tau)\theta\]
+The normalized squared-error term between the predicted and target latents (Sections 4.2 to 4.5).
+
+\[\mathcal{L}_{\text{BC}} = \mathbb{E}_{\mathcal{D}_{\text{human}}}\left[\|\pi_\omega(f_\theta(\mathbf{s}_t)) - \mathbf{A}_t^K\|_1\right]\]
+The behavior-cloning term, matching the decoder's output against the logged human action chunk \(\mathbf{A}_t^K\) on human demonstration data (Section 4.1).
+
+\[\mathcal{L}_{\text{AWAC}} = \mathbb{E}_{\mathcal{D}_{\text{sim}}}\left[\exp\!\left(\frac{\mathrm{Adv}(\mathbf{z}_t,\mathbf{A}_t^K)}{\beta}\right)\cdot\|\pi_\omega(\mathbf{z}_t)-\mathbf{A}_t^K\|_1\right], \quad \mathrm{Adv}(\mathbf{z}_t,\mathbf{A}_t^K) = Q_\xi(\mathbf{z}_t,\mathbf{A}_t^K) - V_\zeta(\mathbf{z}_t)\]
+The advantage-weighted regression term on simulator data (Section 4.1). \(Q_\xi(\mathbf{z}_t,\mathbf{A}_t^K)\) is a latent-space action-value critic with parameters \(\xi\); \(V_\zeta(\mathbf{z}_t)\) is a latent-space state-value critic with parameters \(\zeta\); both operate on the context latent \(\mathbf{z}_t\) rather than raw state. \(\mathrm{Adv}(\mathbf{z}_t,\mathbf{A}_t^K)\) is the resulting advantage estimate. \emph{(Notation note: the advantage is written \(\mathrm{Adv}\) rather than the more conventional bare \(A\), specifically to avoid collision with the action-chunk tensor \(\mathbf{A}_t^K\) defined in Section 3, which uses the same letter.)} \(\beta\) is a fixed temperature hyperparameter controlling how sharply the exponential weighting favors high-advantage actions; both \(\beta\) and the closed form itself are adopted from \citet{peng2019awr} / \citet{nair2020awac} (Section 2.3), not re-derived here.
+
+\begin{figure}
+\centering
+\includegraphics[width=\linewidth]{condition_C_block_diagram.png}
+\caption{Condition C block diagram: all components, context encoder, target encoder, predictor, decoder, and latent critics, are optimized together against a joint loss combining the JEPA, behavior-cloning, and AWAC terms, drawing on both the human demonstration and simulator data sources.}
+\end{figure}
+
+\textbf{Figure 2.} Condition C, unified joint-loss model. \(f_\theta\), \(g_\phi\), \(h_\psi\), \(\pi_\omega\), \(Q_\xi\), and \(V_\zeta\) are all trained concurrently; \(\mathcal{D}_{\text{human}}\) feeds \(\mathcal{L}_{\text{BC}}\) and \(\mathcal{D}_{\text{sim}}\) feeds \(\mathcal{L}_{\text{AWAC}}\), and both combine with \(\mathcal{L}_{\text{JEPA}}\) into \(\mathcal{L}_{\text{Joint}}\).
+
+\textbf{Representation-collapse risk (Condition C only).} \(\mathcal{L}_{\text{BC}}\) and \(\mathcal{L}_{\text{AWAC}}\) both backpropagate through \(f_\theta\), so \(f_\theta\) receives gradients from the policy losses at the same time as it receives gradients from \(\mathcal{L}_{\text{JEPA}}\). This is structurally the setup \citet{kenneweg2025jeparl} (Section 2.2) show can collapse: \(f_\theta\) settling on a constant (or near-constant) output paired with a predictor \(h_\psi\) that learns the identity map, which trivially drives \(\mathcal{L}_{\text{JEPA}}\) toward zero without \(\mathbf{z}_t\) carrying any task-relevant information. The EMA target encoder \(g_\phi\) (Section 4.4) is necessary to prevent the simpler failure mode where the \emph{same} encoder produces both sides of the JEPA loss, but \citeauthor{kenneweg2025jeparl}'s result shows a momentum target encoder alone does not rule out collapse once policy gradients are also flowing into \(f_\theta\); their setup already has this asymmetry and still collapses without an added regularizer. Condition B does not carry this risk, since Stage 2 trains \(f_\theta\) with no simulator-connected RL signal, only the fixed teacher's actions.
+
+\textbf{Proposed mitigation.} Add an explicit variance/covariance regularization term on \(\mathbf{z}_t\) within a training batch, following \citeauthor{kenneweg2025jeparl}'s batch-wise variance penalty (itself in the VICReg family): a term that penalizes the encoder whenever the per-dimension standard deviation of \(\mathbf{z}_t\) across the batch falls below a fixed threshold, added to \(\mathcal{L}_{\text{Joint}}\) with its own weight \(\lambda_{\text{var}}\). This is a diagnostic as much as a fix: batch-wise latent variance should be logged throughout Condition C training regardless of whether the regularizer is enabled, since a collapsing \(\mathbf{z}_t\) would otherwise present as a silent failure, low \(\mathcal{L}_{\text{JEPA}}\) that looks like successful training rather than an empty representation. If variance collapse is observed even with the regularizer, a second fallback is to stop-gradient \(f_\theta\) with respect to \(\mathcal{L}_{\text{BC}}\) and \(\mathcal{L}_{\text{AWAC}}\) specifically (train the decoder and critics on top of a representation shaped only by \(\mathcal{L}_{\text{JEPA}}\)), which removes the shared-gradient condition entirely at the cost of the ``tighter latent-policy alignment'' Condition C is meant to test for (Section 5's stated trade-off); this fallback would need to be reported as a deviation from the originally proposed Condition C if used.
+
+\textbf{Stated trade-off:} B minimizes simulator time (matches the project's priority of reducing MAPPO/self-play sample complexity); C requires ongoing simulator interaction to keep its \(\mathcal{D}_{\text{sim}}\) replay buffer current for the AWAC term, an off-policy but still simulator-dependent regime (Section 4.1), and may achieve tighter latent-policy alignment in exchange. This tension is the project's second sub-question, not an implementation detail.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{training-roadmap}{%
+\section{Training Roadmap}\label{training-roadmap}}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  \textbf{Phase 1: Heuristic warm-up.} IDM (longitudinal) + Pure Pursuit (lateral) generate a coherent initial trajectory buffer, avoiding a cold-start chaotic-noise buffer.
+\item
+  \textbf{Phase 2: IPPO/MAPPO training in Gigaflow/GPUDrive (Condition A).} Reuse a released policy or retrain PufferDrive-compatible.
+\item
+  \textbf{Phase 3: Branch to Condition B or C.}
+\item
+  \textbf{Optional dual-pool variant} (B and C): blend a small human-driving dataset (behavior-cloning anchor, e.g., 20/80 human/sim ratio) to seed human-like style.
+\end{enumerate}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{evaluation-strategy-and-falsification-criteria}{%
+\section{Evaluation Strategy and Falsification Criteria}\label{evaluation-strategy-and-falsification-criteria}}
+
+\textbf{2$\times$2 design} (online rollout x offline replay), applied identically to Conditions A, B, C, using PufferDrive (online + Waymo human-replay mode) and the Waymo Open Motion Dataset (offline).
+
+\begin{longtable}{@{}p{0.20\textwidth}p{0.38\textwidth}p{0.38\textwidth}@{}}
+\toprule
+ & \textbf{Online (PufferDrive/GPUDrive rollout)} & \textbf{Offline (Waymo replay)} \\
+\midrule
+\endhead
+\bottomrule
+\textbf{Accuracy} & Collision rate, success rate, jerk/comfort & FQE, PDIS return estimate vs.~human baseline; human-replay (WOSAC/ego-only) collision and success rate \\[4pt]
+\textbf{Sample complexity} & Performance vs.~cumulative simulator-steps curve, not a single endpoint & Measured during training, not at eval time \\
+\end{longtable}
+
+\textbf{Robustness axis:} inject synthetic sensor noise/occlusion into PufferDrive observations at eval time (jitter, dropout, masked/missing agents) and compare degradation curves across A/B/C. This directly tests whether JEPA's noise-filtering claim materializes in this setting.
+
+\textbf{Falsification criterion:} the hybrid hypothesis is falsified if Condition A (IPPO/MAPPO alone, optionally with behavior-cloning fine-tuning on human data) matches or beats \textbf{both} B and C on accuracy \textbf{and} on the sample-complexity curve, \textbf{and} shows no meaningfully worse degradation under synthetic noise/occlusion. All three axes must favor A for a clean falsification; a win on one axis only is a partial, reportable result.
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+\hypertarget{open-questions-and-immediate-next-steps}{%
+\section{Open Questions and Immediate Next Steps}\label{open-questions-and-immediate-next-steps}}
+
+\begin{enumerate}
+\def\labelenumi{\arabic{enumi}.}
+\tightlist
+\item
+  Confirm whether Gigaflow's or GPUDrive's released policy weights are directly usable as Condition A / the Phase 2-3 teacher, or whether a PufferDrive-native retrain is required for pipeline compatibility.
+\item
+  Fix the synthetic noise/occlusion injection protocol (distribution of \(\eta_t\), occlusion duration/frequency) before running any condition, so all three see identical corruption.
+\item
+  Decide whether B and C are both run in the first experiment round, or B is prioritized first (cheaper, directly serves the sample-complexity-minimization goal), with C deferred pending B's results.
+\item
+  \textbf{Perceptual-input extension (motivated by Section 1's moderating-variable hypothesis):} once the vector-state result is in hand, repeat the same A/B/C comparison with camera and/or LiDAR observations in place of privileged state vectors (e.g., swapping in a V-JEPA-2-style visual encoder as the context/target encoder pair). The prediction under the motivating hypothesis is that the accuracy and robustness gap between the JEPA-based conditions (B, C) and the raw-observation baseline (A) should \emph{widen} relative to the vector-state result, since perceptual input carries more task-irrelevant variance for a policy to overfit to. This is future work, not part of the current experiment round, but should be flagged early since it affects what infrastructure choices (e.g., simulator rendering fidelity) are worth investing in now.
+\end{enumerate}
+
+\begin{center}\rule{0.5\linewidth}{0.5pt}\end{center}
+
+
+\bibliographystyle{plainnat}
+\bibliography{references}
+
+\end{document}
