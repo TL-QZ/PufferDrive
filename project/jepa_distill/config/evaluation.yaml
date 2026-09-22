@@ -1,0 +1,38 @@
+# Standalone student evaluation through the existing PufferLib evaluator.
+# Resolve from the student checkpoint's effective configuration and layout.
+student_checkpoint: null # Required Condition B checkpoint, not a PPO checkpoint.
+benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
+benchmarks: [carla]
+population: student_self_play
+action_selection: mean
+execution_horizon: 1
+seed: 42
+num_scenarios: null # Required positive limit before evaluation.
+output_root: experiments/jepa_distill/runs
+run_id: null # Required student run; never write into the teacher run.
+output_name: native_dt03
+device: cuda:0
+amp: false
+compile: false
+env_overrides:
+  action_type: continuous
+  dt: 0.3
+  obs_dropout_lane: 0.0
+  obs_dropout_boundary: 0.0
+  partner_blindness_prob: 0.0
+  partner_blindness_trigger_prob: 0.0
+  phantom_braking_prob: 0.0
+  phantom_braking_trigger_prob: 0.0
+
+# A separate explicitly enabled report; never mix its scores with native dt.
+transfer:
+  enabled: false
+  dt: 0.1
+  output_name: transfer_dt01
+  resample_replay_to_dt: false
+
+wandb:
+  enabled: true
+  identity_source: student_checkpoint # Fail if absent; explicitly disable for local-only eval.
+  # Reuse checkpoint project/entity/run ID and mode, never teacher identity.
+  # Periodic evaluation uses the training-owned monitor without closing it.

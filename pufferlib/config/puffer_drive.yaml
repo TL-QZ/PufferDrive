@@ -253,7 +253,7 @@ train:
   # Lower bound on the batch size in transitions. Null means no lower bound.
   min_batch_size: null
   minibatch_size: 65536
-  # Accumulate gradients above this size
+  # Accumulate gradients above this sizeyes
   max_minibatch_size: 65536
   bptt_horizon: 128
   compile: false

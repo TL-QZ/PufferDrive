@@ -1,0 +1,105 @@
+# Planned two-GPU Condition B recipe; distributed execution is not implemented yet.
+# Collection/vec counts and training.batch_size are PER GPU; updates are synchronized.
+# Before launch: implement DDP, streaming collection, and gradient accumulation;
+# size disk/validation budgets and measure a safe microbatch size.
+teacher:
+  checkpoint: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/final_model.pt
+  config: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/config.yaml
+env_overrides:
+  action_type: continuous
+  dt: 0.3
+  obs_dropout_lane: 0.0
+  obs_dropout_boundary: 0.0
+  partner_blindness_prob: 0.0
+  partner_blindness_trigger_prob: 0.0
+  phantom_braking_prob: 0.0
+  phantom_braking_trigger_prob: 0.0
+  num_agents: 3200 # Per Drive instance; 20 instances = 64,000 agent slots per GPU.
+collection:
+  driver: teacher
+  num_collections: 15
+  action_selection: sample
+  split_seeds:
+    train: 0
+    validation: 1
+    test: 2
+  dataset_id: null
+  transitions_per_round: 8192000 # 64,000 slots x 128 simulator steps per GPU.
+  max_transitions: 122880000 # Per GPU: 15 rounds; 245,760,000 across two GPUs.
+  max_disk_bytes: 4294967296 # Existing guard only; must be resized for streaming/retention design.
+  shard_transition_count: 65536
+  output_root: experiments/jepa_distill/datasets
+  split: train
+model:
+  chunk_length: 4
+  execution_horizon: 1
+  latent_dim: 1024
+  num_action_classes: 12
+  decoder_hidden_sizes:
+  - 256
+  predictor_hidden_sizes:
+  - 1024
+  - 1024
+  activation: relu
+loss:
+  temperature: 1.0
+  distillation_weight: 1.0
+  jepa_weight: 1.0
+  variance_weight: 0.1
+  variance_floor: 1.0
+  epsilon: 1.0e-06
+ema:
+  tau: 0.99
+training:
+  seed: 0
+  device: cuda:0 # Future DDP launcher must select cuda:LOCAL_RANK.
+  batch_size: 128000 # Effective windows/update/GPU; global batch = 256,000 windows.
+  microbatch_size: null # Planned accumulation setting; choose with a GPU memory test.
+  update_epochs: 50
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+  optimizer: AdamW
+  amp: false
+  compile: false
+  distributed: true # Intentionally rejected by the current single-GPU trainer.
+  world_size: 2 # Planned torchrun process count; not consumed by the current launcher.
+  validation_manifest: null
+  run_id: null
+  max_optimizer_steps: 48000 # Nominal cap: (8,192,000 / 128,000) x 50 x 15.
+  validation_interval_steps: 50
+  checkpoint_interval_steps: 50
+  resume_checkpoint: null
+  output_root: experiments/jepa_distill/runs
+  validation_transitions: 8192 # Revisit with separate bounded validation workers before DDP launch.
+  cpu_threads: 1
+wandb:
+  enabled: true
+  mode: online
+  project: pufferdrive
+  entity: null
+  group: jepa_distill
+  name: null
+  tags:
+  - jepa_distill
+  - condition_b
+  log_interval_steps: 10
+  diagnostics_interval_steps: 100
+vec:
+  backend: Multiprocessing
+  num_envs: 20 # Per GPU; 40 Drive instances across the job.
+  num_workers: 20
+  batch_size: 20 # Full synchronous batch required by the current Condition B collector.
+
+driving_evaluation:
+  enabled: true
+  interval_steps: 50
+  benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
+  benchmarks: [carla]
+  population: student_self_play
+  action_selection: mean
+  execution_horizon: 1
+  seed: 42
+  num_scenarios: 16
+  episode_timesteps: 500
+  output_name: training_native

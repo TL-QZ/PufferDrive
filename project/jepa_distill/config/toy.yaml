@@ -1,0 +1,28 @@
+extends: condition_b.yaml
+env_overrides:
+  num_agents: 32
+  max_agents_per_env: 16
+  scenario_length: 64
+  resample_frequency: 256
+collection:
+  num_collections: 2
+  transitions_per_round: 4096
+  max_transitions: 8192
+  max_disk_bytes: 1073741824
+  shard_transition_count: 4096
+training:
+  batch_size: 128
+  max_optimizer_steps: 64
+  validation_interval_steps: 5
+  checkpoint_interval_steps: 5
+  validation_transitions: 2048
+wandb:
+  project: pufferdrive-jepa-distill-toy
+  group: end-to-end-toy
+  log_interval_steps: 1
+  diagnostics_interval_steps: 5
+
+driving_evaluation:
+  interval_steps: 20
+  num_scenarios: 2
+  episode_timesteps: 64

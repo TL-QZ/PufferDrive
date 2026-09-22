@@ -1,0 +1,107 @@
+// Source of truth for the figure; regenerate with render_pipeline.sh.
+// Modules are intentionally shown as whole networks, not backbone internals.
+// texlbl is actual LaTeX, rendered by dot2tex; label is a plain-text fallback.
+digraph condition_b {
+  graph [rankdir=TB, bgcolor="white", fontname="DejaVu Sans", fontsize=20,
+         label="Condition B | Teacher collection and JEPA distillation", labelloc=t,
+         pad=0.35, nodesep=0.38, ranksep=0.65, splines=polyline, compound=true];
+  node [shape=box, style=filled, fillcolor="#F1F5F9", color="#94A3B8",
+        fontname="DejaVu Sans", fontsize=12, fontcolor="black", margin="0.18,0.12", penwidth=1.2];
+  edge [color="#52647A", fontname="DejaVu Sans", fontsize=10, fontcolor="black", arrowsize=0.75];
+
+  subgraph cluster_collection {
+    label="1  COLLECT WITH THE FROZEN TEACHER"; labeljust=l;
+    fontsize=15; color="#CBD5E1"; style=solid; margin=0;
+    teacher [label="Frozen PPO teacher\nobserves each successive state", texlbl="\shortstack{Frozen PPO teacher\\observes each successive state}", fillcolor="#EDE9FE", color="#8B5CF6"];
+    simulator [label="PufferDrive simulator\nstep all controlled agents", texlbl="\shortstack{PufferDrive simulator\\step all controlled agents}", fillcolor="#E2E8F0"];
+    windows [label="Collected trajectory windows\nK + 1 observations, K executed actions, K teacher logits\nreject reset / termination crossings", texlbl="\shortstack{Collected trajectory windows\\K + 1 observations, K executed actions, K teacher logits\\reject reset / termination crossings}", fillcolor="#F1F5F9"];
+    {rank=same; label=""; teacher; simulator;}
+    teacher -> simulator [label="sample category\nnormalized control a_s", texlbl="\shortstack{sample category\; $\rightarrow$\\normalized control $a_s$}"];
+    simulator -> teacher [label="next observation o_s+1", texlbl="next observation $o_{s+1}$", constraint=false, color="#7C3AED"];
+    simulator -> windows [label="observations +\nexecuted actions", texlbl="\shortstack{observations +\\executed actions}"];
+    teacher -> windows [label="teacher logits at each step"];
+  }
+
+  subgraph cluster_training {
+    label="2  STUDENT TRAINING"; labeljust=l;
+    fontsize=15; color="#93C5FD"; style=solid; margin=0;
+
+    minibatch [label="Training minibatch\nB windows; K = 4; latent width = 1024", texlbl="\shortstack{Training minibatch\\$B$ windows; $K=4$; latent width $=1024$}", fillcolor="#F1F5F9"];
+    current_obs [label="Current observation\no_t", texlbl="\shortstack{Current observation\\$o_t$}"];
+    logged_actions [label="Executed, logged actions\na_t:t+K-1 [K x 2]", texlbl="\shortstack{Executed, logged actions\\$a_{t:t+K-1}\quad[K\times2]$}"];
+    future_obs [label="Future observation\no_t+K", texlbl="\shortstack{Future observation\\$o_{t+K}$}"];
+    teacher_logits [label="Teacher logits\n[K x 12]", texlbl="\shortstack{Teacher logits\\$[K\times12]$}", fillcolor="#EDE9FE", color="#8B5CF6"];
+    {rank=same; label=""; current_obs; logged_actions; future_obs;}
+
+    encoder [label="State encoder\ninitialized from teacher actor backbone", texlbl="\shortstack{State encoder $f_\theta$\\\scriptsize initialized from teacher actor backbone}",
+             fillcolor="#DBEAFE", color="#3B82F6"];
+    target_encoder [label="Target encoder\nEMA weights; no gradients", texlbl="\shortstack{Target encoder $f_{\bar\theta}$\\\scriptsize EMA weights; no gradients}",
+                    fillcolor="#EDE9FE", color="#8B5CF6"];
+    {rank=same; label=""; encoder; target_encoder;}
+    latent [label="Current latent\nz_t [1024]", texlbl="\shortstack{Current latent\\$z_t\quad[1024]$}"];
+    target_latent [label="Target endpoint latent\nz_bar [1024]\nstop-gradient", texlbl="\shortstack{Target endpoint latent\\$\bar z_{t+K}\quad[1024]$\\\scriptsize stop-gradient}",
+                   fillcolor="#EDE9FE", color="#8B5CF6"];
+    decoder [label="Action chunking decoder", fillcolor="#DBEAFE", color="#3B82F6"];
+    predictor [label="JEPA predictor", fillcolor="#DBEAFE", color="#3B82F6"];
+    {rank=same; label=""; decoder; predictor;}
+    decoder -> predictor [style=invis, weight=30];
+    student_logits [label="Predicted action logits\nK distributions x 12 categories", texlbl="\shortstack{Predicted action logits\\$K$ distributions $\times\,12$ categories}"];
+    prediction [label="Predicted endpoint latent\nz_hat [1024]", texlbl="\shortstack{Predicted endpoint latent\\$\hat z_{t+K}\quad[1024]$}"];
+    {rank=same; label=""; teacher_logits; student_logits; prediction; target_latent;}
+    teacher_logits -> student_logits -> prediction -> target_latent [style=invis, weight=30];
+
+    distill [label="Distillation loss\nT^2 x soft cross-entropy\nstudent vs. teacher distributions", texlbl="\shortstack{Distillation loss\\$T^2\times$ soft cross-entropy\\student vs. teacher distributions}", fillcolor="#FFF1D6", color="#D99A22"];
+    jepa [label="JEPA loss\nsquared L2 distance between\nunit-normalized endpoint latents", texlbl="\shortstack{JEPA loss\\squared $L_2$ distance between\\unit-normalized endpoint latents}", fillcolor="#FFF1D6", color="#D99A22"];
+    variance [label="Variance penalty\nlow batch standard deviation\nof unnormalized z_t", texlbl="\shortstack{Variance penalty\\low batch standard deviation\\of unnormalized $z_t$}", fillcolor="#FFF1D6", color="#D99A22"];
+    {rank=same; label=""; distill; jepa;}
+    distill -> jepa [style=invis, weight=30];
+    {rank=same; label=""; latent; variance;}
+    total [label="Total loss = L_distill + L_JEPA + 0.1 L_var\nAdamW updates state encoder + decoder + predictor\nAfter each successful update: EMA target update",
+           texlbl="\shortstack{$\mathcal L=\mathcal L_{\mathrm{distill}}+\mathcal L_{\mathrm{JEPA}}+0.1\mathcal L_{\mathrm{var}}$\\AdamW updates state encoder + decoder + predictor\\After each successful update: $\bar\theta\leftarrow0.99\bar\theta+0.01\theta$}",
+           fillcolor="#DCFCE7", color="#22A06B"];
+    schedule [shape=note, label="Collection schedule\nCollect, run update_epochs passes, then collect fresh interactions\nKeep student / optimizer / EMA; teacher remains frozen\nHeld-out validation uses separate seeds and no updates", texlbl="\shortstack{Collection schedule\\Collect, run update\_epochs passes, then collect fresh interactions\\Keep student / optimizer / EMA; teacher remains frozen\\Held-out validation uses separate seeds and no updates}",
+              fillcolor="#F8FAFC", color="#94A3B8"];
+
+    current_obs -> encoder;
+    encoder -> latent;
+    future_obs -> target_encoder;
+    target_encoder -> target_latent;
+    encoder -> target_encoder [label="EMA parameter update", style=dashed, color="#7C3AED", fontcolor="violet", constraint=false];
+    latent -> decoder;
+    latent -> predictor;
+    logged_actions -> predictor [label="condition on actual controls"];
+    decoder -> student_logits;
+    predictor -> prediction;
+    teacher_logits -> distill;
+    student_logits -> distill;
+    prediction -> jepa;
+    target_latent -> jepa;
+    latent -> variance;
+    distill -> total;
+    jepa -> total;
+    variance -> total;
+    total -> schedule [style=dotted, arrowhead=none, label="repeat for configured collection rounds"];
+  }
+
+  windows -> minibatch [weight=30];
+  minibatch -> current_obs;
+  minibatch -> logged_actions;
+  minibatch -> future_obs;
+  minibatch -> teacher_logits [color="#8B5CF6"];
+
+  subgraph cluster_deployment {
+    label="3  DEPLOY / EVALUATE | H = 1: observe again after every action"; labeljust=l;
+    fontsize=15; color="#A7D7BF"; style=solid; margin=0;
+    live_obs [label="Live observation"];
+    live_encoder [label="State encoder", fillcolor="#DBEAFE", color="#3B82F6"];
+    live_decoder [label="Chunk decoder", fillcolor="#DBEAFE", color="#3B82F6"];
+    execute [label="Slot-zero distribution\nconvert to control and execute\nevaluation: mean action", texlbl="\shortstack{Slot-zero distribution\\convert to control and execute\\evaluation: mean action}", fillcolor="#DCFCE7", color="#22A06B"];
+    next_obs [label="Next observation\nrepeat at t + 1", texlbl="\shortstack{Next observation\\repeat at $t+1$}"];
+    {rank=same; label=""; live_obs; live_encoder; live_decoder; execute; next_obs;}
+    live_obs -> live_encoder -> live_decoder -> execute;
+    execute -> next_obs [label="simulator step"];
+  }
+  schedule -> live_decoder [style=invis, weight=30];
+  legend [shape=plaintext, label="BLUE  trainable student modules     PURPLE  frozen / EMA targets     AMBER  losses\nSolid arrows: tensor / interaction flow     Dashed arrow: parameter update\nThe decoder's predicted actions do not feed the JEPA predictor during training.", texlbl="\shortstack{BLUE  trainable student modules     PURPLE  frozen / EMA targets     AMBER  losses\\Solid arrows: tensor / interaction flow     Dashed arrow: parameter update\\The decoder's predicted actions do not feed the JEPA predictor during training.}", fontsize=11];
+  live_decoder -> legend [style=invis, weight=30];
+}

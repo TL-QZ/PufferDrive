@@ -1,7 +1,11 @@
-# Condition B — method and implementation plan
+# Condition B — repeated teacher collection and student training
 
-**Status:** decisions incorporated; implementation not started. Updated 2026-09-18.
-**First milestone:** collect teacher trajectories → train offline → evaluate the student end to end. Tune performance after this works.
+**Pipeline diagram:** [SVG](figures/condition_b_pipeline.svg) · [PDF](figures/condition_b_pipeline.pdf) · [editable source and regeneration](figures/README.md).
+
+**Status:** training, validation, resume, driving evaluation, and online toy monitoring implemented and verified. Updated 2026-09-19.
+**First milestone:** repeat **collect fresh teacher interactions → train student → collect again**, then evaluate. Tune performance after this works.
+
+**Implementation:** [module contracts](implementation_plan.md) · [launch commands](running.md) · [verification evidence](verification.md).
 
 ## 1. Agreed design
 
@@ -13,6 +17,21 @@
 | JEPA | MLP predicts the normalized endpoint latent using the current latent and four executed, logged actions. |
 | Target / regularization | EMA **target encoder**, no target decoder; enable variance penalty and collapse diagnostics. |
 | First experiment | Faithful imitation; clean training; student controls all policy-controlled cars. Focal-student evaluation is optional later. |
+
+### Collection and reuse schedule
+
+| Control | Meaning | Initial setting |
+| --- | --- | --- |
+| `collection.num_collections` | Total fresh collection rounds, all driven by the frozen teacher | `1` |
+| `collection.transitions_per_round` | Fresh agent-transitions before student updates | Required launch choice |
+| `training.update_epochs` | Full shuffled passes over valid windows in each collection | `1` initially; set to the desired training epochs |
+| `training.batch_size` | Agent windows per optimizer minibatch | `256` |
+| `collection.max_transitions` | Total interaction budget across repeated rounds | Required launch choice |
+
+- Like PPO's collection/update schedule: collect one batch, reuse it for `update_epochs`, then collect fresh interactions. This is supervised distillation, not a PPO policy update.
+- Keep the student, optimizer, EMA target, and live simulator across rounds. The teacher remains frozen; each new round advances to new interactions instead of restarting the same seed.
+- Train only on the current collection by default. Stored old shards are provenance/restart artifacts, not an accumulating replay buffer. Keep validation/test data fixed and separate.
+- Default `num_collections=1`: collect once and train for `update_epochs` full passes. Increase `num_collections` to alternate collection/training repeatedly. Without early budget stops, total training passes are `num_collections × update_epochs`; no separate `total_epochs` setting.
 
 **Selected teacher run:**
 
@@ -68,7 +87,7 @@ $$
 
 ## 3. Data contract
 
-**Proposed collection default:** sample the teacher's categorical distribution, convert through its action table, and store the full logits. This matches PPO sampling; collection mode remains configurable. Mean-action evaluation is specified separately below.
+**Collection default:** the frozen teacher drives every round. Sample its categorical distribution, convert through its action table, and store full logits. Mean-action evaluation is specified separately below.
 
 | Stored data | Required rule |
 | --- | --- |
@@ -78,11 +97,12 @@ $$
 | Validity | Require five valid observations and four transitions. Reject termination/truncation crossings and missing endpoints; no padding. Count rejection reasons. |
 | Manifest and splits | Record checkpoint hash, effective config, action tables, code revision, seeds, shapes, counts, and collection mode. Split complete generated episodes by disjoint seeds before indexing windows. |
 
-- Start with a direct, bounded `Drive` collector; stream float32 observations/logits/controls into NumPy shards with a JSON manifest. Avoid duplicating overlapping windows on disk.
+- Use a live bounded `Drive` collector; stream each round into separate float32 NumPy shards and a manifest. Avoid duplicating overlapping windows. Drop/count incomplete windows at round cutoffs rather than mixing rounds.
 - Do not export flattened PPO minibatches: they lack the full teacher distribution and reliable trajectory identity.
 - `Drive.step()` returns outcomes of the action just sent. C autoresets and Python map resampling may replace the endpoint; masks are computed before movement. Prove boundary/eligibility alignment before accepting windows.
 - Use `agent_offsets`/map grouping and reset events for scene generations. Add a minimal explicit lifetime signal only if existing state cannot establish continuity; never infer it from a reused slot alone.
 - CARLA validation initially uses held-out generated episodes on the same eight maps; this is **not** an unseen-map generalization test.
+- During training, also measure student driving in fresh simulator episodes through the existing PPO evaluator: every 50 optimizer updates and at completion (toy: every 20). Held-out losses measure imitation/representation quality; simulator metrics measure the main driving task. See [cadence and budgets](running.md#driving-evaluation-during-training).
 
 ## 4. Implementation sequence
 
@@ -90,9 +110,9 @@ All new paths below are under `project/jepa_distill/`. Keep existing PPO behavio
 
 | Step | Files / work | Done when |
 | --- | --- | --- |
-| **1. Teacher + dataset** | `config/condition_b.yaml`, `collect.py`, `dataset.py`: resolve saved config, load frozen teacher, stream shards, validate and index windows. | Small seeded collection reproduces logits/controls; windows never cross reset/removal boundaries; invalid config fails before collection. |
+| **1. Teacher + dataset** | `config/condition_b.yaml`, `teacher.py`, `collect.py`, `dataset.py`: resolve saved config, load frozen teacher, stream shards, validate and index windows. | Small seeded collection reproduces logits/controls; windows never cross reset/removal boundaries; invalid config fails before collection. |
 | **2. Student + objectives** | `model.py`: backbone copy, decoder, predictor, target encoder, losses and EMA. | Shapes match; student backbone initially matches teacher; gradient ownership and one-step EMA arithmetic verified. |
-| **3. Offline training** | `train.py`: AdamW, seeded minibatches, validation, collapse logging, checkpoints/resume. | Tiny diverse batch overfits distillation; all losses stay finite; save/resume reproduces the next update. No simulator needed during training. |
+| **3. Collection/update loop** | `train.py`: repeated teacher collection, `update_epochs` passes, AdamW, validation, collapse logging, checkpoints/resume. | Two rounds use fresh interactions and retain student/optimizer/EMA state; update counts match epochs; replaying a saved batch reproduces the next optimizer update. |
 | **4. Evaluation adapter** | `evaluate.py`, `config/evaluation.yaml`: expose slot-zero policy through existing evaluation API and action conversions. | Teacher and student run identical small CARLA scenarios; student controls every policy-controlled vehicle; reports go to the student run. |
 | **5. Baselines + tuning** | `tests/`, then `sweep.py` and a bounded search config after the pipeline passes. | Compare teacher, distillation+variance, and full B; identical splits/seeds/budgets. Search ranks held-out results and preserves a final test split. |
 
@@ -106,8 +126,9 @@ All new paths below are under `project/jepa_distill/`. Keep existing PPO behavio
 | [`evaluation_benchmarks.yaml`](../../baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml) | Reuse benchmark definitions and metrics. Resolve checkpoint/config overrides explicitly before evaluation. |
 
 - Proposed smoke defaults: one GPU, no DDP/compile/AMP initially; AdamW `lr=1e-4`, `weight_decay=0`, batch `256`, gradient clip `1`, loss weights `(1,1,0.1)`, variance floor `gamma=1`, `epsilon=1e-6`.
-- Save online/target/predictor/decoder weights, optimizer, step, RNG and sampler state, resolved config, and dataset identity. Keep student resume separate from teacher initialization.
+- Save student/target/predictor/decoder, optimizer, RNG/sampler, round index, epoch/minibatch progress, total interactions, and current collection identity. Exact simulator resume is distinct from replaying saved optimizer batches; document any fresh-episode restart. Never resume teacher PPO training.
 - Log loss components, teacher KL by slot, latent standard deviations/norms, periodic effective rank, gradient norms, validation metrics, and throughput.
+- W&B monitoring: a dedicated student run logs training, validation, representation health, progress, and driving evaluation. Preserve its identity in student checkpoints; never reuse the teacher run. See the [monitoring contract](implementation_plan.md#8-wb-monitoring) and [monitoring.py](../monitoring.py).
 - Outputs: `experiments/jepa_distill/datasets/<dataset_id>/` and `experiments/jepa_distill/runs/<run_id>/`; never write student results into the teacher run.
 - No C changes planned initially. If a boundary signal requires `.c/.h` edits, rebuild with `python setup.py build_ext --inplace --force` and check existing behavior.
 
@@ -133,7 +154,7 @@ These do not block implementing the pipeline. Resolve them before a large collec
 | Choice | Starting recommendation | Your adjustment |
 | --- | --- | --- |
 | Collection behavior | Sampled categorical actions; retain soft logits | |
-| Budget | Set transition/disk limit, optimizer-step limit, GPU count and search-trial cap after a bounded storage/throughput check | |
+| Budget | Set transitions per round, total transition/disk limits, optimizer-step limit, GPU count and search-trial cap after a bounded storage/throughput check | |
 | Success threshold | Choose acceptable teacher-to-student collision/progress gap before ranking search results | |
 
 **Next implementation task:** Step 1 — teacher loading and a small validated trajectory dataset.
