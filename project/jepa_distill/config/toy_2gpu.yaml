@@ -1,0 +1,50 @@
+# Exercises two fresh collections, accumulation, evaluation, checkpoints, and W&B.
+extends: condition_b.yaml
+env_overrides:
+  num_agents: 32
+  max_agents_per_env: 16
+  scenario_length: 64
+  resample_frequency: 256
+collection:
+  num_collections: 2
+  transitions_per_round: 4096
+  max_transitions: 8192
+  max_disk_bytes: 1073741824
+  inference_batch_size: 1024
+training:
+  batch_size: 2048
+  microbatch_size: 1024
+  update_epochs: 2
+  max_optimizer_steps: 16
+  validation_interval_steps: 2
+  checkpoint_interval_steps: 2
+  validation_transitions: 2048
+validation:
+  env_overrides:
+    num_agents: 32
+    max_agents_per_env: 16
+    scenario_length: 64
+    resample_frequency: 256
+vec:
+  backend: Multiprocessing
+  num_envs: 2
+  num_workers: 2
+  batch_size: 2
+driving_evaluation:
+  benchmarks: [carla]
+  interval_update_epochs: 2 # Match the toy's two training passes per collection.
+  num_scenarios: 2
+  episode_timesteps: 64
+  num_agents: 32
+  env_overrides:
+    max_agents_per_env: 16
+  vec_overrides:
+    num_envs: 2
+    num_workers: 2
+    batch_size: 2
+wandb:
+  entity: tobieliu825
+  project: pufferdrive-jepa-distill-toy
+  group: two-gpu-toy
+  log_interval_steps: 1
+  diagnostics_interval_steps: 2

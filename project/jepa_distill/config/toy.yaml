@@ -11,6 +11,9 @@ collection:
   max_disk_bytes: 1073741824
   shard_transition_count: 4096
 training:
+  distributed: false
+  world_size: 1
+  update_epochs: 1
   batch_size: 128
   max_optimizer_steps: 64
   validation_interval_steps: 5
@@ -23,6 +26,16 @@ wandb:
   diagnostics_interval_steps: 5
 
 driving_evaluation:
+  benchmarks: [carla]
   interval_steps: 20
   num_scenarios: 2
   episode_timesteps: 64
+  vec_overrides:
+    num_envs: 2
+    num_workers: 2
+    batch_size: 2
+vec:
+  backend: Multiprocessing
+  num_envs: 2
+  num_workers: 2
+  batch_size: 2

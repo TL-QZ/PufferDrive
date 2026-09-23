@@ -337,6 +337,28 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
     CPU simulator workers remain alive between rounds. Held-out data is fixed;
     optimizer, student, target encoder, and monitoring identity span all rounds.
     """
+    settings_for_dispatch = config.get('training', {}) if isinstance(config, Mapping) else {}
+    if isinstance(settings_for_dispatch, Mapping) and settings_for_dispatch.get('distributed'):
+        from .distributed_train import train_distributed
+
+        return train_distributed(
+            config,
+            validation_batches=validation_batches,
+            teacher=teacher,
+            student=student,
+            env=env,
+            monitor=monitor,
+        )
+    launcher_world_size = os.environ.get('WORLD_SIZE')
+    if launcher_world_size is not None:
+        try:
+            launcher_world_size_value = int(launcher_world_size)
+        except ValueError as exc:
+            raise ValueError(f'WORLD_SIZE must be an integer, got {launcher_world_size!r}') from exc
+        if launcher_world_size_value > 1:
+            raise RuntimeError(
+                'WORLD_SIZE>1 requires training.distributed=true; refusing to run the legacy single-GPU trainer'
+            )
     from copy import deepcopy
     import json
     import time
@@ -736,11 +758,15 @@ def main():
     config = load_config(arguments.config, arguments.set)
     if arguments.run_id:
         config['training']['run_id'] = arguments.run_id
-    if config['training']['run_id'] is None:
+    distributed_launch = bool(config.get('training', {}).get('distributed'))
+    if config['training']['run_id'] is None and not distributed_launch:
         config['training']['run_id'] = 'condition_b_' + datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S_%f')
     if arguments.wandb_disabled:
         config['wandb']['enabled'] = False
-    print(json.dumps(train(config), indent=2))
+    result = train(config)
+    launcher_world_size = int(os.environ.get('WORLD_SIZE', '1'))
+    if launcher_world_size == 1 or int(os.environ.get('RANK', '0')) == 0:
+        print(json.dumps(result, indent=2))
 
 
 if __name__ == '__main__':

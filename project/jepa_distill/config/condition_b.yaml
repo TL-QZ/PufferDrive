@@ -1,7 +1,6 @@
-# Planned two-GPU Condition B recipe; distributed execution is not implemented yet.
+# Two-GPU Condition B recipe. Launch with scripts/train_2gpu.sh.
 # Collection/vec counts and training.batch_size are PER GPU; updates are synchronized.
-# Before launch: implement DDP, streaming collection, and gradient accumulation;
-# size disk/validation budgets and measure a safe microbatch size.
+# Data is streamed to rank-local memory-mapped files; old collections are retained.
 teacher:
   checkpoint: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/final_model.pt
   config: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/config.yaml
@@ -26,7 +25,8 @@ collection:
   dataset_id: null
   transitions_per_round: 8192000 # 64,000 slots x 128 simulator steps per GPU.
   max_transitions: 122880000 # Per GPU: 15 rounds; 245,760,000 across two GPUs.
-  max_disk_bytes: 4294967296 # Existing guard only; must be resized for streaming/retention design.
+  max_disk_bytes: 1099511627776 # 1 TiB per rank, including retained rounds and validation.
+  inference_batch_size: 2048 # Bound teacher GPU inference memory during collection.
   shard_transition_count: 65536
   output_root: experiments/jepa_distill/datasets
   split: train
@@ -52,9 +52,10 @@ ema:
   tau: 0.99
 training:
   seed: 0
-  device: cuda:0 # Future DDP launcher must select cuda:LOCAL_RANK.
+  device: cuda:0 # Distributed launcher selects cuda:LOCAL_RANK.
   batch_size: 128000 # Effective windows/update/GPU; global batch = 256,000 windows.
-  microbatch_size: null # Planned accumulation setting; choose with a GPU memory test.
+  microbatch_size: 1024 # 125 accumulation passes per full effective batch.
+  variance_scope: microbatch # Local microbatch statistics, then averaged gradients across GPUs.
   update_epochs: 50
   learning_rate: 0.0001
   weight_decay: 0.0
@@ -62,8 +63,8 @@ training:
   optimizer: AdamW
   amp: false
   compile: false
-  distributed: true # Intentionally rejected by the current single-GPU trainer.
-  world_size: 2 # Planned torchrun process count; not consumed by the current launcher.
+  distributed: true
+  world_size: 2
   validation_manifest: null
   run_id: null
   max_optimizer_steps: 48000 # Nominal cap: (8,192,000 / 128,000) x 50 x 15.
@@ -71,8 +72,16 @@ training:
   checkpoint_interval_steps: 50
   resume_checkpoint: null
   output_root: experiments/jepa_distill/runs
-  validation_transitions: 8192 # Revisit with separate bounded validation workers before DDP launch.
+  validation_transitions: 8192
   cpu_threads: 1
+validation:
+  env_overrides:
+    num_agents: 128
+  vec:
+    backend: Multiprocessing
+    num_envs: 2
+    num_workers: 2
+    batch_size: 2
 wandb:
   enabled: true
   mode: online
@@ -93,13 +102,19 @@ vec:
 
 driving_evaluation:
   enabled: true
-  interval_steps: 50
+  interval_steps: 50 # Legacy single-GPU cadence; DDP uses completed reuse epochs below.
+  interval_update_epochs: 50 # Match training.update_epochs: evaluate after each collection's training.
   benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
-  benchmarks: [carla]
+  benchmarks: [carla_fast]
   population: student_self_play
   action_selection: mean
   execution_horizon: 1
   seed: 42
-  num_scenarios: 16
+  num_scenarios: 250 # Match the teacher PPO training benchmark.
   episode_timesteps: 500
   output_name: training_native
+  num_agents: 128
+  vec_overrides:
+    num_envs: 20 # Match teacher PPO evaluation parallelism (rank zero only).
+    num_workers: 20
+    batch_size: 20

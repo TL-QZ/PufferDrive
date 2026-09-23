@@ -102,7 +102,7 @@ $$
 - `Drive.step()` returns outcomes of the action just sent. C autoresets and Python map resampling may replace the endpoint; masks are computed before movement. Prove boundary/eligibility alignment before accepting windows.
 - Use `agent_offsets`/map grouping and reset events for scene generations. Add a minimal explicit lifetime signal only if existing state cannot establish continuity; never infer it from a reused slot alone.
 - CARLA validation initially uses held-out generated episodes on the same eight maps; this is **not** an unseen-map generalization test.
-- During training, also measure student driving in fresh simulator episodes through the existing PPO evaluator: every 50 optimizer updates and at completion (toy: every 20). Held-out losses measure imitation/representation quality; simulator metrics measure the main driving task. See [cadence and budgets](running.md#driving-evaluation-during-training).
+- During distributed training, measure student driving through the existing PPO evaluator after training on each collection: 50 reuse epochs for the full run, 2 for the two-GPU toy. Also evaluate at early completion unless the final weights were already evaluated. Held-out losses measure imitation/representation quality; simulator metrics measure driving. See [cadence and budgets](running.md#training-and-evaluation-order).
 
 ## 4. Implementation sequence
 
@@ -125,7 +125,7 @@ All new paths below are under `project/jepa_distill/`. Keep existing PPO behavio
 | [`drive/drive.py`](../../../pufferlib/ocean/drive/drive.py): `step`, `agent_offsets`, resampling | Establish transition/reset contract; test against actual environment behavior. |
 | [`evaluation_benchmarks.yaml`](../../baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml) | Reuse benchmark definitions and metrics. Resolve checkpoint/config overrides explicitly before evaluation. |
 
-- Proposed smoke defaults: one GPU, no DDP/compile/AMP initially; AdamW `lr=1e-4`, `weight_decay=0`, batch `256`, gradient clip `1`, loss weights `(1,1,0.1)`, variance floor `gamma=1`, `epsilon=1e-6`.
+- Distributed recipe: two GPUs; 8,192,000 transitions per GPU per collection, 50 reuse epochs, 15 collections, effective batch 128,000 windows per GPU. Accumulate 1,024-window microbatches; variance statistics are local to each microbatch. AdamW `lr=1e-4`, gradient clip `1`, loss weights `(1,1,0.1)`; AMP/compile disabled.
 - Save student/target/predictor/decoder, optimizer, RNG/sampler, round index, epoch/minibatch progress, total interactions, and current collection identity. Exact simulator resume is distinct from replaying saved optimizer batches; document any fresh-episode restart. Never resume teacher PPO training.
 - Log loss components, teacher KL by slot, latent standard deviations/norms, periodic effective rank, gradient norms, validation metrics, and throughput.
 - W&B monitoring: a dedicated student run logs training, validation, representation health, progress, and driving evaluation. Preserve its identity in student checkpoints; never reuse the teacher run. See the [monitoring contract](implementation_plan.md#8-wb-monitoring) and [monitoring.py](../monitoring.py).

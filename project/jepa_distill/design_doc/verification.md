@@ -1,5 +1,26 @@
 # Verification — 2026-09-19
 
+## Multi-GPU integration — 2026-09-22
+
+| Check | Evidence | Result |
+|---|---|---|
+| Full test suite | `OMP_NUM_THREADS=1 python -m pytest project/jepa_distill/tests -q` | **56 passed** |
+| Distributed tests | CPU/Gloo: accumulation reference, rank/EMA parity, unequal window counts, RNG/sampler restoration, rank-zero ownership | **5 passed** |
+| Streaming tests | Boundaries, round continuity, memmap batching, disk guards | **4 passed** |
+| Online two-GPU toy | `CUDA_VISIBLE_DEVICES=0,1 scripts/train_toy_2gpu.sh --run-id toy_2gpu_online_20260922_01` (scripts under `project/jepa_distill/`) | Exit 0; 2 collections per rank, 16,384 global transitions, 8 synchronized updates |
+| Driving evaluation during training | Steps 2, 4, 6, 8; 2 scenarios × 64 steps each | CSV/JSON reports written; no duplicate completion evaluation |
+| W&B remote verification | [Run wanv35un](https://wandb.ai/tobieliu825/pufferdrive-jepa-distill-toy/runs/wanv35un) API | Finished; training, validation, and four driving metric events confirmed |
+| Standalone streaming validation | `validate.sh --checkpoint .../final_model.pt --wandb-disabled` | Exact match to all final training-validation metrics; total loss 3.562208356528447 |
+| Two-GPU completed-checkpoint resume | Same toy launcher/run ID; resume `final_model.pt` with cap 8 | Exit 0; same W&B identity, no additional updates or driving evaluations |
+| Full launcher | `DRY_RUN=1 scripts/train_2gpu.sh --run-id full_2gpu` | Correct two-process command; official training **not launched** |
+
+- Run directory: `experiments/jepa_distill/runs/toy_2gpu_online_20260922_01/`.
+- Rank-local data and held-out manifest paths are recorded in the checkpoint. Memory-mapped `.npy` arrays replace full-round Python buffers; collections are retained.
+- Both RTX A6000 GPUs ran the configured 1,024-window microbatch. Full collection size, 40 simulator instances, and sustained throughput were not benchmarked by the toy.
+- The toy proves execution and reporting, not driving quality: its final reported score was 0 and offroad rate 0.84375 after only eight updates.
+- Real resume verification used a completed checkpoint; it did not benchmark long-run recovery or compare an interrupted multi-GPU training trajectory bit-for-bit.
+- NCCL emitted a nonfatal device-selection warning; the job and resume both completed successfully.
+
 ## Periodic driving integration — 2026-09-20
 
 - Full JEPA suite: **47 passed**, including **9 periodic-driving tests**.

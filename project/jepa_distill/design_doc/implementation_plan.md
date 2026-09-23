@@ -1,6 +1,6 @@
 # Condition B — implementation contracts
 
-**Status: implemented and verified, 2026-09-19.** See [running.md](running.md) for launch commands and [verification.md](verification.md) for test results and the completed online toy run. Supported scope: one GPU and multiple CPU simulation workers.
+**Current execution recipe:** see [running.md](running.md) for single-/multi-GPU launch commands and [verification.md](verification.md) for dated test and runtime evidence. The contracts below describe the original method; distributed batching and streaming details are in the run guide.
 
 **Read first:** [method decisions](condition_b_method.md), then the two tables below. Configurations: [training/collection](../config/condition_b.yaml) and [evaluation](../config/evaluation.yaml).
 
@@ -30,7 +30,7 @@
 - Removing road dropout changes retained slot counts. Build teacher and student against the same clean layout; check weight keys/shapes strictly. Persist layout metadata so offline training can construct the backbone without a live simulator.
 - Teacher loading uses only model weights, sets evaluation mode, and disables gradients. Load the complete Drive state dict for compatibility, but ignore its value output. Student construction copies only actor-backbone weights and initializes a separate EMA copy; the student excludes the PPO critic and optimizer.
 - Config files are explicit defaults, not working launchers. Validate required null fields and positive limits before runtime setup. Collection requires `dataset_id`, `transitions_per_round`, total transition/disk limits; training requires fixed `validation_manifest`, `run_id`, step limit and validation/checkpoint intervals; evaluation requires checkpoint, `run_id` and scenario count. `collection.num_collections=1` selects one fresh collection by default; `training.update_epochs` sets full passes over each collection.
-- Training uses one GPU initially, AdamW, no AMP/compile/DDP. YAML is authoritative; training passes its configured values explicitly to loss/EMA methods, whose convenience defaults match YAML. Reject incompatible dimensions, action types, schema, temperature, variance floor, epsilon, loss weights, and EMA momentum.
+- Training supports a legacy single-GPU path and a DDP path with accumulated microbatches; AdamW, no AMP/compile. YAML is authoritative; pass loss/EMA values explicitly. Reject incompatible dimensions, action types, schema, temperature, variance floor, epsilon, loss weights, and EMA momentum.
 
 ## 3. Dataset and collection
 

@@ -37,8 +37,15 @@ def main():
     identity = SimpleNamespace(condition_b_checkpoint_sha256=config['teacher_checkpoint_sha256'],
                                condition_b_observation_layout=student.observation_layout)
     validate_dataset_identity(manifest, identity, config, 'validation')
-    dataset = TrajectoryDataset(manifest_path.parent, split='validation', manifest=manifest)
-    batches = DataLoader(dataset, batch_size=config['training']['batch_size'], shuffle=False)
+    if manifest.get('dataset_format') == 'condition_b_streaming_npy_v1':
+        from .streaming import StreamingTrajectoryDataset
+        dataset = StreamingTrajectoryDataset(manifest_path)
+        batch_size = config.get('validation', {}).get(
+            'microbatch_size', min(config['training']['microbatch_size'], 1024))
+    else:
+        dataset = TrajectoryDataset(manifest_path.parent, split='validation', manifest=manifest)
+        batch_size = config['training']['batch_size']
+    batches = DataLoader(dataset, batch_size=batch_size, shuffle=False)
     metrics = validate(student, batches, config=config)
     report = {'checkpoint': str(resolve_path(arguments.checkpoint)), 'validation': dict(metrics), 'windows': len(dataset)}
     from .monitoring import MetricProgress, WandbMonitor

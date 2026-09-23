@@ -1,58 +1,66 @@
 # Run Condition B
 
-## Commands
+## Launch
 
-Run from the repository checkout; launchers activate `.venv`.
+Run from the repository root; scripts activate `.venv`. The full job is started by the user.
 
 | Task | Command |
 |---|---|
-| Bounded toy training | `project/jepa_distill/scripts/train_toy.sh` |
-| Default training | `project/jepa_distill/scripts/train.sh` |
-| Override collection reuse | `project/jepa_distill/scripts/train.sh --set collection.num_collections=2 --set collection.max_transitions=131072 --set training.update_epochs=2` |
-| Held-out validation | `project/jepa_distill/scripts/validate.sh --checkpoint experiments/jepa_distill/runs/<run_id>/final_model.pt` |
-| Disable remote logging | Append `--wandb-disabled` to a training command. Local metrics remain enabled. |
+| Two-GPU toy with W&B | `CUDA_VISIBLE_DEVICES=0,1 project/jepa_distill/scripts/train_toy_2gpu.sh --run-id YOUR_TOY_RUN` |
+| Full two-GPU training | `CUDA_VISIBLE_DEVICES=0,1 project/jepa_distill/scripts/train_2gpu.sh --run-id YOUR_FULL_RUN` |
+| Resume | Same launcher and run ID, plus `--set training.resume_checkpoint=experiments/jepa_distill/runs/YOUR_RUN/checkpoint.pt` |
+| Single-GPU legacy toy | `project/jepa_distill/scripts/train_toy.sh` |
+| Local logging only | Append `--wandb-disabled`; `metrics.jsonl` remains enabled |
 
-## Training order
+## Two-GPU recipe
 
-1. Resolve the teacher's saved config and clean observation layout; load and freeze teacher weights.
-2. Create the student, EMA target encoder, optimizer, and a dedicated W&B run. Collect a fixed validation set using its own seed.
-3. Collect a fresh teacher-driven training round. Index complete windows within agent lifetimes; exclude boundary crossings.
-4. Shuffle windows for each `training.update_epochs` pass. Optimize distillation + JEPA + variance losses; update EMA after each successful optimizer step.
-5. Run periodic student driving evaluation in separate simulator episodes; repeat collection as configured. Save final checkpoint, held-out losses, and driving results.
+All collection and effective batch counts below are **per GPU**. Both ranks perform synchronized optimizer updates.
 
-## Driving evaluation during training
-
-| Check | What it measures | Default / toy |
-|---|---|---|
-| Held-out validation | Losses and teacher KL on fixed teacher trajectories | Every 50 / 5 updates |
-| Student driving evaluation | Closed-loop driving with the student controlling all policy-controlled vehicles | Every 50 / 20 updates, plus completion |
-| Driving budget per evaluation | CARLA scenarios × maximum simulator steps per scenario | 16 × 500 / 2 × 64 |
-
-- Reuses the PPO simulator evaluator and its driving metrics. Executes chunk slot zero with mean-action selection, then observes again; uses native training `dt` and fixed evaluation seed 42.
-- Driving metrics go to the same student W&B run and local `metrics.jsonl`, under `eval/training_native/carla/student/*`. Detailed reports go under `eval/carla_training_native/training/step_*` in the student run. Evaluation interactions do not count toward teacher collection budgets.
-- Evaluation restores training modes and random-number state. Completion skips a duplicate evaluation when that optimizer step was already evaluated.
-- Set cadence with `--set driving_evaluation.interval_steps=100`; disable with `--set driving_evaluation.enabled=false`. Use standalone evaluation for larger final benchmarks.
-
-## Defaults and outputs
-
-| Setting | Default | Toy |
+| Setting | Full | Toy |
 |---|---:|---:|
-| Fresh training collections | 1 | 2 |
-| Agent transitions per collection | 65,536 | 4,096 |
-| Passes over each collection | 1 | 1 |
-| Maximum optimizer steps | 1,000 | 64 |
-| Held-out agent transitions | 8,192 | 2,048 |
-| CPU simulator workers | 2 | 2 |
-| Training GPUs | 1 | 1 |
+| Drive instances × agent slots | 20 × 3,200 | 2 × 32 |
+| Transitions per fresh collection | 8,192,000 | 4,096 |
+| Maximum collections | 15 | 2 |
+| Passes over each collection | 50 | 2 |
+| Effective windows per optimizer update | 128,000 | 2,048 |
+| Microbatch windows | 1,024 | 1,024 |
+| Optimizer update cap | 48,000 | 16 |
+| Retained dataset budget per GPU | 1 TiB | 1 GiB |
 | W&B project | `pufferdrive` | `pufferdrive-jepa-distill-toy` |
 
-- Run artifacts: `experiments/jepa_distill/runs/<run_id>/` — resolved config, `metrics.jsonl`, periodic `checkpoint.pt`, `final_model.pt`, `result.json`.
-- Trajectories: `experiments/jepa_distill/datasets/<dataset_id or run_id>/` — fixed validation plus separate training rounds.
-- `--run-id NAME` chooses the output folder. Fresh runs reject a nonempty folder.
-- Resume with the same run ID and `--set training.resume_checkpoint=PATH`. Stored collection batches can resume; simulator memory is not saved, so subsequent collections restart simulator episodes.
-- CPU simulation uses the existing C engine and PufferLib workers. The learner uses PyTorch on one GPU. DDP, AMP, and compile are explicitly rejected until supported and tested.
-- Standalone driving evaluation: `scripts/evaluate.sh --config project/jepa_distill/config/evaluation_toy.yaml --checkpoint PATH --wandb-disabled`. A transfer-timestep experiment uses a separate config/output name; the combined `transfer.enabled` switch is rejected.
+- Full job: 16,384,000 transitions per collection and 245,760,000 across 15 collections, globally. Valid windows and partial batches determine actual updates.
+- A full effective update accumulates 125 microbatches per GPU, then synchronizes gradients. EMA updates once per optimizer update.
+- The variance penalty uses **local microbatch statistics**, not statistics across the 256,000-window global batch. Microbatch size is part of the scientific recipe.
+- Collection writes memory-mapped arrays directly to disk; training loads only the current microbatch. Old collection files are retained for provenance/resume.
+- Both ranks train over the pooled collection using disjoint shuffled samples. Equal-length rank partitions may repeat a small number of samples at the epoch tail; report this count explicitly.
 
-## Validation status
+## Training and evaluation order
 
-GPU training, standalone validation, checkpoint resume, and bounded driving evaluation passed. The [online toy run](https://wandb.ai/tobieliu825/pufferdrive-jepa-distill-toy/runs/2l5ioks4) completed 60 updates over two collections; standalone validation reused its W&B identity. See [verification.md](verification.md) for evidence and supported scope.
+1. Load the frozen teacher on each GPU; synchronize the student and create one W&B run on rank zero.
+2. Collect a fixed held-out dataset with bounded validation workers. Each rank collects fresh training interactions using distinct seeds and its own simulator workers.
+3. Shuffle the pooled windows; optimize distillation + JEPA + variance losses in accumulated microbatches. Repeat for the configured training passes.
+4. Rank zero evaluates student driving **after training on each collection**: 50 passes for the full run, 2 for the toy. The other rank waits. Repeat fresh collection as configured.
+5. Evaluate at completion unless the same weights were just evaluated; save the final checkpoint and driving results.
+
+| Check | Full | Toy |
+|---|---:|---:|
+| Held-out loss validation | Every 50 optimizer updates | Every 2 updates |
+| Driving evaluation cadence | After 50 passes: once per collection | After 2 passes: once per collection |
+| Driving benchmark | `carla_fast` (teacher PPO benchmark) | `carla` |
+| Driving scenarios × maximum steps | 250 × 500 | 2 × 64 |
+| Evaluation simulator workers | 20 on rank zero | 2 on rank zero |
+
+- Driving uses the existing PPO evaluator with student self-play, chunk slot zero, mean actions, native `dt=0.3`, and fixed seed 42.
+- W&B/local metric namespace: `eval/training_native/<benchmark>/student/*`. Reports: `eval/<benchmark>_training_native/training/step_*` under the student run.
+- Validation/evaluation interactions do not count toward training collection budgets. Evaluation restores model modes and RNG state; it does not update weights.
+- Disable driving evaluation with `--set driving_evaluation.enabled=false`. The legacy single-GPU trainer uses `interval_steps` instead.
+- Keep `driving_evaluation.interval_update_epochs` equal to `training.update_epochs` when changing the number of passes, to retain evaluation once per collection. Early termination still evaluates the final student; an already-evaluated final step is not repeated.
+
+## Outputs and resume
+
+- Student run: `experiments/jepa_distill/runs/<run_id>/` — configuration, metrics, checkpoints, result JSON, and driving reports.
+- Data: `experiments/jepa_distill/datasets/<run_id>/` (or explicit `collection.dataset_id`) — separate rank collection roots and held-out data.
+- Resume requires the same world size and scientific recipe. Checkpoints retain each rank's RNG and shared sampler position. Simulator memory is not checkpointed; subsequent fresh collections restart episodes.
+- AMP and compilation remain disabled. Use the same two-GPU launcher for resume.
+
+Verification evidence and runtime limits are recorded in [verification.md](verification.md).
