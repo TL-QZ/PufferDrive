@@ -301,7 +301,14 @@ def validate_resume_config(current, saved):
             if current.get(section, {}).get(name) != saved.get(section, {}).get(name):
                 raise ValueError(f'Cannot change {section}.{name} when resuming stored training state')
     for section in ('model', 'loss', 'ema', 'teacher_config', 'teacher_checkpoint_sha256'):
-        if current.get(section) != saved.get(section):
+        current_section, saved_section = current.get(section), saved.get(section)
+        if section == 'model':
+            # Older checkpoints omitted the option and always warm-started.
+            current_section = dict(current_section or {})
+            saved_section = dict(saved_section or {})
+            current_section.setdefault('encoder_initialization', 'teacher')
+            saved_section.setdefault('encoder_initialization', 'teacher')
+        if current_section != saved_section:
             raise ValueError(f'Cannot change {section} when resuming stored training state')
 
 

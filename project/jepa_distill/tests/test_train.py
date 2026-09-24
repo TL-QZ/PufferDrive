@@ -127,6 +127,25 @@ def test_resume_rejects_settings_that_change_batch_cursor(name):
     validate_resume_config(current, saved)
 
 
+def test_resume_treats_omitted_encoder_initialization_as_teacher():
+    from project.jepa_distill.train import validate_resume_config
+
+    saved = {'model': {'latent_dim': 8}}
+    current = {'model': {'latent_dim': 8, 'encoder_initialization': 'teacher'}}
+
+    validate_resume_config(current, saved)
+
+
+def test_resume_rejects_changing_teacher_encoder_initialization_to_random():
+    from project.jepa_distill.train import validate_resume_config
+
+    saved = {'model': {'latent_dim': 8, 'encoder_initialization': 'teacher'}}
+    current = {'model': {'latent_dim': 8, 'encoder_initialization': 'random'}}
+
+    with pytest.raises(ValueError, match='Cannot change model'):
+        validate_resume_config(current, saved)
+
+
 def test_dataset_identity_rejects_teacher_layout_or_split_drift():
     from types import SimpleNamespace
     from project.jepa_distill.train import validate_dataset_identity

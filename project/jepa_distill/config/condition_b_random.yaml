@@ -1,0 +1,8 @@
+# Same full recipe, with fresh student/EMA target encoders.
+# The pretrained driving teacher still collects data and supplies distillation targets.
+extends: condition_b.yaml
+model:
+  encoder_initialization: random
+wandb:
+  group: jepa_distill_random_encoder
+  tags: [jepa_distill, condition_b, random_encoder]

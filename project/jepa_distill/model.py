@@ -128,6 +128,12 @@ class ConditionBModel(nn.Module):
         self.num_action_classes = _positive_int(
             model_config.get("num_action_classes", 12), name="model.num_action_classes"
         )
+        self.encoder_initialization = str(model_config.get("encoder_initialization", "teacher"))
+        if self.encoder_initialization not in {"teacher", "random"}:
+            raise ValueError(
+                "model.encoder_initialization must be 'teacher' or 'random', "
+                f"got {self.encoder_initialization!r}"
+            )
 
         decoder_hidden_sizes = model_config.get("decoder_hidden_sizes", [256])
         predictor_hidden_sizes = model_config.get("predictor_hidden_sizes", [1024, 1024])
@@ -189,7 +195,7 @@ class ConditionBModel(nn.Module):
         context_encoder = self._build_context_encoder(
             config=self._config,
             observation_layout=self.observation_layout,
-            teacher=teacher,
+            teacher=teacher if self.encoder_initialization == "teacher" else None,
         )
         if int(getattr(context_encoder, "out_dim", -1)) != self.latent_dim:
             raise ValueError(
@@ -648,6 +654,9 @@ class ConditionBModel(nn.Module):
             "action_table": self.action_table.detach().cpu().tolist(),
             "action_table_physical": self.action_table_physical.detach().cpu().tolist(),
         }
+        # Keep teacher-initialized metadata identical to pre-option checkpoints.
+        if self.encoder_initialization != "teacher":
+            metadata["model"]["encoder_initialization"] = self.encoder_initialization
         if metadata["teacher_config"] is None:
             metadata.pop("teacher_config")
         return metadata
