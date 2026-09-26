@@ -1,0 +1,354 @@
+# Resume recipe exported from checkpoint.pt at optimizer step 25650.
+teacher:
+  checkpoint: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/final_model.pt
+  config: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/config.yaml
+env_overrides:
+  action_type: continuous
+  dt: 0.3
+  obs_dropout_lane: 0.0
+  obs_dropout_boundary: 0.0
+  partner_blindness_prob: 0.0
+  partner_blindness_trigger_prob: 0.0
+  phantom_braking_prob: 0.0
+  phantom_braking_trigger_prob: 0.0
+  num_agents: 3200
+collection:
+  driver: teacher
+  num_collections: 15
+  action_selection: sample
+  split_seeds:
+    train: 0
+    validation: 1
+    test: 2
+  dataset_id: null
+  transitions_per_round: 8192000
+  max_transitions: 122880000
+  max_disk_bytes: 1099511627776
+  inference_batch_size: 2048
+  shard_transition_count: 65536
+  output_root: experiments/jepa_distill/datasets
+  split: train
+model:
+  encoder_initialization: random
+  chunk_length: 4
+  execution_horizon: 1
+  latent_dim: 1024
+  num_action_classes: 12
+  decoder_hidden_sizes:
+  - 256
+  predictor_hidden_sizes:
+  - 1024
+  - 1024
+  activation: relu
+loss:
+  temperature: 1.0
+  distillation_weight: 1.0
+  jepa_weight: 1.0
+  variance_weight: 0.1
+  variance_floor: 1.0
+  epsilon: 1.0e-06
+ema:
+  tau: 0.99
+training:
+  seed: 0
+  device: cuda:0
+  batch_size: 128000
+  microbatch_size: 1024
+  variance_scope: microbatch
+  update_epochs: 50
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+  optimizer: AdamW
+  amp: false
+  compile: false
+  distributed: true
+  world_size: 2
+  validation_manifest: null
+  run_id: condition_b_distill_no_warm_start
+  max_optimizer_steps: 48000
+  validation_interval_steps: 50
+  checkpoint_interval_steps: 50
+  resume_checkpoint: experiments/jepa_distill/runs/condition_b_distill_no_warm_start/checkpoint.pt
+  output_root: experiments/jepa_distill/runs
+  validation_transitions: 8192
+  cpu_threads: 1
+validation:
+  env_overrides:
+    num_agents: 128
+  vec:
+    backend: Multiprocessing
+    num_envs: 2
+    num_workers: 2
+    batch_size: 2
+wandb:
+  enabled: true
+  mode: online
+  project: pufferdrive
+  entity: null
+  group: jepa_distill_random_encoder
+  name: null
+  tags:
+  - jepa_distill
+  - condition_b
+  - random_encoder
+  log_interval_steps: 10
+  diagnostics_interval_steps: 100
+vec:
+  backend: Multiprocessing
+  num_envs: 20
+  num_workers: 20
+  batch_size: 20
+driving_evaluation:
+  enabled: true
+  interval_steps: 50
+  interval_update_epochs: 50
+  benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
+  benchmarks:
+  - carla_fast
+  population: student_self_play
+  action_selection: mean
+  execution_horizon: 1
+  seed: 42
+  num_scenarios: 250
+  episode_timesteps: 500
+  output_name: training_native
+  num_agents: 128
+  vec_overrides:
+    num_envs: 20
+    num_workers: 20
+    batch_size: 20
+teacher_config:
+  agent_index: null
+  controlled_exp:
+    train:
+      ent_coef:
+        values:
+        - 0.01
+        - 0.005
+      learning_rate:
+        values:
+        - 0.001
+        - 0.003
+        - 0.01
+  env:
+    action_type: continuous
+    collision_behavior: stop
+    compute_eval_metrics: false
+    control_mode: control_vehicles
+    dt: 0.3
+    dynamics_model: jerk
+    eval_perceived_size_margin_m: 0.1
+    goal_radius: 2.0
+    goal_regen_mode: finite
+    goal_source: map
+    goal_speed: 3.0
+    inactive_agent_threshold: 0.4
+    init_mode: create_all_valid
+    init_step: 0
+    init_step_min_horizon: 20
+    init_step_spread: false
+    map_dir: pufferlib/resources/drive/binaries/carla
+    max_agents_per_env: 120
+    max_goal_spacing: 200.0
+    min_agents_per_env: 1
+    min_goal_spacing: 20.0
+    non_sdc_controller: policy
+    non_vehicle_controller: auto
+    num_agents: 3200
+    num_goals: 3
+    num_maps: 8
+    obs_boundary_stride: 1
+    obs_dropout_boundary: 0.0
+    obs_dropout_lane: 0.0
+    obs_goal_lane_distance: true
+    obs_lane_stride: 2
+    obs_norm_goal_offset_m: 200.0
+    obs_norm_road_seg_length_m: 10.0
+    obs_norm_road_seg_width_m: 5.0
+    obs_norm_veh_length_m: 10.0
+    obs_norm_veh_width_m: 5.0
+    obs_norm_xy_offset_m: 200.0
+    obs_norm_z_m: 10.0
+    obs_range_partner_m: 200.0
+    obs_range_road_behind_m: 60.0
+    obs_range_road_front_m: 200.0
+    obs_range_road_side_m: 50.0
+    obs_range_traffic_control_m: 200.0
+    obs_slots_boundary_n: 50
+    obs_slots_lane_n: 70
+    obs_slots_partners_n: 16
+    obs_slots_traffic_controls_n: 4
+    offroad_behavior: stop
+    partner_blindness_duration_seconds: 3.0
+    partner_blindness_prob: 0.0
+    partner_blindness_trigger_prob: 0.0
+    phantom_braking_duration_seconds: 3.0
+    phantom_braking_prob: 0.0
+    phantom_braking_trigger_prob: 0.0
+    resample_frequency: 256000
+    reset_accel_on_stop: false
+    reward_ade: 0.0
+    reward_center_bias: 0.0
+    reward_collision: 1.5
+    reward_comfort: 0.05
+    reward_conditioning: true
+    reward_goal: 1.0
+    reward_lane_align: 0.025
+    reward_lane_center: 0.001
+    reward_log_sampling: false
+    reward_offroad: 1.5
+    reward_overspeed: 0.05
+    reward_randomization: true
+    reward_reverse: 0.005
+    reward_stop_line: 1.0
+    reward_timestep: 2.5e-05
+    reward_vel_align: 1.0
+    reward_velocity: 0.0025
+    scenario_length: 2560
+    sdc_controller: policy
+    simulation_mode: gigaflow
+    spawn_initial_speed: 0.0
+    terminate_on_goal: 0
+    termination_mode: 1
+    traffic_light_behavior: stop
+    use_map_cache: 1
+    use_neighbor_cache: 1
+  env_name: puffer_drive
+  eval:
+    action_selection: mean
+    benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
+    benchmarks: null
+    capture_observations: false
+    failure_replay_csv: null
+    max_rendered_failures: null
+    max_sdc_replay_workers: 4
+    num_agents: 128
+    observation_replay_wave_size: 16
+    observation_replay_writer_count: 4
+    output_dir_name: eval
+    output_name: null
+    render_filter: null
+    render_scenarios: false
+  eval_simulation: null
+  fps: 15
+  gif_path: eval.gif
+  git:
+    commit_hash: f5ddc4131587c9c8c7f0bc6d6d491610f2deafcf
+  load_id: null
+  load_model_path: null
+  local_rank: 0
+  max_runs: 200
+  max_suggestion_cost: 3600
+  neptune: false
+  neptune_name: pufferai
+  neptune_project: ablations
+  no_model_upload: {}
+  num_scenarios: 3
+  package: ocean
+  policy:
+    action_type: discrete
+    actor_head_layer_norm: false
+    actor_hidden_size: 256
+    actor_num_layers: 1
+    backbone_activation: gelu
+    backbone_hidden_size: 1024
+    backbone_layer_norm: false
+    backbone_num_layers: 3
+    boundary_input_size: 256
+    context_input_size: 128
+    critic_head_layer_norm: false
+    critic_hidden_size: 256
+    critic_num_layers: 1
+    ego_input_size: 128
+    encoder_activation: relu
+    encoder_layer_norm: true
+    lane_input_size: 256
+    mask_padded_features: false
+    partner_input_size: 256
+    shared_network: false
+    traffic_control_input_size: 128
+  policy_name: Drive
+  render: 0
+  render_mode: auto
+  rnn:
+    hidden_size: 512
+    input_size: 512
+  rnn_name: null
+  run_name: baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0
+  save_frames: 0
+  sweep:
+    downsample: 10
+    goal: maximize
+    method: Protein
+    metric: score
+  tag: null
+  tb: false
+  train:
+    adam_beta1: 0.9
+    adam_beta2: 0.999
+    adam_eps: 1.0e-08
+    adam_weight_decay: 0.01
+    adv_filter_enabled: true
+    adv_filter_ewma_beta: 0.25
+    adv_filter_threshold_scale: 0.01
+    adv_sampling_prio_alpha: 0.8499999999999999
+    adv_sampling_prio_beta0: 0.8499999999999999
+    amp: true
+    anneal_lr: true
+    batch_size: auto
+    bptt_horizon: 128
+    checkpoint_interval: 500
+    clip_coef: 0.2
+    compile: true
+    compile_fullgraph: false
+    compile_mode: default
+    cpu_offload: false
+    data_dir: /common/users/ql236/auto_driving/PufferDrive/experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0
+    device: cuda
+    ent_coef: 0.01
+    evaluation_benchmarks: carla_fast
+    evaluation_interval_epochs: 100
+    final_model_name: final_model.pt
+    gae_lambda: 0.95
+    gamma: 0.999
+    learning_rate: 0.0005
+    max_grad_norm: 0.5
+    max_minibatch_size: 32000
+    min_batch_size: null
+    minibatch_size: 128000
+    name: pufferai
+    normalize_rewards: false
+    obs_only: true
+    optimizer: adamw
+    precision: bfloat16
+    project: ablations
+    render: false
+    render_interval: 1000
+    render_map: none
+    resume_state_path: null
+    seed: 0
+    show_grid: false
+    show_human_logs: true
+    show_lasers: false
+    torch_deterministic: false
+    total_timesteps: 5000000000
+    update_epochs: 3
+    use_rnn: false
+    use_value_bootstrapping: true
+    vf_clip_coef: null
+    vf_coef: 0.5
+    vtrace_c_clip: 1
+    vtrace_rho_clip: 1
+  vec:
+    backend: Multiprocessing
+    batch_size: 10
+    num_envs: 20
+    num_workers: auto
+    seed: 42
+    zero_copy: true
+  video_path: videos
+  wandb: true
+  wandb_group: baseline_run_sync_2026-08-24
+  wandb_project: pufferdrive
+teacher_checkpoint_sha256: 063b838ea9a3a05597fa77fe7e0fc6d5d074f4bb4984cfd172245831c58a8581

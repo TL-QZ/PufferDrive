@@ -25,13 +25,13 @@ All collection and effective batch counts below are **per GPU**. Both ranks perf
 | Effective windows per optimizer update | 128,000 | 2,048 |
 | Microbatch windows | 1,024 | 1,024 |
 | Optimizer update cap | 48,000 | 16 |
-| Retained dataset budget per GPU | 1 TiB | 1 GiB |
+| Active collection + validation ceiling per GPU | 1 TiB | 1 GiB |
 | W&B project | `pufferdrive` | `pufferdrive-jepa-distill-toy` |
 
 - Full job: 16,384,000 transitions per collection and 245,760,000 across 15 collections, globally. Valid windows and partial batches determine actual updates.
 - A full effective update accumulates 125 microbatches per GPU, then synchronizes gradients. EMA updates once per optimizer update.
 - The variance penalty uses **local microbatch statistics**, not statistics across the 256,000-window global batch. Microbatch size is part of the scientific recipe.
-- Collection writes memory-mapped arrays directly to disk; training loads only the current microbatch. Old collection files are retained for provenance/resume.
+- Collection writes memory-mapped arrays directly to disk; training loads only the current microbatch. Keep one active training collection per rank: collect, finish its training epochs, checkpoint the next-round cursor, close readers, then delete that round before collecting again. The fixed validation set remains available.
 - Both ranks train over the pooled collection using disjoint shuffled samples. Equal-length rank partitions may repeat a small number of samples at the epoch tail; report this count explicitly.
 
 ## Training and evaluation order
@@ -60,7 +60,35 @@ All collection and effective batch counts below are **per GPU**. Both ranks perf
 
 - Student run: `experiments/jepa_distill/runs/<run_id>/` — configuration, metrics, checkpoints, result JSON, and driving reports.
 - Data: `experiments/jepa_distill/datasets/<run_id>/` (or explicit `collection.dataset_id`) — separate rank collection roots and held-out data.
-- Resume requires the same world size and scientific recipe. Checkpoints retain each rank's RNG and shared sampler position. Simulator memory is not checkpointed; subsequent fresh collections restart episodes.
+- Resume requires the same world size and scientific recipe. Checkpoints retain each rank's RNG and shared sampler position. An interrupted or mid-round step-capped run keeps its active collection for exact sampler resume; completed collections are deleted. Resume from the latest checkpoint, since older checkpoints may reference deleted rounds. Simulator memory is not checkpointed; subsequent fresh collections restart episodes.
+- Existing historical caches are not purged automatically. Use a fresh `training.run_id` / `collection.dataset_id`, or explicitly review old caches for removal. `collection.max_disk_bytes` limits the active round plus validation per rank; it is not an account-wide quota check.
 - AMP and compilation remain disabled. Use the same two-GPU launcher for resume.
 
 Verification evidence and runtime limits are recorded in [verification.md](verification.md).
+
+## Continue the unfinished no-warm-start run
+
+The prepared launcher uses `config/continue_no_warm_start.yaml`, exported from the run's
+checkpoint at optimizer step **25,650**. It preserves random encoder initialization,
+the original loss weights, optimizer state, two-rank sampler/RNG state, and run ID.
+Its active cursor is `round_0008`, epoch 49, next batch 52 (zero-based).
+
+```bash
+# Read-only audit and command preview; no simulator or deletion.
+DRY_RUN=1 project/jepa_distill/scripts/continue_no_warm_start_2gpu.sh
+
+# User launch: resume after the completed cache cleanup.
+CUDA_VISIBLE_DEVICES=2,3 \
+  project/jepa_distill/scripts/continue_no_warm_start_2gpu.sh
+```
+
+The September 25 cleanup removed this run's rounds 0–7 and the uncheckpointed round 9
+on both ranks (approximately **493.6 GiB**), preserving round 8, validation, and
+checkpoints. Across obsolete JEPA datasets, the cleanup reclaimed **1,366.7 GiB**.
+Post-checkpoint experience is recollected; the 50 updates logged after step 25,650
+were not checkpointed and must be redone. The plan is revalidated on each launch.
+If non-active training caches appear again, they block launch unless
+`CLEANUP_CACHED=1` explicitly authorizes their removal.
+
+The YAML snapshot preserves numeric types; passing the JSON log through a YAML loader
+can interpret scientific-notation values such as `1e-06` as text.

@@ -1,6 +1,6 @@
 # Two-GPU Condition B recipe. Launch with scripts/train_2gpu.sh.
 # Collection/vec counts and training.batch_size are PER GPU; updates are synchronized.
-# Data is streamed to rank-local memory-mapped files; old collections are retained.
+# Keep one active training collection per rank; checkpoint, then delete completed rounds.
 teacher:
   checkpoint: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/final_model.pt
   config: experiments/baseline_run_sync_2026-08-24/baseline_run_sync_2026-08-24_2026-08-26_16-23-18_seed0/config.yaml
@@ -25,7 +25,7 @@ collection:
   dataset_id: null
   transitions_per_round: 8192000 # 64,000 slots x 128 simulator steps per GPU.
   max_transitions: 122880000 # Per GPU: 15 rounds; 245,760,000 across two GPUs.
-  max_disk_bytes: 1099511627776 # 1 TiB per rank, including retained rounds and validation.
+  max_disk_bytes: 1099511627776 # Per-rank ceiling for the active round plus fixed validation.
   inference_batch_size: 2048 # Bound teacher GPU inference memory during collection.
   shard_transition_count: 65536
   output_root: experiments/jepa_distill/datasets

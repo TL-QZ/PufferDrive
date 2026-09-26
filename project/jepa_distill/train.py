@@ -372,6 +372,11 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
     import subprocess
     from torch.utils.data import DataLoader
     from .collect import collect_dataset
+    from .collection_lifecycle import (
+        remove_completed_collection,
+        validate_active_collection,
+        validate_round_manifest_path,
+    )
     from .dataset import TrajectoryDataset
     from .model import ConditionBModel
     from .monitoring import MetricProgress, WandbMonitor
@@ -425,6 +430,8 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
     transitions = state.get('simulator_transitions', 0)
     sampler = dict(restored.get('sampler_state', {}))
     first_round = sampler.get('collection_round_idx', 0)
+    if isinstance(first_round, bool) or not isinstance(first_round, int) or first_round < 0 or first_round > collection['num_collections']:
+        raise ValueError('checkpoint collection round cursor is out of range')
     driving_enabled = bool(driving_evaluation.get('enabled', False))
     driving_record = state.get('driving_evaluation')
     if not isinstance(driving_record, Mapping):
@@ -435,6 +442,7 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / 'config.json').write_text(json.dumps(config, indent=2))
     dataset_root = resolve_path(collection['output_root']) / (collection.get('dataset_id') or run_id)
+    training_dataset_root = dataset_root / 'train'
     exit_code = 1
     last_validation = {}
     interval_totals = {}
@@ -444,6 +452,23 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
         monitor = monitor if monitor is not None else WandbMonitor(config['wandb'], config, run_dir,
                                                                   checkpoint_state=restored.get('monitoring_state') or None)
         env = env if env is not None else create_vecenv(config['teacher_config'], config, 'train')
+        pending_cleanup_round_idx = sampler.get('pending_cleanup_round_idx')
+        if pending_cleanup_round_idx is not None:
+            if (
+                isinstance(pending_cleanup_round_idx, bool)
+                or not isinstance(pending_cleanup_round_idx, int)
+                or pending_cleanup_round_idx < 0
+                or pending_cleanup_round_idx >= first_round
+            ):
+                raise ValueError(
+                    'checkpoint pending cleanup round must be before its next-round cursor'
+                )
+            remove_completed_collection(training_dataset_root, pending_cleanup_round_idx)
+            sampler.pop('pending_cleanup_round_idx')
+        validate_active_collection(
+            training_dataset_root,
+            first_round if sampler.get('manifest_path') else None,
+        )
         validation_path = state.get('validation_manifest') or settings.get('validation_manifest')
         if validation_batches is None:
             if validation_path is None:
@@ -484,23 +509,33 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
             return results
 
         for round_idx in range(first_round, collection['num_collections']):
+            if step >= settings['max_optimizer_steps']:
+                break
             started = time.monotonic()
             reuse_collection = round_idx == first_round and sampler.get('manifest_path')
+            validate_active_collection(training_dataset_root, round_idx if reuse_collection else None)
             if reuse_collection:
-                manifest_path = Path(sampler['manifest_path'])
+                manifest_path = validate_round_manifest_path(
+                    training_dataset_root, round_idx, sampler['manifest_path']
+                )
                 manifest = json.loads(manifest_path.read_text())
             else:
                 training_collection_config = deepcopy(config)
-                training_dataset_root = dataset_root / 'train'
                 reserved_bytes = sum(path.stat().st_size for path in dataset_root.rglob('*')
                                      if path.is_file() and not path.is_relative_to(training_dataset_root))
                 remaining_disk_bytes = collection['max_disk_bytes'] - reserved_bytes
                 if remaining_disk_bytes <= 0:
                     raise RuntimeError('Held-out artifacts exhaust collection.max_disk_bytes')
                 training_collection_config['collection']['max_disk_bytes'] = remaining_disk_bytes
+                remaining_transitions = collection['max_transitions'] - transitions
+                if remaining_transitions <= 0:
+                    raise RuntimeError('collection.max_transitions has no remaining training transitions')
+                training_collection_config['collection']['max_transitions'] = remaining_transitions
                 manifest = collect_dataset(training_collection_config, training_dataset_root, teacher=teacher,
                                            env=env, collection_round_idx=round_idx)
-                manifest_path = Path(manifest['manifest_path'])
+                manifest_path = validate_round_manifest_path(
+                    training_dataset_root, round_idx, manifest['manifest_path']
+                )
                 transitions += manifest['collection_transition_count']
                 monitor.log_metrics({'collection/seconds': time.monotonic() - started,
                                      'throughput/collection_transitions_per_second': manifest['collection_transition_count'] / max(time.monotonic() - started, 1e-9),
@@ -512,6 +547,7 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
             if len(data) < 2:
                 raise ValueError('Collection contains fewer than two valid training windows')
             start_epoch = sampler.get('update_epoch_idx', 0) if reuse_collection else 0
+            round_completed = True
             for epoch_idx in range(start_epoch, settings['update_epochs']):
                 generator = torch.Generator().manual_seed(settings['seed'] + round_idx * settings['update_epochs'] + epoch_idx)
                 indices = torch.randperm(len(data), generator=generator).tolist()
@@ -521,6 +557,7 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
                 start_batch = sampler.get('next_batch_idx', 0) if reuse_collection and epoch_idx == start_epoch else 0
                 for batch_idx in range(start_batch, len(batches)):
                     if step >= settings['max_optimizer_steps']:
+                        round_completed = False
                         break
                     samples = [data[index] for index in batches[batch_idx]]
                     batch = TrainingBatch(*(torch.stack(values) for values in zip(*samples)))
@@ -552,11 +589,30 @@ def train(config, validation_batches=None, *, teacher=None, student=None, env=No
                     if step % settings['checkpoint_interval_steps'] == 0:
                         save_checkpoint(run_dir / 'checkpoint.pt', student, optimizer=optimizer, step=step, config=config,
                                         sampler_state=sampler, collection_state=state, monitoring_state=monitor.state_dict())
-                if step >= settings['max_optimizer_steps']:
+                if step >= settings['max_optimizer_steps'] and epoch_idx + 1 < settings['update_epochs']:
+                    round_completed = False
+                if not round_completed:
                     break
+            if not round_completed:
+                break
+            data = None
+            batch = None
+            samples = None
+            state['simulator_transitions'] = transitions
+            sampler = {
+                'collection_round_idx': round_idx + 1,
+                'update_epoch_idx': 0,
+                'next_batch_idx': 0,
+                'pending_cleanup_round_idx': round_idx,
+            }
+            save_checkpoint(
+                run_dir / 'checkpoint.pt', student, optimizer=optimizer, step=step, config=config,
+                sampler_state=sampler, collection_state=state, monitoring_state=monitor.state_dict(),
+            )
+            remove_completed_collection(training_dataset_root, round_idx)
+            sampler.pop('pending_cleanup_round_idx')
             if step >= settings['max_optimizer_steps']:
                 break
-            sampler = {'collection_round_idx': round_idx + 1, 'update_epoch_idx': 0, 'next_batch_idx': 0}
         last_validation = validate(student, validation_batches, config=config)
         progress = MetricProgress(step, transitions, sampler.get('collection_round_idx', 0), sampler.get('update_epoch_idx', 0))
         if interval_windows:
@@ -700,6 +756,8 @@ def save_checkpoint(path, student, *, optimizer=None, step=0, config=None,
     Simulator memory is not serialized. Resuming a stored collection is exact;
     subsequent collections start new simulator episodes, recorded in loop state.
     """
+    from .collection_lifecycle import durable_replace_checkpoint
+
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
@@ -718,7 +776,7 @@ def save_checkpoint(path, student, *, optimizer=None, step=0, config=None,
     os.close(descriptor)
     try:
         torch.save(payload, temporary_path)
-        os.replace(temporary_path, path)
+        durable_replace_checkpoint(Path(temporary_path), path)
     finally:
         if os.path.exists(temporary_path):
             os.unlink(temporary_path)

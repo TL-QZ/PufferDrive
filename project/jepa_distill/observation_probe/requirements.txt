@@ -1,0 +1,2 @@
+# Install into the repository .venv; other dependencies come from PufferDrive.
+scipy>=1.11,<2

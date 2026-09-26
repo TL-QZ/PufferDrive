@@ -1,0 +1,28 @@
+# Two-GPU bounded online smoke recipe. Keep the simulator's agent layout valid.
+extends: observation_probe.yaml
+collection:
+  num_collections: 2
+  transitions_per_round: 4096
+  max_transitions: 8192
+  max_disk_bytes: 100000000
+  validation_transitions: 2048
+  env_overrides: {num_agents: 32, max_agents_per_env: 16, scenario_length: 64, resample_frequency: 256}
+  vec_overrides: {num_envs: 2, num_workers: 2, batch_size: 2}
+  validation_env_overrides: {num_agents: 32, max_agents_per_env: 16, scenario_length: 64, resample_frequency: 256}
+  validation_vec_overrides: {num_envs: 2, num_workers: 2, batch_size: 2}
+training:
+  epochs_per_collection: 1
+  batch_size: 512
+  microbatch_size: 256
+  learning_rate: 0.001
+  world_size: 2
+  device: cuda
+  max_optimizer_steps: 4
+  run_id: observation_probe_toy
+data:
+  max_windows_per_collection: 1024
+evaluation:
+  batch_size: 32
+  max_windows: 64
+  render_samples: 1
+  training_mean_windows: 128

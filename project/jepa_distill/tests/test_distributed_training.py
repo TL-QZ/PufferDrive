@@ -287,7 +287,13 @@ class FakeStreamingDataset:
         return TensorDataset(self.observations, self.targets).get_batch(indices)
 
     def close(self) -> None:
-        return None
+        round_path = self.manifest_path.parent
+        if not round_path.is_dir():
+            raise AssertionError("streaming reader was closed after its round was removed")
+        process_rank = os.environ.get("RANK", "single")
+        rank_root = round_path.parent.parent
+        marker_path = rank_root / f"closed_by_{process_rank}_{rank_root.name}.txt"
+        marker_path.write_text("reader closed while round still existed", encoding="utf-8")
 
 
 class FakeEnv:
@@ -297,6 +303,8 @@ class FakeEnv:
 
 def _ownership_worker(rank: int, world_size: int, rendezvous: str, root: str) -> None:
     _init_gloo(rank, world_size, rendezvous)
+    os.environ["RANK"] = str(rank)
+    os.environ["LOCAL_RANK"] = str(rank)
     try:
         import project.jepa_distill.runtime as runtime_module
         import project.jepa_distill.streaming as streaming_module
@@ -311,10 +319,11 @@ def _ownership_worker(rank: int, world_size: int, rendezvous: str, root: str) ->
         streaming_module.StreamingTrajectoryDataset = FakeStreamingDataset
 
         def fake_collect(config, output_dir, *, teacher, env, collection_round_idx):
-            del config, teacher, env, collection_round_idx
+            del config, teacher, env
             output_dir = Path(output_dir)
-            output_dir.mkdir(parents=True, exist_ok=True)
-            path = output_dir / "manifest.json"
+            round_dir = output_dir / f"round_{collection_round_idx:04d}"
+            round_dir.mkdir(parents=True, exist_ok=True)
+            path = round_dir / "manifest.json"
             path.write_text(
                 '{"collection_transition_count": 4, "transition_count": 4}',
                 encoding="utf-8",
@@ -369,7 +378,7 @@ def _ownership_worker(rank: int, world_size: int, rendezvous: str, root: str) ->
                 "world_size": world_size,
                 "validation_manifest": None,
                 "run_id": "ownership_run",
-                "max_optimizer_steps": 1,
+                "max_optimizer_steps": 2,
                 "validation_interval_steps": 100,
                 "checkpoint_interval_steps": 1,
                 "resume_checkpoint": None,
@@ -513,6 +522,46 @@ def test_resume_restores_torch_numpy_python_rng_and_sampler_order():
     assert first == resumed
 
 
+def test_pooled_dataset_close_releases_memmap_backed_arrays():
+    class FakeMmap:
+        def __init__(self, name, closed):
+            self.name = name
+            self.closed = closed
+
+        def close(self):
+            self.closed.append(self.name)
+
+    class FakeArray:
+        def __init__(self, name, closed):
+            self._mmap = FakeMmap(name, closed)
+
+    class FakeMappedDataset:
+        pass
+
+    closed = []
+    dataset = FakeMappedDataset()
+    array_names = (
+        "observations",
+        "controls",
+        "teacher_logits",
+        "transition_valid",
+        "eligibility_mask",
+        "terminated",
+        "truncated",
+        "endpoint_valid",
+        "generations",
+        "window_indices",
+    )
+    for name in array_names:
+        setattr(dataset, name, FakeArray(name, closed))
+    pooled = DIST._PooledStreamingDataset.__new__(DIST._PooledStreamingDataset)
+    pooled.datasets = (dataset,)
+
+    pooled.close()
+
+    assert closed == list(array_names)
+
+
 def test_rank_zero_owns_logging_and_driving_evaluation(tmp_path):
     _spawn(_ownership_worker, 2, tmp_path, str(tmp_path))
     rank_zero = torch.load(tmp_path / "ownership_rank_0.pt", map_location="cpu", weights_only=False)
@@ -524,3 +573,10 @@ def test_rank_zero_owns_logging_and_driving_evaluation(tmp_path):
     assert rank_one["events"] == []
     assert rank_zero["eval_called"] is True
     assert rank_one["eval_called"] is False
+    dataset_root = tmp_path / "datasets" / "ownership_dataset"
+    for dataset_rank in range(2):
+        rank_root = dataset_root / f"rank_{dataset_rank:03d}"
+        assert not list((rank_root / "train").glob("round_*"))
+        for process_rank in range(2):
+            marker = rank_root / f"closed_by_{process_rank}_{rank_root.name}.txt"
+            assert marker.read_text(encoding="utf-8") == "reader closed while round still existed"

@@ -1,0 +1,60 @@
+# Collect one online round per rank, train for five epochs, then remove that round.
+# Source environment, vectorization, teacher checkpoint, action table, and layouts
+# are read from the frozen Condition B checkpoint. Budgets below override its defaults.
+checkpoint: experiments/jepa_distill/runs/condition_b_jepa_distill/checkpoint.pt
+data:
+  mode: online
+  collection_root: experiments/jepa_distill/observation_probe/collections
+  collection_rounds: null # Online round count comes from collection.num_collections.
+  source_ranks: null # Online ranks come from torchrun/training.world_size.
+  validation_manifest: null # If unset, rank 0 collects and keeps a held-out round.
+  test_manifest: null
+  max_windows_per_collection: null # Bounded toy subset; null uses all valid windows.
+collection:
+  num_collections: null # Derive from the frozen source config; default source recipe has 15.
+  transitions_per_round: null # Per rank; null uses the frozen source config's budget.
+  max_transitions: null # Cumulative per rank; null uses the frozen source config's budget.
+  max_disk_bytes: null # Per active rank collection; null uses the source config's cap.
+  action_selection: null # Null uses the frozen source config's setting.
+  inference_batch_size: null # Null uses the frozen source config's setting.
+  validation_transitions: null # Null uses the frozen source validation budget.
+  env_overrides: {} # Keep observation semantics compatible; num_agents can bound toy runs.
+  vec_overrides: {} # E.g. Serial with one small vector worker for CPU tests.
+  validation_env_overrides: {}
+  validation_vec_overrides: {}
+decoder:
+  hidden_sizes: [1024, 1024]
+matching:
+  method: permutation_aware
+  costs: {continuous: 1.0, categorical: 1.0, presence: 0.2}
+loss:
+  group_weights: {ego: 1.0, context: 1.0, partners: 1.0, lanes: 1.0, boundaries: 1.0, traffic_controls: 1.0}
+rendering:
+  presence_threshold: 0.5
+training:
+  epochs_per_collection: 5
+  batch_size: 16384 # GLOBAL windows/update; bounded two-A6000 throughput recommendation.
+  microbatch_size: 1024 # Windows/GPU/pass; larger tested passes did not improve throughput.
+  learning_rate: 0.001
+  world_size: 2
+  device: cuda
+  max_optimizer_steps: null # Optional cap; null means all configured epochs.
+  seed: 0
+  weight_decay: 0.0
+  gradient_clip_norm: 1.0
+  cpu_threads: 1
+  run_id: condition_b_jepa_distill_probe
+  output_root: experiments/jepa_distill/observation_probe/runs
+  resume_checkpoint: null
+evaluation:
+  every_collection: true
+  batch_size: 256
+  max_windows: 2048
+  render_samples: 5
+  training_mean_windows: 2048
+wandb:
+  enabled: true
+  mode: online
+  project: pufferdrive
+  entity: tobieliu825
+  group: observation_probe

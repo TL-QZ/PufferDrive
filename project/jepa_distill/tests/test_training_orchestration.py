@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pytest
 import torch
 from torch import nn
 
@@ -243,8 +244,11 @@ def test_train_keeps_frozen_teacher_env_and_optimizer_across_collection_rounds(
     collection_calls = []
 
     def collector(config, output_dir, *, teacher, env, collection_round_idx):
+        output_dir = Path(output_dir)
+        if collection_calls:
+            assert not list(output_dir.glob("round_*"))
         collection_calls.append((collection_round_idx, teacher, env))
-        return _write_round_manifest(Path(output_dir), collection_round_idx)
+        return _write_round_manifest(output_dir, collection_round_idx)
 
     optimizer_objects = []
     original_train_step = TRAIN_MODULE.train_step
@@ -273,6 +277,7 @@ def test_train_keeps_frozen_teacher_env_and_optimizer_across_collection_rounds(
                 (1, True, True),
             ]
     assert len({id(optimizer) for optimizer in optimizer_objects}) == 1
+    assert not list((tmp_path / "datasets" / "two_rounds" / "train").glob("round_*"))
     for name, parameter in teacher.state_dict().items():
         torch.testing.assert_close(parameter, teacher_before[name])
     assert student.training_window_starts == _expected_window_starts(
@@ -342,6 +347,8 @@ def test_train_resume_matches_uninterrupted_order_and_reuses_manifest(
     assert interrupted_result["optimizer_steps"] == 1
     assert interrupted_result["simulator_transitions"] == 7
     assert len(collection_calls) == 2
+    training_root = tmp_path / "resume" / "datasets" / "resume" / "train"
+    assert (training_root / "round_0000" / "manifest.json").is_file()
     checkpoint_payload = torch.load(
         interrupted_result["checkpoint"], map_location="cpu", weights_only=False
     )
@@ -349,8 +356,21 @@ def test_train_resume_matches_uninterrupted_order_and_reuses_manifest(
     assert Path(stored_manifest).is_file()
 
     before_resume_calls = len(collection_calls)
-    resume_config["training"]["max_optimizer_steps"] = 4
     resume_config["training"]["resume_checkpoint"] = interrupted_result["checkpoint"]
+    capped_result = TRAIN_MODULE.train(
+        resume_config,
+        validation_batches=validation,
+        teacher=teacher,
+        student=interrupted_student,
+        env=env,
+        monitor=RecordingMonitor(),
+    )
+    assert capped_result["optimizer_steps"] == 1
+    assert len(collection_calls) == before_resume_calls
+    assert (training_root / "round_0000" / "manifest.json").is_file()
+
+    resume_config["training"]["max_optimizer_steps"] = 4
+    resume_config["training"]["resume_checkpoint"] = capped_result["checkpoint"]
     resumed_result = TRAIN_MODULE.train(
         resume_config,
         validation_batches=validation,
@@ -363,6 +383,7 @@ def test_train_resume_matches_uninterrupted_order_and_reuses_manifest(
     assert resumed_result["optimizer_steps"] == full_result["optimizer_steps"] == 4
     assert resumed_result["simulator_transitions"] == full_result["simulator_transitions"] == 7
     assert len(collection_calls) == before_resume_calls
+    assert not list(training_root.glob("round_*"))
     assert interrupted_student.training_window_starts == full_student.training_window_starts
     assert interrupted_student.training_window_starts == _expected_window_starts(
         num_collections=1,
@@ -371,3 +392,138 @@ def test_train_resume_matches_uninterrupted_order_and_reuses_manifest(
     )
     for name, expected in full_student.state_dict().items():
         torch.testing.assert_close(interrupted_student.state_dict()[name], expected, rtol=0, atol=0)
+
+
+def test_completed_round_saves_cleanup_cursor_before_removal_and_replays_on_resume(
+    tmp_path, monkeypatch
+):
+    config = _config(
+        tmp_path,
+        "cleanup_resume",
+        max_optimizer_steps=2,
+        num_collections=1,
+        update_epochs=1,
+    )
+    teacher = _make_teacher()
+    student = RecordingStudent()
+    env = EnvToken()
+    monitor = RecordingMonitor()
+    validation = _validation_batches()
+    collection_calls = []
+
+    def collector(config, output_dir, *, teacher, env, collection_round_idx):
+        collection_calls.append(collection_round_idx)
+        return _write_round_manifest(Path(output_dir), collection_round_idx)
+
+    _patch_training_boundaries(monkeypatch, collector)
+    lifecycle_module = __import__(
+        "project.jepa_distill.collection_lifecycle", fromlist=["remove_completed_collection"]
+    )
+    original_remove = lifecycle_module.remove_completed_collection
+
+    def interrupt_before_remove(training_root, round_idx):
+        raise RuntimeError("simulated stop after the durable cleanup checkpoint")
+
+    monkeypatch.setattr(lifecycle_module, "remove_completed_collection", interrupt_before_remove)
+    with pytest.raises(RuntimeError, match="durable cleanup checkpoint"):
+        TRAIN_MODULE.train(
+            config,
+            validation_batches=validation,
+            teacher=teacher,
+            student=student,
+            env=env,
+            monitor=monitor,
+        )
+
+    run_dir = tmp_path / "runs" / "cleanup_resume"
+    training_root = tmp_path / "datasets" / "cleanup_resume" / "train"
+    checkpoint_path = run_dir / "checkpoint.pt"
+    checkpoint_payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    assert checkpoint_payload["step"] == config["training"]["max_optimizer_steps"]
+    assert checkpoint_payload["sampler_state"]["collection_round_idx"] == 1
+    assert checkpoint_payload["sampler_state"]["pending_cleanup_round_idx"] == 0
+    assert (training_root / "round_0000").is_dir()
+
+    monkeypatch.setattr(lifecycle_module, "remove_completed_collection", original_remove)
+    config["training"]["resume_checkpoint"] = str(checkpoint_path)
+    result = TRAIN_MODULE.train(
+        config,
+        validation_batches=validation,
+        teacher=teacher,
+        student=student,
+        env=env,
+        monitor=RecordingMonitor(),
+    )
+
+    assert result["optimizer_steps"] == 2
+    assert collection_calls == [0]
+    assert not list(training_root.glob("round_*"))
+    final_payload = torch.load(result["checkpoint"], map_location="cpu", weights_only=False)
+    assert "pending_cleanup_round_idx" not in final_payload["sampler_state"]
+
+
+def test_resume_at_last_batch_of_final_epoch_completes_cleanup_without_updates(
+    tmp_path, monkeypatch
+):
+    config = _config(
+        tmp_path,
+        "last_batch_resume",
+        max_optimizer_steps=3,
+        num_collections=1,
+        update_epochs=1,
+    )
+    teacher = _make_teacher()
+    student = RecordingStudent()
+    env = EnvToken()
+    validation = _validation_batches()
+    collection_calls = []
+
+    def collector(config, output_dir, *, teacher, env, collection_round_idx):
+        collection_calls.append(collection_round_idx)
+        return _write_round_manifest(Path(output_dir), collection_round_idx)
+
+    _patch_training_boundaries(monkeypatch, collector)
+    original_save = TRAIN_MODULE.save_checkpoint
+
+    def stop_after_last_batch(path, student, **kwargs):
+        original_save(path, student, **kwargs)
+        sampler_state = kwargs.get("sampler_state", {})
+        if (
+            Path(path).name == "checkpoint.pt"
+            and kwargs.get("step") == 2
+            and sampler_state.get("next_batch_idx") == 2
+        ):
+            raise RuntimeError("simulated stop at round-end batch cursor")
+
+    monkeypatch.setattr(TRAIN_MODULE, "save_checkpoint", stop_after_last_batch)
+    with pytest.raises(RuntimeError, match="round-end batch cursor"):
+        TRAIN_MODULE.train(
+            config,
+            validation_batches=validation,
+            teacher=teacher,
+            student=student,
+            env=env,
+            monitor=RecordingMonitor(),
+        )
+
+    checkpoint_path = tmp_path / "runs" / "last_batch_resume" / "checkpoint.pt"
+    training_root = tmp_path / "datasets" / "last_batch_resume" / "train"
+    payload = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    assert payload["sampler_state"]["collection_round_idx"] == 0
+    assert payload["sampler_state"]["update_epoch_idx"] == 0
+    assert payload["sampler_state"]["next_batch_idx"] == 2
+    assert (training_root / "round_0000").is_dir()
+
+    monkeypatch.setattr(TRAIN_MODULE, "save_checkpoint", original_save)
+    config["training"]["resume_checkpoint"] = str(checkpoint_path)
+    result = TRAIN_MODULE.train(
+        config,
+        validation_batches=validation,
+        teacher=teacher,
+        student=student,
+        env=env,
+        monitor=RecordingMonitor(),
+    )
+    assert result["optimizer_steps"] == 2
+    assert collection_calls == [0]
+    assert not list(training_root.glob("round_*"))

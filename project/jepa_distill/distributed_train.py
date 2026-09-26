@@ -141,6 +141,24 @@ def _collective_invalid(local_invalid: bool, *, device: torch.device, world_size
     return bool(flag.item())
 
 
+def _collective_lifecycle_action(action: Any, *, description: str, world_size: int) -> Any:
+    """Run one rank-local filesystem check/action and fail every rank together."""
+    result = None
+    local_error = None
+    try:
+        result = action()
+    except Exception as exc:
+        local_error = f"{type(exc).__name__}: {exc}"
+    errors = _all_gather_object(local_error, world_size)
+    failures = [f"rank {rank}: {error}" for rank, error in enumerate(errors) if error]
+    if failures:
+        raise RuntimeError(
+            f"distributed collection lifecycle {description} failed: " + "; ".join(failures)
+        )
+    _barrier(world_size)
+    return result
+
+
 def _all_reduce_count(local_count: int, *, device: torch.device, world_size: int) -> int:
     if isinstance(local_count, bool) or local_count < 0:
         raise ValueError("sample count must be a non-negative integer")
@@ -377,6 +395,23 @@ class _PooledStreamingDataset:
             close = getattr(dataset, "close", None)
             if close is not None:
                 close()
+                continue
+            for name in (
+                "observations",
+                "controls",
+                "teacher_logits",
+                "transition_valid",
+                "eligibility_mask",
+                "terminated",
+                "truncated",
+                "endpoint_valid",
+                "generations",
+                "window_indices",
+            ):
+                array = getattr(dataset, name, None)
+                mmap = getattr(array, "_mmap", None)
+                if mmap is not None:
+                    mmap.close()
 
 
 def _rank_epoch_indices(
@@ -570,6 +605,7 @@ def _save_distributed_checkpoint(
     world_size: int,
 ) -> None:
     from .train import save_checkpoint
+    from .collection_lifecycle import durable_replace_checkpoint
 
     local_state = {
         "rank": rank,
@@ -604,7 +640,7 @@ def _save_distributed_checkpoint(
                 "rank_states": rank_states,
             },
         )
-        os.replace(temporary_path, path)
+        durable_replace_checkpoint(temporary_path, path)
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
@@ -755,6 +791,11 @@ def train_distributed(
     """Run the synchronized multi-GPU Condition B trainer."""
 
     from .model import ConditionBModel
+    from .collection_lifecycle import (
+        remove_completed_collection,
+        validate_active_collection,
+        validate_round_manifest_path,
+    )
     from .monitoring import MetricProgress, WandbMonitor
     from .runtime import create_vecenv, prepare_runtime, resolve_path
     from .teacher import load_teacher, resolve_teacher_config
@@ -854,6 +895,31 @@ def train_distributed(
         first_round = int(sampler.get("collection_round_idx", 0))
         if first_round < 0 or first_round > int(config["collection"]["num_collections"]):
             raise ValueError("checkpoint collection round cursor is out of range")
+        dataset_root = _pooled_manifest_root(config, run_id, rank)
+        training_output_root = dataset_root / "train"
+
+        def prepare_training_collection_root() -> None:
+            pending_round = sampler.get("pending_cleanup_round_idx")
+            if pending_round is not None:
+                if (
+                    isinstance(pending_round, bool)
+                    or not isinstance(pending_round, int)
+                    or pending_round < 0
+                    or pending_round >= first_round
+                ):
+                    raise ValueError(
+                        "checkpoint pending cleanup round must be before its next-round cursor"
+                    )
+                remove_completed_collection(training_output_root, pending_round)
+                sampler.pop("pending_cleanup_round_idx")
+            active_round = first_round if sampler.get("manifest_paths") or sampler.get("manifest_path") else None
+            validate_active_collection(training_output_root, active_round)
+
+        _collective_lifecycle_action(
+            prepare_training_collection_root,
+            description="resume cleanup and active-round validation",
+            world_size=world_size,
+        )
 
         validation_dataset, validation_iterator, validation_path = _validation_setup(
             config,
@@ -892,9 +958,12 @@ def train_distributed(
         interval_totals: dict[str, float] = {}
         interval_windows = 0
         interval_started = time.monotonic()
-        dataset_root = _pooled_manifest_root(config, run_id, rank)
         rank_config = _rank_collection_config(config, rank=rank, world_size=world_size)
-        if env is None and first_round < int(config["collection"]["num_collections"]):
+        if (
+            env is None
+            and step < int(settings["max_optimizer_steps"])
+            and first_round < int(config["collection"]["num_collections"])
+        ):
             env = create_vecenv(config["teacher_config"], rank_config, "train")
 
         def run_validation(progress: MetricProgress) -> Mapping[str, float]:
@@ -954,33 +1023,62 @@ def train_distributed(
 
         last_validation: Mapping[str, float] = {}
         for round_idx in range(first_round, int(config["collection"]["num_collections"])):
+            if step >= int(settings["max_optimizer_steps"]):
+                break
             reuse_collection = round_idx == first_round and bool(
                 sampler.get("manifest_paths") or sampler.get("manifest_path")
             )
+            _collective_lifecycle_action(
+                lambda: validate_active_collection(
+                    training_output_root, round_idx if reuse_collection else None
+                ),
+                description=f"round {round_idx} pre-collection validation",
+                world_size=world_size,
+            )
             if reuse_collection:
-                stored_paths = sampler.get("manifest_paths")
-                if not isinstance(stored_paths, list) or len(stored_paths) != world_size:
-                    stored_path = sampler.get("manifest_path")
-                    if not isinstance(stored_path, str):
-                        raise ValueError("resume sampler state has no rank manifest paths")
-                    stored_paths = [stored_path]
-                manifest_paths = [Path(path).expanduser().resolve() for path in stored_paths]
-                if len(manifest_paths) != world_size:
-                    raise ValueError("resume sampler state must contain one manifest per rank")
+                def load_resumed_collection() -> tuple[list[Path], Mapping[str, Any]]:
+                    stored_paths = sampler.get("manifest_paths")
+                    if not isinstance(stored_paths, list) or len(stored_paths) != world_size:
+                        stored_path = sampler.get("manifest_path")
+                        if not isinstance(stored_path, str):
+                            raise ValueError("resume sampler state has no rank manifest paths")
+                        stored_paths = [stored_path]
+                    if len(stored_paths) != world_size:
+                        raise ValueError(
+                            "resume sampler state must contain one manifest per rank"
+                        )
+                    paths = [
+                        validate_round_manifest_path(
+                            _pooled_manifest_root(config, run_id, manifest_idx) / "train",
+                            round_idx,
+                            path,
+                        )
+                        for manifest_idx, path in enumerate(stored_paths)
+                    ]
+                    return paths, _read_manifest(paths[rank])
+
+                manifest_paths, manifest = _collective_lifecycle_action(
+                    load_resumed_collection,
+                    description=f"round {round_idx} resume manifest validation",
+                    world_size=world_size,
+                )
                 local_manifest_path = manifest_paths[rank]
-                if not local_manifest_path.is_file():
-                    raise FileNotFoundError(
-                        f"stored collection manifest does not exist: {local_manifest_path}"
-                    )
-                manifest = _read_manifest(local_manifest_path)
             else:
                 if env is None:
                     env = create_vecenv(config["teacher_config"], rank_config, "train")
                 started = time.monotonic()
                 training_config = copy.deepcopy(rank_config)
                 training_config["collection"]["split"] = "train"
-                training_output_root = dataset_root / "train"
                 training_config["collection"]["output_root"] = str(training_output_root)
+                remaining_rank_transitions = (
+                    int(config["collection"]["max_transitions"])
+                    - round_idx * int(config["collection"]["transitions_per_round"])
+                )
+                if remaining_rank_transitions <= 0:
+                    raise RuntimeError(
+                        "collection.max_transitions has no remaining rank-local transitions"
+                    )
+                training_config["collection"]["max_transitions"] = remaining_rank_transitions
                 if rank == 0:
                     validation_bytes = (
                         _directory_size(Path(state['validation_manifest']).parent)
@@ -1000,7 +1098,13 @@ def train_distributed(
                     env=env,
                     collection_round_idx=round_idx,
                 )
-                local_manifest_path = _manifest_path(local_manifest)
+                local_manifest_path = _collective_lifecycle_action(
+                    lambda: validate_round_manifest_path(
+                        training_output_root, round_idx, _manifest_path(local_manifest)
+                    ),
+                    description=f"round {round_idx} collected manifest validation",
+                    world_size=world_size,
+                )
                 manifest = _read_manifest(local_manifest_path)
                 manifest_paths = _streaming_manifest_paths(
                     local_manifest_path, rank=rank, world_size=world_size
@@ -1040,6 +1144,7 @@ def train_distributed(
                 raise ValueError("pooled training dataset must contain at least two windows per rank")
             start_epoch = int(sampler.get("update_epoch_idx", 0)) if reuse_collection else 0
             start_batch = int(sampler.get("next_batch_idx", 0)) if reuse_collection else 0
+            round_completed = True
             for epoch_idx in range(start_epoch, int(settings["update_epochs"])):
                 rank_indices, repeat_count, rank_window_count = _rank_epoch_indices(
                     len(pooled_dataset),
@@ -1053,6 +1158,7 @@ def train_distributed(
                     raise ValueError("resume sampler batch cursor is outside the current epoch")
                 for batch_idx in range(start_batch if epoch_idx == start_epoch else 0, len(batches)):
                     if step >= int(settings["max_optimizer_steps"]):
+                        round_completed = False
                         break
                     losses, global_batch_count, gradient_norm = _training_update(
                         ddp_student,
@@ -1105,7 +1211,9 @@ def train_distributed(
                         _barrier(world_size)
                     if step % int(settings["checkpoint_interval_steps"]) == 0:
                         checkpoint(run_dir / "checkpoint.pt")
-                if step >= int(settings["max_optimizer_steps"]):
+                if step >= int(settings["max_optimizer_steps"]) and epoch_idx + 1 < int(settings["update_epochs"]):
+                    round_completed = False
+                if not round_completed:
                     break
                 completed_epoch_count = round_idx * int(settings["update_epochs"]) + epoch_idx + 1
                 sampler = {
@@ -1135,14 +1243,38 @@ def train_distributed(
                         progress=MetricProgress(step, transitions, round_idx, epoch_idx),
                     )
                 start_batch = 0
+            if not round_completed:
+                break
+
+            _collective_lifecycle_action(
+                pooled_dataset.close,
+                description=f"round {round_idx} reader closure",
+                world_size=world_size,
+            )
+            pooled_dataset = None
+            state["simulator_transitions"] = transitions
+            sampler = {
+                "collection_round_idx": round_idx + 1,
+                "update_epoch_idx": 0,
+                "next_batch_idx": 0,
+                "pending_cleanup_round_idx": round_idx,
+            }
+            checkpoint(run_dir / "checkpoint.pt")
+            _collective_lifecycle_action(
+                lambda: remove_completed_collection(training_output_root, round_idx),
+                description=f"round {round_idx} completed collection removal",
+                world_size=world_size,
+            )
+            sampler.pop("pending_cleanup_round_idx")
+            if step >= int(settings["max_optimizer_steps"]):
+                break
+
             if step < int(settings["max_optimizer_steps"]):
                 sampler = {
                     "collection_round_idx": round_idx + 1,
                     "update_epoch_idx": 0,
                     "next_batch_idx": 0,
                 }
-            if step >= int(settings["max_optimizer_steps"]):
-                break
 
         _barrier(world_size)
         progress = MetricProgress(
