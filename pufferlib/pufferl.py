@@ -2105,6 +2105,9 @@ def _run_eval_rollout(
         eval_amp_context = torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=use_bfloat16)
         obs, _ = vecenv.reset(rollout_seed)
         _require_finite_eval_batch(obs, "observations after eval reset", num_workers, worker_env_kwargs)
+        reset_eval_state = getattr(uncompiled_policy, "reset_eval_state", None)
+        if callable(reset_eval_state):
+            reset_eval_state()
         padding_agent_count = inference_agents_per_batch - agents_per_batch
         policy_obs_tensor = None
         if padding_agent_count:
@@ -2179,6 +2182,8 @@ def _run_eval_rollout(
                 )
 
             obs, _, terminals, truncations, infos = vecenv.step(action)
+            if callable(reset_eval_state):
+                reset_eval_state(np.logical_or(terminals, truncations))
             if recurrent_state is not None:
                 finished_agent_mask = torch.as_tensor(
                     np.logical_or(terminals, truncations),

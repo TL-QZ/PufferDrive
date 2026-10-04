@@ -1,0 +1,19 @@
+# Ablation: randomly initialized student encoder, action distillation only.
+# Inherit the full two-GPU collection/training/evaluation recipe.
+extends: condition_b.yaml
+model:
+  encoder_initialization: random
+loss:
+  distillation_weight: 1.0
+  jepa_weight: 0.0
+  variance_weight: 0.0
+training:
+  run_id: condition_b_distill_only_no_warm_start
+  resume_checkpoint: null
+wandb:
+  group: jepa_distill_ablations
+  tags:
+  - jepa_distill
+  - condition_b
+  - random_encoder
+  - distillation_only
