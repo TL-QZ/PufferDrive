@@ -224,3 +224,7 @@ CLAUDE.local.md
 episode_metrics
 
 /obs
+
+# PDF documents and PNG images (case-insensitive extensions)
+*.[pP][dD][fF]
+*.[pP][nN][gG]
