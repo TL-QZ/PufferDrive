@@ -62,6 +62,32 @@ def test_get_batch_preserves_field_and_index_order_and_returns_copies():
         torch.testing.assert_close(actual, original[[2, 0]])
 
 
+def test_pin_memory_returns_pinned_cpu_storage_and_batches():
+    try:
+        torch.empty((1,), pin_memory=True)
+    except RuntimeError as error:
+        pytest.skip(f"pinned-memory allocator unavailable: {error}")
+
+    replay = TensorReplay(capacity=4, observation_shape=(2,), pin_memory=True)
+    replay.add(*_transitions(0, 3))
+
+    storage = (
+        replay.observations,
+        replay.actions,
+        replay.rewards,
+        replay.next_observations,
+        replay.discounts,
+    )
+    assert all(field.device.type == "cpu" and field.is_pinned() for field in storage)
+
+    batch = replay.get_batch(torch.tensor([2, 0], dtype=torch.int64))
+    expected = _transitions(0, 3)
+    for actual, original in zip(batch, expected):
+        assert actual.device.type == "cpu"
+        assert actual.is_pinned()
+        torch.testing.assert_close(actual, original[[2, 0]])
+
+
 def test_add_rejects_append_past_capacity_without_changing_occupancy():
     replay = TensorReplay(capacity=2, observation_shape=(2,))
     replay.add(*_transitions(0, 1))

@@ -27,7 +27,11 @@ def test_sac_config_inherits_drive_sections_and_filters_ppo_train_settings():
     assert args["train"]["optimizer"] == "adam"
     assert args["train"]["initial_alpha"] == 0.2
     assert args["train"]["tau"] == 0.005
-    assert not ({"compile", "amp", "precision", "clip_coef", "gae_lambda"} & args["train"].keys())
+    assert args["train"]["amp"] is False
+    assert args["train"]["precision"] == "float32"
+    assert args["train"]["compile"] is False
+    assert args["train"]["cpu_offload"] is True
+    assert not ({"clip_coef", "gae_lambda"} & args["train"].keys())
 
 
 def test_sac_config_rejects_ppo_only_train_override():
@@ -155,11 +159,11 @@ def test_startup_seeds_before_models_and_builds_sac_components(monkeypatch, tmp_
     assert observed["env_seed"] == expected_env_seed
     assert observed["capture"] is True
     assert observed["critic_constructed"] is True
-    assert observed["critic_device"] == "cpu"
+    assert observed["critic_device"] == torch.device("cpu")
     assert observed["critic_dtype"] == torch.float32
     assert learner.config["action_count"] == actor.action_count
     assert learner.config["data_dir"] == str(tmp_path)
-    assert "clip_coef" not in learner.config and "compile" not in learner.config
+    assert "clip_coef" not in learner.config and learner.config["compile"] is False
     assert saved["path"] == str(tmp_path)
     assert saved["args"]["env"]["capture_final_observations"] is True
     assert saved["args"]["git"] == {"commit_hash": "test"}
@@ -181,18 +185,26 @@ def test_startup_requires_final_observation_transport(monkeypatch, tmp_path):
     assert vecenv.closed
 
 
-def test_startup_resolves_auto_replay_sizes_before_allocation(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "cpu_offload,expected_device,expected_pin_memory",
+    [(True, "cpu", True), (False, torch.device("cuda"), False)],
+)
+def test_startup_resolves_replay_placement_and_auto_sizes(
+        monkeypatch, tmp_path, cpu_offload, expected_device, expected_pin_memory):
     args = _startup_args(tmp_path)
     args["train"].update(
         batch_size="auto", minibatch_size="auto", learning_starts=3, max_minibatch_size=2,
+        device="cuda", cpu_offload=cpu_offload,
     )
     vecenv = _FakeVecEnv()
     policy = SimpleNamespace(action_count=12)
     observed = {}
 
     class FakeReplay:
-        def __init__(self, capacity, observation_shape, device):
+        def __init__(self, capacity, observation_shape, device, pin_memory):
             observed["replay_capacity"] = capacity
+            observed["replay_device"] = device
+            observed["replay_pin_memory"] = pin_memory
 
     class FakeLearner(_FakeLearner):
         def __init__(self, config, vecenv, policy, critic, replay, logger):
@@ -216,6 +228,8 @@ def test_startup_resolves_auto_replay_sizes_before_allocation(monkeypatch, tmp_p
     assert observed["replay_capacity"] == 256
     assert observed["learner_capacity"] == 256
     assert observed["learner_minibatch_size"] == 256
+    assert observed["replay_device"] == expected_device
+    assert observed["replay_pin_memory"] is expected_pin_memory
     assert saved["train"]["batch_size"] == 256
     assert saved["train"]["minibatch_size"] == 256
 

@@ -124,6 +124,37 @@ def test_drive_sac_shapes_gradients_parameter_independence_and_action_parity(dyn
         torch.set_num_threads(previous_thread_count)
 
 
+def test_drive_sac_masked_models_support_bfloat16_autocast_and_empty_objects():
+    previous_thread_count = torch.get_num_threads()
+    torch.set_num_threads(1)
+    try:
+        env = _mock_env("jerk")
+        policy_kwargs = _policy_kwargs()
+        actor = DriveSAC(env, **policy_kwargs)
+        critic = DriveSACCritic(env, **policy_kwargs)
+        observations = _mock_observations(batch_size=2)
+        observations[1, 70:74] = 0
+
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            logits = actor(observations)
+            q1, q2 = critic(observations)
+            assert logits.dtype == torch.bfloat16
+            assert q1.dtype == torch.bfloat16
+            assert q2.dtype == torch.bfloat16
+            assert torch.isfinite(logits).all()
+            assert torch.isfinite(q1).all()
+            assert torch.isfinite(q2).all()
+            loss = logits.square().mean() + q1.square().mean() + q2.square().mean()
+
+        loss.backward()
+        assert all(parameter.grad is not None for parameter in actor.parameters())
+        assert all(parameter.grad is not None for parameter in critic.parameters())
+        assert all(torch.isfinite(parameter.grad).all() for parameter in actor.parameters())
+        assert all(torch.isfinite(parameter.grad).all() for parameter in critic.parameters())
+    finally:
+        torch.set_num_threads(previous_thread_count)
+
+
 @pytest.mark.parametrize("model_class", [DriveSAC, DriveSACCritic])
 def test_drive_sac_models_reject_unsupported_construction_options(model_class):
     env = _mock_env("jerk")

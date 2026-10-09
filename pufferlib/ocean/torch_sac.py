@@ -31,6 +31,22 @@ def _make_head(input_size, hidden_size, num_layers, layer_norm, output_size, out
     return nn.Sequential(*layers)
 
 
+class _DriveSACBackbone(DriveBackbone):
+    def _encode_and_pool(self, objects, valid_counts, encoder, out_size):
+        if not self.mask_padded_features:
+            return encoder(objects).max(dim=1).values
+
+        valid_mask = torch.arange(objects.shape[1], device=objects.device) < valid_counts.unsqueeze(1)
+        encoded_valid_objects = encoder(objects[valid_mask])
+        encoded_objects = encoded_valid_objects.new_full(
+            (objects.shape[0], objects.shape[1], out_size),
+            torch.finfo(encoded_valid_objects.dtype).min,
+        )
+        encoded_objects[valid_mask] = encoded_valid_objects
+        pooled = encoded_objects.amax(dim=1)
+        return torch.where(valid_counts.unsqueeze(1) == 0, encoded_objects.new_zeros(()), pooled)
+
+
 class DriveSAC(nn.Module):
     """Discrete Drive actor returning action logits with shape ``[B, K]``."""
 
@@ -117,7 +133,7 @@ class DriveSAC(nn.Module):
             "backbone_layer_norm": backbone_layer_norm,
             "mask_padded_features": mask_padded_features,
         }
-        self.actor_backbone = DriveBackbone(**backbone_args)
+        self.actor_backbone = _DriveSACBackbone(**backbone_args)
         self.actor_head = _make_head(
             self.actor_backbone.out_dim,
             actor_hidden_size,
@@ -187,8 +203,8 @@ class DriveSACCritic(nn.Module):
             "mask_padded_features": mask_padded_features,
         }
 
-        self.q1_backbone = DriveBackbone(**backbone_args)
-        self.q2_backbone = DriveBackbone(**backbone_args)
+        self.q1_backbone = _DriveSACBackbone(**backbone_args)
+        self.q2_backbone = _DriveSACBackbone(**backbone_args)
         self.q1_head = _make_head(
             self.q1_backbone.out_dim,
             critic_hidden_size,

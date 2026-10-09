@@ -12,6 +12,14 @@ train:
   seed: 42
   device: cpu
   torch_deterministic: false
+  # Keep FP32 as the baseline; set amp=true and precision=bfloat16 for autocast.
+  amp: false
+  precision: float32
+  compile: false
+  compile_mode: default
+  compile_fullgraph: false
+  # Store replay on CPU by default; CUDA learners use pinned batches for async copies.
+  cpu_offload: true
   total_timesteps: 1000000
   gamma: 0.99
   # Set batch_size=auto to use max(learning_starts, vecenv.agents_per_batch, minibatch_size).

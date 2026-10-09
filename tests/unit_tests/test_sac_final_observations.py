@@ -1,4 +1,5 @@
 from collections import defaultdict
+from contextlib import nullcontext
 from types import SimpleNamespace
 
 import numpy as np
@@ -151,6 +152,8 @@ def _make_evaluate_only_sac(vecenv):
     trainer.stats = defaultdict(list)
     trainer.env_continuous = False
     trainer.policy = lambda observations: torch.zeros((observations.shape[0], 2))
+    trainer.uncompiled_policy = trainer.policy
+    trainer.amp_context = nullcontext()
     trainer.pytorch = SimpleNamespace(
         sample_logits=lambda logits, **kwargs: (torch.zeros(logits.shape[0], dtype=torch.long), None, None, None)
     )

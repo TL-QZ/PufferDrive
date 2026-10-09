@@ -1,7 +1,9 @@
 import copy
 from collections import defaultdict
+from contextlib import nullcontext
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import torch
 from torch import nn
@@ -55,11 +57,15 @@ def _make_replay():
 def _make_training_learner(replay, actor_state, critic_state, max_minibatch_size, max_grad_norm=None):
     learner = object.__new__(pufferl_sac.PuffeSAC)
     learner.device = torch.device("cpu")
-    learner.policy = _TinyActor()
-    learner.policy.load_state_dict(actor_state)
-    learner.critic = _TinyCritic()
-    learner.critic.load_state_dict(critic_state)
-    learner.target_critic = copy.deepcopy(learner.critic).requires_grad_(False).eval()
+    learner.uncompiled_policy = _TinyActor()
+    learner.uncompiled_policy.load_state_dict(actor_state)
+    learner.policy = learner.uncompiled_policy
+    learner.uncompiled_critic = _TinyCritic()
+    learner.uncompiled_critic.load_state_dict(critic_state)
+    learner.critic = learner.uncompiled_critic
+    learner.uncompiled_target_critic = copy.deepcopy(learner.uncompiled_critic).requires_grad_(False).eval()
+    learner.target_critic = learner.uncompiled_target_critic
+    learner.amp_context = nullcontext()
     learner.log_alpha = nn.Parameter(torch.tensor(-1.2))
     learner.optimizer = torch.optim.Adam(learner.policy.parameters(), lr=0.003)
     learner.critic_optimizer = torch.optim.Adam(learner.critic.parameters(), lr=0.004)
@@ -195,7 +201,7 @@ class _DummyUtilization:
         pass
 
 
-def _make_checkpoint_learner(monkeypatch, tmp_path, **config_updates):
+def _make_checkpoint_learner(monkeypatch, tmp_path, replay=None, vecenv=None, **config_updates):
     monkeypatch.setattr(pufferl, "Utilization", _DummyUtilization)
     monkeypatch.setattr(pufferl.PuffeRL, "print_dashboard", lambda self, clear=False: None)
     config = {
@@ -210,11 +216,33 @@ def _make_checkpoint_learner(monkeypatch, tmp_path, **config_updates):
     }
     return pufferl_sac.PuffeSAC(
         config,
-        _FakeVecEnv(),
+        _FakeVecEnv() if vecenv is None else vecenv,
         _TinyActor(),
         _TinyCritic(),
-        TensorReplay(config["batch_size"], (3,)),
+        replay if replay is not None else TensorReplay(config["batch_size"], (3,)),
     )
+
+
+class _CollectVecEnv(_FakeVecEnv):
+    def __init__(self):
+        super().__init__()
+        self.received = 0
+
+    def recv(self):
+        self.received += 1
+        observation = torch.full((1, 3), float(self.received), dtype=torch.float32).numpy()
+        return (
+            observation,
+            np.asarray([0.25], dtype=np.float32),
+            np.asarray([False]),
+            np.asarray([False]),
+            [],
+            np.asarray([0], dtype=np.int64),
+            np.asarray([self.received > 1]),
+        )
+
+    def send(self, actions):
+        self.last_actions = actions
 
 
 def _old_version_five_checkpoint(learner):
@@ -230,8 +258,8 @@ def _old_version_five_checkpoint(learner):
         "scope": "learner_only",
         "config": config,
         "policy_state_dict": learner.uncompiled_policy.state_dict(),
-        "critic_state_dict": learner.critic.state_dict(),
-        "target_critic_state_dict": learner.target_critic.state_dict(),
+        "critic_state_dict": learner.uncompiled_critic.state_dict(),
+        "target_critic_state_dict": learner.uncompiled_target_critic.state_dict(),
         "log_alpha": learner.log_alpha.detach().cpu(),
         "optimizer_state_dict": learner.optimizer.state_dict(),
         "critic_optimizer_state_dict": learner.critic_optimizer.state_dict(),
@@ -259,6 +287,119 @@ def test_old_version_five_checkpoint_uses_legacy_optimizer_defaults(monkeypatch,
     assert learner.config["adam_eps"] == 1e-8
     assert learner.config["adam_weight_decay"] == 0.0
     assert learner.config["max_grad_norm"] is None
+
+
+def test_cpu_bfloat16_autocasts_networks_and_keeps_sac_arithmetic_float32(monkeypatch, tmp_path):
+    learner = _make_checkpoint_learner(
+        monkeypatch,
+        tmp_path,
+        vecenv=_CollectVecEnv(),
+        batch_size=8,
+        total_timesteps=2,
+        learning_starts=1,
+        amp=True,
+        precision="bfloat16",
+    )
+    network_dtypes = []
+    handles = [
+        learner.uncompiled_policy.linear.register_forward_hook(
+            lambda _module, _inputs, output: network_dtypes.append(output.dtype)
+        ),
+        learner.uncompiled_critic.q1.register_forward_hook(
+            lambda _module, _inputs, output: network_dtypes.append(output.dtype)
+        ),
+        learner.uncompiled_target_critic.q1.register_forward_hook(
+            lambda _module, _inputs, output: network_dtypes.append(output.dtype)
+        ),
+    ]
+
+    learner.evaluate()
+    observations, actions, rewards, next_observations, discounts = learner.replay.get_batch(
+        torch.tensor([0], dtype=torch.int64)
+    )
+    targets = learner._compute_targets(rewards, next_observations, discounts)
+    critic_loss, q1, _ = learner._critic_loss(observations, actions, targets)
+    policy_loss, entropy = learner._policy_loss(observations)
+    for handle in handles:
+        handle.remove()
+
+    assert torch.bfloat16 in network_dtypes
+    assert all(parameter.dtype == torch.float32 for parameter in learner.uncompiled_policy.parameters())
+    assert all(parameter.dtype == torch.float32 for parameter in learner.uncompiled_critic.parameters())
+    assert targets.dtype == torch.float32
+    assert critic_loss.dtype == q1.dtype == policy_loss.dtype == entropy.dtype == torch.float32
+    assert torch.isfinite(targets).all() and torch.isfinite(critic_loss) and torch.isfinite(policy_loss)
+
+
+def test_compiled_cpu_learner_trains_tail_batches_and_round_trips_uncompiled_state(
+        monkeypatch, tmp_path):
+    learner_config = {
+        "batch_size": 7,
+        "minibatch_size": 7,
+        "max_minibatch_size": 3,
+        "learning_starts": 1,
+        "update_epochs": 2,
+    }
+    torch.manual_seed(23)
+    learner = _make_checkpoint_learner(
+        monkeypatch,
+        tmp_path,
+        compile=True,
+        replay=_make_replay(),
+        **learner_config,
+    )
+    torch.manual_seed(23)
+    eager = _make_checkpoint_learner(
+        monkeypatch,
+        tmp_path,
+        compile=False,
+        replay=_make_replay(),
+        **learner_config,
+    )
+
+    torch.manual_seed(101)
+    compiled_losses = defaultdict(float)
+    updates = learner._train_sac_transition(compiled_losses, lambda *_args, **_kwargs: None, 0)
+    torch.manual_seed(101)
+    eager_losses = defaultdict(float)
+    eager_updates = eager._train_sac_transition(eager_losses, lambda *_args, **_kwargs: None, 0)
+
+    assert updates == eager_updates == learner.learner_updates == eager.learner_updates == 2
+    assert learner.sampled_transitions == eager.sampled_transitions == 14
+    assert [indices.numel() for indices in learner.replay.sampled_indices] == [3, 3, 1] * 4
+    for compiled_model, eager_model in (
+        (learner.uncompiled_policy, eager.uncompiled_policy),
+        (learner.uncompiled_critic, eager.uncompiled_critic),
+        (learner.uncompiled_target_critic, eager.uncompiled_target_critic),
+    ):
+        for compiled_parameter, eager_parameter in zip(compiled_model.parameters(), eager_model.parameters()):
+            torch.testing.assert_close(compiled_parameter, eager_parameter, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(learner.log_alpha, eager.log_alpha, rtol=1e-5, atol=1e-6)
+    assert compiled_losses.keys() == eager_losses.keys()
+    for key, value in compiled_losses.items():
+        assert value == pytest.approx(eager_losses[key], rel=1e-5, abs=1e-6)
+
+    checkpoint_path = learner.save_checkpoint()
+    actor_state = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    trainer_state = torch.load(tmp_path / "trainer_state.pt", map_location="cpu", weights_only=False)
+    assert not any("_orig_mod" in key for key in actor_state)
+    assert not any("_orig_mod" in key for key in trainer_state["critic_state_dict"])
+
+    restored = _make_checkpoint_learner(
+        monkeypatch,
+        tmp_path,
+        replay=TensorReplay(7, (3,)),
+        compile=False,
+        **learner_config,
+    )
+    restored.load_training_state(tmp_path / "trainer_state.pt")
+    for source, loaded in (
+        (learner.uncompiled_policy, restored.uncompiled_policy),
+        (learner.uncompiled_critic, restored.uncompiled_critic),
+        (learner.uncompiled_target_critic, restored.uncompiled_target_critic),
+    ):
+        for source_value, loaded_value in zip(source.parameters(), loaded.parameters()):
+            torch.testing.assert_close(source_value, loaded_value)
 
 
 @pytest.mark.parametrize(

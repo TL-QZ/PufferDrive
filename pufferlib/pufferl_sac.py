@@ -1,12 +1,13 @@
 """Feed-forward discrete SAC using the same evaluate/train lifecycle as PuffeRL.
 
-Drive networks, replay, pre-reset observations and Hydra startup are integrated.
-Learner options, DDP, AMP/compile and evaluation workflows remain planned;
+Drive networks, replay placement, pre-reset observations, BF16 autocast, compile,
+and Hydra startup are integrated; DDP and evaluation workflows remain planned;
 recurrence and replay/environment resume remain deferred.
 """
 
 from collections import defaultdict
 import copy
+from contextlib import nullcontext
 import glob
 import math
 import os
@@ -35,7 +36,8 @@ DEFAULT_CONFIG = dict(
     total_timesteps=None, gamma=0.99, learning_starts=10_000, replay_update_ratio=0.1,
     learning_rate=3e-4, critic_learning_rate=3e-4, alpha_learning_rate=3e-4,
     optimizer="adam", adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8, adam_weight_decay=0.0,
-    max_grad_norm=None,
+    max_grad_norm=None, amp=False, precision="float32", compile=False, compile_mode="default",
+    compile_fullgraph=False, cpu_offload=True,
     initial_alpha=0.2, target_entropy=None, tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
 )
@@ -193,6 +195,10 @@ class PuffeSAC:
                 raise ValueError(f"{key} must be finite and positive")
         if config["optimizer"] not in {"adam", "adamw", "muon"}:
             raise ValueError(f"Unknown optimizer: {config['optimizer']}")
+        if config["precision"] not in ("float32", "bfloat16"):
+            raise ValueError("Invalid precision: use float32 or bfloat16")
+        if config["precision"] == "bfloat16" and not config["amp"]:
+            raise ValueError("bfloat16 precision requires train.amp=True")
         for key in ("adam_beta1", "adam_beta2"):
             if not math.isfinite(config[key]) or not 0 <= config[key] < 1:
                 raise ValueError(f"{key} must be finite and in [0, 1)")
@@ -236,7 +242,7 @@ class PuffeSAC:
         self.helpers = pufferl
         self.pytorch = pytorch
         self.config = config
-        self.device = pufferl.torch_device(config["device"])
+        self.device = torch.device(pufferl.torch_device(config["device"]))
         self.vecenv = vecenv
         self.batch_size = config["batch_size"]
         self.refresh_count = math.ceil(self.batch_size * config["replay_update_ratio"])
@@ -254,6 +260,19 @@ class PuffeSAC:
         elif getattr(vecenv.single_action_space, "n", None) != config["action_count"]:
             raise NotImplementedError("Discrete SAC requires a Discrete environment action space matching action_count")
 
+        if config["precision"] == "bfloat16":
+            if self.device.type == "cuda" and not torch.cuda.is_bf16_supported():
+                raise pufferl.pufferlib.APIUsageError(
+                    "bfloat16 precision requires a CUDA device with bf16 support"
+                )
+            if self.device.type not in ("cpu", "cuda"):
+                raise pufferl.pufferlib.APIUsageError(
+                    f"bfloat16 precision is unsupported on device type {self.device.type}"
+                )
+        self.amp_context = nullcontext()
+        if config["amp"] and config["precision"] == "bfloat16":
+            self.amp_context = torch.amp.autocast(device_type=self.device.type, dtype=torch.bfloat16)
+
         self.total_agents = vecenv.num_agents
         self.minibatch_size = config["minibatch_size"]
         self.max_minibatch_size = config["max_minibatch_size"]
@@ -264,16 +283,30 @@ class PuffeSAC:
         self.pending = torch.zeros(self.total_agents, device=self.device, dtype=torch.bool)
         self.replay = replay
 
-        self.policy = policy.to(self.device, dtype=torch.float32)
-        self.uncompiled_policy = self.policy
-        self.model_size = sum(parameter.numel() for parameter in self.policy.parameters() if parameter.requires_grad)
-        self.critic = critic.to(self.device, dtype=torch.float32)
-        self.target_critic = copy.deepcopy(self.critic).requires_grad_(False).eval()
+        self.uncompiled_policy = policy.to(self.device, dtype=torch.float32)
+        self.model_size = sum(
+            parameter.numel() for parameter in self.uncompiled_policy.parameters() if parameter.requires_grad
+        )
+        self.uncompiled_critic = critic.to(self.device, dtype=torch.float32)
+        self.uncompiled_target_critic = copy.deepcopy(self.uncompiled_critic).requires_grad_(False).eval()
+        self.policy = self.uncompiled_policy
+        self.critic = self.uncompiled_critic
+        self.target_critic = self.uncompiled_target_critic
+        if config["compile"]:
+            compile_kwargs = {
+                "mode": config["compile_mode"],
+                "fullgraph": config["compile_fullgraph"],
+            }
+            self.policy = torch.compile(self.uncompiled_policy, **compile_kwargs)
+            self.critic = torch.compile(self.uncompiled_critic, **compile_kwargs)
+            self.target_critic = torch.compile(self.uncompiled_target_critic, **compile_kwargs)
         self.log_alpha = torch.nn.Parameter(torch.tensor(
             math.log(config["initial_alpha"]), device=self.device, dtype=torch.float32
         ))
-        self.optimizer = self._make_model_optimizer(self.policy.parameters(), config["learning_rate"])
-        self.critic_optimizer = self._make_model_optimizer(self.critic.parameters(), config["critic_learning_rate"])
+        self.optimizer = self._make_model_optimizer(self.uncompiled_policy.parameters(), config["learning_rate"])
+        self.critic_optimizer = self._make_model_optimizer(
+            self.uncompiled_critic.parameters(), config["critic_learning_rate"]
+        )
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=config["alpha_learning_rate"])
         scheduler_steps = max(1, math.ceil(config["total_timesteps"] / self.refresh_count))
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=scheduler_steps)
@@ -353,7 +386,8 @@ class PuffeSAC:
             raise ValueError("Unsupported SAC checkpoint format; expected learner-only SAC state version 5")
         operational_config = {
             "device", "total_timesteps", "run_name", "data_dir", "final_model_name",
-            "checkpoint_interval", "resume_state_path",
+            "checkpoint_interval", "resume_state_path", "amp", "precision", "compile",
+            "compile_mode", "compile_fullgraph", "cpu_offload",
         }
         saved_config = {**DEFAULT_CONFIG, **state["config"]}
         for key, value in saved_config.items():
@@ -361,7 +395,7 @@ class PuffeSAC:
                 raise ValueError(f"Checkpoint config mismatch: {key}")
         for name in ("policy", "critic", "target_critic"):
             model_state = self.helpers.clean_policy_state_dict(state[f"{name}_state_dict"])
-            getattr(self, name).load_state_dict(model_state)
+            getattr(self, f"uncompiled_{name}").load_state_dict(model_state)
         with torch.no_grad():
             self.log_alpha.copy_(state["log_alpha"])
         for name in ("optimizer", "critic_optimizer", "alpha_optimizer"):
@@ -446,6 +480,8 @@ class PuffeSAC:
     @torch.no_grad()
     def evaluate(self):
         """Collect transitions directly from vecenv, matching PuffeRL.evaluate."""
+        if self.device.type == "cuda":
+            torch.compiler.cudagraph_mark_step_begin()
         profile = self.profile
         epoch = self.epoch
         profile("eval", epoch)
@@ -486,8 +522,10 @@ class PuffeSAC:
             self.stats["obs/mean"].append(observations.mean().item())
 
             profile("eval_forward", epoch)
+            with self.amp_context:
+                logits = self.policy(observations)
             actions, _, _, continuous_actions = self.pytorch.sample_logits(
-                self.policy(observations), env_continuous=self.env_continuous, policy=self.policy
+                logits.float(), env_continuous=self.env_continuous, policy=self.uncompiled_policy
             )
 
             if completed.any():
@@ -561,6 +599,8 @@ class PuffeSAC:
 
     def train(self):
         """Optimize from replay after evaluate(); one call increments epoch once."""
+        if self.device.type == "cuda":
+            torch.compiler.cudagraph_mark_step_begin()
         profile = self.profile
         epoch = self.epoch
         profile("train", epoch)
@@ -594,26 +634,35 @@ class PuffeSAC:
 
     @torch.no_grad()
     def _compute_targets(self, mb_rewards, mb_next_obs, mb_discounts):
-        logits = self.policy(mb_next_obs)
-        logprobs = F.log_softmax(logits, dim=-1)
+        with self.amp_context:
+            logits = self.policy(mb_next_obs)
+            next_q1, next_q2 = self.target_critic(mb_next_obs)
+        logprobs = F.log_softmax(logits.float(), dim=-1)
         probs = logprobs.exp()
-        next_q1, next_q2 = self.target_critic(mb_next_obs)
+        next_q1 = next_q1.float()
+        next_q2 = next_q2.float()
         next_value = (probs * (torch.minimum(next_q1, next_q2) - self.alpha * logprobs)).sum(-1)
         return mb_rewards + mb_discounts * next_value
 
     def _critic_loss(self, mb_obs, mb_actions, mb_targets):
-        q1, q2 = self.critic(mb_obs)
+        with self.amp_context:
+            q1, q2 = self.critic(mb_obs)
+        q1 = q1.float()
+        q2 = q2.float()
         q1 = q1.gather(1, mb_actions.unsqueeze(-1)).squeeze(-1)
         q2 = q2.gather(1, mb_actions.unsqueeze(-1)).squeeze(-1)
         loss = F.mse_loss(q1, mb_targets) + F.mse_loss(q2, mb_targets)
         return loss, q1.detach().mean(), q2.detach().mean()
 
     def _policy_loss(self, mb_obs):
-        logits = self.policy(mb_obs)
-        logprobs = F.log_softmax(logits, dim=-1)
+        with self.amp_context:
+            logits = self.policy(mb_obs)
+        logprobs = F.log_softmax(logits.float(), dim=-1)
         probs = logprobs.exp()
-        with torch.no_grad():
+        with torch.no_grad(), self.amp_context:
             q1, q2 = self.critic(mb_obs)
+        q1 = q1.float()
+        q2 = q2.float()
         loss = (probs * (self.alpha * logprobs - torch.minimum(q1, q2))).sum(-1).mean()
         entropy = -(probs * logprobs).sum(-1).mean()
         return loss, entropy.detach()
@@ -644,7 +693,8 @@ class PuffeSAC:
                 micro_count = micro_indices.numel()
                 profile("train_copy", epoch)
                 mb_obs, mb_actions, mb_rewards, mb_next_obs, mb_discounts = (
-                    tensor.to(self.device) for tensor in self.replay.get_batch(micro_indices)
+                    tensor.to(self.device, non_blocking=True)
+                    for tensor in self.replay.get_batch(micro_indices)
                 )
                 profile("train_forward", epoch)
                 mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
@@ -667,7 +717,7 @@ class PuffeSAC:
                 micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
                 micro_count = micro_indices.numel()
                 profile("train_copy", epoch)
-                mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device)
+                mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device, non_blocking=True)
                 profile("train_forward", epoch)
                 policy_loss, entropy = self._policy_loss(mb_obs)
                 profile("learn", epoch)
@@ -688,8 +738,12 @@ class PuffeSAC:
             profile("train_misc", epoch)
             # Polyak-update all target parameters and buffers, including encoders.
             with torch.no_grad():
-                online = dict(self.critic.named_parameters()) | dict(self.critic.named_buffers())
-                targets = dict(self.target_critic.named_parameters()) | dict(self.target_critic.named_buffers())
+                online = dict(self.uncompiled_critic.named_parameters()) | dict(
+                    self.uncompiled_critic.named_buffers()
+                )
+                targets = dict(self.uncompiled_target_critic.named_parameters()) | dict(
+                    self.uncompiled_target_critic.named_buffers()
+                )
                 for key, target in targets.items():
                     if target.is_floating_point():
                         target.lerp_(online[key], self.config["tau"])
@@ -786,8 +840,8 @@ class PuffeSAC:
             "scope": "learner_only",
             "config": dict(self.config),
             "policy_state_dict": self.uncompiled_policy.state_dict(),
-            "critic_state_dict": self.critic.state_dict(),
-            "target_critic_state_dict": self.target_critic.state_dict(),
+            "critic_state_dict": self.uncompiled_critic.state_dict(),
+            "target_critic_state_dict": self.uncompiled_target_critic.state_dict(),
             "log_alpha": self.log_alpha.detach().cpu(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),
@@ -913,17 +967,21 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                     "the _pufferlib_final_observations info payload."
                 )
 
+            learner_device = torch.device(ppo.torch_device(config["device"]))
             if policy is None:
                 policy = load_policy(startup_args, vecenv, env_name)
             if critic is None:
                 from pufferlib.ocean.torch_sac import DriveSACCritic
                 critic = DriveSACCritic(vecenv.driver_env, **startup_args["policy"]).to(
-                    device=ppo.torch_device(config["device"]), dtype=torch.float32,
+                    device=learner_device, dtype=torch.float32,
                 )
             if replay is None:
                 from pufferlib.sac_replay import TensorReplay
+                replay_device = "cpu" if config["cpu_offload"] else learner_device
                 replay = TensorReplay(
-                    config["batch_size"], vecenv.single_observation_space.shape, device="cpu",
+                    config["batch_size"], vecenv.single_observation_space.shape,
+                    device=replay_device,
+                    pin_memory=config["cpu_offload"] and learner_device.type == "cuda",
                 )
             config["action_count"] = policy.action_count
 
