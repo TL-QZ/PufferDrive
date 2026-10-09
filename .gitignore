@@ -221,6 +221,10 @@ docs/_build/
 .claude/
 CLAUDE.local.md
 
+# Local Codex skills and agent configuration
+/.agents/
+/.codex/
+
 episode_metrics
 
 /obs
