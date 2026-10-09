@@ -1,8 +1,9 @@
 """Feed-forward discrete SAC using the same evaluate/train lifecycle as PuffeRL.
 
-TODO: Drive policy/critic construction, replay implementation, final-observation
-transport and Hydra integration. Supply those components explicitly until then.
-DDP, recurrence, AMP/compile and replay/environment resume remain deferred.
+Drive networks and tensor replay are available in ocean.torch_sac and sac_replay.
+TODO: final-observation transport and Hydra/component startup integration.
+Supply components explicitly until then. DDP and AMP/compile are planned;
+recurrence and replay/environment resume remain deferred.
 """
 
 from collections import defaultdict
@@ -36,7 +37,7 @@ DEFAULT_CONFIG = dict(
 
 
 class PuffeSAC:
-    """Injected component contracts; replay validates data on insertion.
+    """Injected component contracts; transition tensors are learner-owned.
 
     policy(obs) -> logits [B,K]; critic(obs) -> (q1, q2), each [B,K].
     replay.add(obs, actions, rewards, next_obs, discounts) appends copied rows.
