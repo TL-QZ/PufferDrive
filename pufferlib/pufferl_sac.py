@@ -17,6 +17,7 @@ import signal
 import sys
 import time
 import traceback
+import warnings
 
 from hydra import compose, initialize_config_dir
 import numpy as np
@@ -30,14 +31,54 @@ DEFAULT_ENTROPY_FRACTION = 0.98
 FINAL_OBSERVATIONS_INFO_KEY = "_pufferlib_final_observations"
 DEFAULT_CONFIG = dict(
     env="puffer_drive", device="cpu", seed=0, run_name="sac", batch_size=10_000,
-    minibatch_size=256, update_epochs=1,
+    minibatch_size=256, max_minibatch_size=256, update_epochs=1,
     total_timesteps=None, gamma=0.99, learning_starts=10_000, replay_update_ratio=0.1,
     learning_rate=3e-4, critic_learning_rate=3e-4, alpha_learning_rate=3e-4,
+    optimizer="adam", adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8, adam_weight_decay=0.0,
+    max_grad_norm=None,
     initial_alpha=0.2, target_entropy=None, tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
 )
 
 SAC_TRAIN_KEYS = frozenset(DEFAULT_CONFIG) - {"env"} | {"data_dir"}
+DEFAULT_MINIBATCH_SIZE = 256
+
+
+def resolve_sac_batch_sizes(config, vecenv):
+    """Resolve SAC replay capacity and logical batch sizes before replay allocation."""
+    resolved = dict(config)
+    batch_size = resolved.get("batch_size", DEFAULT_CONFIG["batch_size"])
+    minibatch_size = resolved.get("minibatch_size", DEFAULT_CONFIG["minibatch_size"])
+    learning_starts = resolved.get("learning_starts", DEFAULT_CONFIG["learning_starts"])
+    max_minibatch_size = resolved.get("max_minibatch_size", DEFAULT_CONFIG["max_minibatch_size"])
+
+    if not isinstance(learning_starts, int) or isinstance(learning_starts, bool) or learning_starts <= 0:
+        raise ValueError("learning_starts must be a positive integer")
+    if not isinstance(max_minibatch_size, int) or isinstance(max_minibatch_size, bool) or max_minibatch_size <= 0:
+        raise ValueError("max_minibatch_size must be a positive integer")
+    if batch_size != "auto" and (
+            not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0):
+        raise ValueError("batch_size must be a positive integer or 'auto'")
+    if minibatch_size != "auto" and (
+            not isinstance(minibatch_size, int) or isinstance(minibatch_size, bool) or minibatch_size <= 0):
+        raise ValueError("minibatch_size must be a positive integer or 'auto'")
+
+    if minibatch_size == "auto":
+        if batch_size == "auto":
+            minibatch_size = DEFAULT_MINIBATCH_SIZE
+        else:
+            minibatch_size = min(DEFAULT_MINIBATCH_SIZE, batch_size)
+
+    if batch_size == "auto":
+        agents_per_batch = vecenv.agents_per_batch
+        batch_size = max(learning_starts, agents_per_batch, minibatch_size)
+
+    resolved["batch_size"] = batch_size
+    resolved["minibatch_size"] = minibatch_size
+    resolved["max_minibatch_size"] = max_minibatch_size
+    if learning_starts > batch_size:
+        raise ValueError("Require learning_starts <= batch_size replay capacity")
+    return resolved
 
 
 def load_config(env_name="puffer_drive", config_dir=None, overrides=None):
@@ -133,7 +174,7 @@ class PuffeSAC:
         if config is None:
             raise ValueError("Supply a SAC training config dictionary")
 
-        config = {**DEFAULT_CONFIG, **config}
+        config = resolve_sac_batch_sizes({**DEFAULT_CONFIG, **config}, vecenv)
         if "data_dir" not in config or not config["data_dir"]:
             raise ValueError("SAC requires an explicit data_dir")
         supported_config = DEFAULT_CONFIG.keys() | {
@@ -141,18 +182,25 @@ class PuffeSAC:
         }
         if set(config) - supported_config:
             raise ValueError("Unsupported SAC config fields; use DEFAULT_CONFIG plus action_count and data_dir")
-        for key in ("action_count", "total_timesteps", "batch_size", "minibatch_size", "update_epochs",
-                    "learning_starts", "checkpoint_interval"):
+        for key in ("action_count", "total_timesteps", "update_epochs", "checkpoint_interval"):
             if not isinstance(config[key], int) or isinstance(config[key], bool) or config[key] <= 0:
                 raise ValueError(f"{key} must be a positive integer")
         if config["action_count"] < 2:
             raise ValueError("Require action_count >= 2")
-        if config["learning_starts"] > config["batch_size"]:
-            raise ValueError("Require learning_starts <= batch_size replay capacity")
         for key in ("learning_rate", "critic_learning_rate", "alpha_learning_rate",
-                    "initial_alpha", "replay_update_ratio", "tau"):
+                    "initial_alpha", "replay_update_ratio", "tau", "adam_eps"):
             if not math.isfinite(config[key]) or config[key] <= 0:
                 raise ValueError(f"{key} must be finite and positive")
+        if config["optimizer"] not in {"adam", "adamw", "muon"}:
+            raise ValueError(f"Unknown optimizer: {config['optimizer']}")
+        for key in ("adam_beta1", "adam_beta2"):
+            if not math.isfinite(config[key]) or not 0 <= config[key] < 1:
+                raise ValueError(f"{key} must be finite and in [0, 1)")
+        if not math.isfinite(config["adam_weight_decay"]) or config["adam_weight_decay"] < 0:
+            raise ValueError("adam_weight_decay must be finite and nonnegative")
+        if config["max_grad_norm"] is not None and (
+                not math.isfinite(config["max_grad_norm"]) or config["max_grad_norm"] <= 0):
+            raise ValueError("max_grad_norm must be finite and positive or None")
         if not math.isfinite(config["gamma"]) or not 0 <= config["gamma"] <= 1:
             raise ValueError("gamma must be finite and in [0, 1]")
         if config["tau"] > 1:
@@ -208,6 +256,7 @@ class PuffeSAC:
 
         self.total_agents = vecenv.num_agents
         self.minibatch_size = config["minibatch_size"]
+        self.max_minibatch_size = config["max_minibatch_size"]
         self.observations = torch.zeros(
             self.total_agents, *vecenv.single_observation_space.shape, device=self.device, dtype=torch.float32
         )
@@ -223,8 +272,8 @@ class PuffeSAC:
         self.log_alpha = torch.nn.Parameter(torch.tensor(
             math.log(config["initial_alpha"]), device=self.device, dtype=torch.float32
         ))
-        self.optimizer = torch.optim.Adam(self.policy.parameters(), lr=config["learning_rate"])
-        self.critic_optimizer = torch.optim.Adam(self.critic.parameters(), lr=config["critic_learning_rate"])
+        self.optimizer = self._make_model_optimizer(self.policy.parameters(), config["learning_rate"])
+        self.critic_optimizer = self._make_model_optimizer(self.critic.parameters(), config["critic_learning_rate"])
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=config["alpha_learning_rate"])
         scheduler_steps = max(1, math.ceil(config["total_timesteps"] / self.refresh_count))
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=scheduler_steps)
@@ -259,6 +308,40 @@ class PuffeSAC:
             self.utilization.join()
             raise
 
+    def _make_model_optimizer(self, parameters, learning_rate):
+        optimizer_name = self.config["optimizer"]
+        optimizer_kwargs = {
+            "lr": learning_rate,
+            "betas": (self.config["adam_beta1"], self.config["adam_beta2"]),
+            "eps": self.config["adam_eps"],
+        }
+        if optimizer_name == "adam":
+            return torch.optim.Adam(
+                parameters, weight_decay=self.config["adam_weight_decay"], **optimizer_kwargs
+            )
+        if optimizer_name == "adamw":
+            return torch.optim.AdamW(
+                parameters, weight_decay=self.config["adam_weight_decay"], **optimizer_kwargs
+            )
+
+        import heavyball
+
+        warnings.filterwarnings(action="ignore", category=UserWarning, module=r"heavyball.*")
+        heavyball.utils.compile_mode = "default"
+        muon_optimizer = getattr(heavyball, "ForeachMuon", None)
+        if muon_optimizer is None:
+            return heavyball.Muon(
+                parameters,
+                **optimizer_kwargs,
+                heavyball_momentum=True,
+                compile_step=False,
+            )
+        return muon_optimizer(
+            parameters,
+            **optimizer_kwargs,
+            heavyball_momentum=True,
+        )
+
     def load_training_state(self, path):
         """Restore learner state into a fresh environment and empty replay."""
         if (len(self.replay) or self.global_step or self.epoch or self.valid_inserts
@@ -272,7 +355,8 @@ class PuffeSAC:
             "device", "total_timesteps", "run_name", "data_dir", "final_model_name",
             "checkpoint_interval", "resume_state_path",
         }
-        for key, value in state["config"].items():
+        saved_config = {**DEFAULT_CONFIG, **state["config"]}
+        for key, value in saved_config.items():
             if key not in operational_config and self.config[key] != value:
                 raise ValueError(f"Checkpoint config mismatch: {key}")
         for name in ("policy", "critic", "target_critic"):
@@ -540,55 +624,88 @@ class PuffeSAC:
             return 0
         minibatches_per_epoch = math.ceil(replay_size / self.minibatch_size)
         total_minibatches = self.config["update_epochs"] * minibatches_per_epoch
-        for _ in range(self.config["update_epochs"]):
-            replay_indices = torch.randperm(replay_size, device="cpu")
-            for start_idx in range(0, replay_size, self.minibatch_size):
-                mb_indices = replay_indices[start_idx:start_idx + self.minibatch_size]
+        total_sampled_transitions = replay_size * self.config["update_epochs"]
+        replay_indices = None
+        for logical_update_idx in range(total_minibatches):
+            minibatch_idx = logical_update_idx % minibatches_per_epoch
+            if minibatch_idx == 0:
+                replay_indices = torch.randperm(replay_size, device="cpu")
+            start_idx = minibatch_idx * self.minibatch_size
+            mb_indices = replay_indices[start_idx:start_idx + self.minibatch_size]
+            logical_batch_count = mb_indices.numel()
+
+            self.critic_optimizer.zero_grad(set_to_none=True)
+            critic_loss_value = 0.0
+            q1_value = 0.0
+            q2_value = 0.0
+            target_value = 0.0
+            for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
+                micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
+                micro_count = micro_indices.numel()
                 profile("train_copy", epoch)
                 mb_obs, mb_actions, mb_rewards, mb_next_obs, mb_discounts = (
-                    tensor.to(self.device) for tensor in self.replay.get_batch(mb_indices)
+                    tensor.to(self.device) for tensor in self.replay.get_batch(micro_indices)
                 )
                 profile("train_forward", epoch)
                 mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
                 critic_loss, q1, q2 = self._critic_loss(mb_obs, mb_actions, mb_targets)
                 profile("learn", epoch)
-                self.critic_optimizer.zero_grad(set_to_none=True)
-                critic_loss.backward()
-                self.critic_optimizer.step()
+                (critic_loss * (micro_count / logical_batch_count)).backward()
+                critic_loss_value += critic_loss.detach().item() * micro_count / logical_batch_count
+                q1_value += q1.item() * micro_count / logical_batch_count
+                q2_value += q2.item() * micro_count / logical_batch_count
+                target_value += mb_targets.mean().item() * micro_count / logical_batch_count
 
+            if self.config["max_grad_norm"] is not None:
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config["max_grad_norm"])
+            self.critic_optimizer.step()
+
+            self.optimizer.zero_grad(set_to_none=True)
+            policy_loss_value = 0.0
+            entropy_sum = torch.zeros((), device=self.device, dtype=torch.float32)
+            for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
+                micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
+                micro_count = micro_indices.numel()
+                profile("train_copy", epoch)
+                mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device)
                 profile("train_forward", epoch)
                 policy_loss, entropy = self._policy_loss(mb_obs)
                 profile("learn", epoch)
-                self.optimizer.zero_grad(set_to_none=True)
-                policy_loss.backward()
-                self.optimizer.step()
+                (policy_loss * (micro_count / logical_batch_count)).backward()
+                policy_loss_value += policy_loss.detach().item() * micro_count / logical_batch_count
+                entropy_sum += entropy * micro_count
 
-                alpha_loss = self.log_alpha * (entropy - self.config["target_entropy"])
-                self.alpha_optimizer.zero_grad(set_to_none=True)
-                alpha_loss.backward()
-                self.alpha_optimizer.step()
+            if self.config["max_grad_norm"] is not None:
+                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.config["max_grad_norm"])
+            self.optimizer.step()
 
-                profile("train_misc", epoch)
-                # Polyak-update all target parameters and buffers, including encoders.
-                with torch.no_grad():
-                    online = dict(self.critic.named_parameters()) | dict(self.critic.named_buffers())
-                    targets = dict(self.target_critic.named_parameters()) | dict(self.target_critic.named_buffers())
-                    for key, target in targets.items():
-                        if target.is_floating_point():
-                            target.lerp_(online[key], self.config["tau"])
-                        else:
-                            target.copy_(online[key])
+            mean_entropy = entropy_sum / logical_batch_count
+            alpha_loss = self.log_alpha * (mean_entropy - self.config["target_entropy"])
+            self.alpha_optimizer.zero_grad(set_to_none=True)
+            alpha_loss.backward()
+            self.alpha_optimizer.step()
 
-                self.learner_updates += 1
-                self.sampled_transitions += mb_indices.numel()
-                update_losses = dict(
-                    critic_loss=critic_loss.item(), policy_loss=policy_loss.item(),
-                    alpha_loss=alpha_loss.item(), entropy=entropy.item(), alpha=self.alpha.item(),
-                    q1=q1.item(), q2=q2.item(), target=mb_targets.mean().item(),
-                )
-                profile("train_misc", epoch)
-                for key, value in update_losses.items():
-                    losses[key] += value / total_minibatches
+            profile("train_misc", epoch)
+            # Polyak-update all target parameters and buffers, including encoders.
+            with torch.no_grad():
+                online = dict(self.critic.named_parameters()) | dict(self.critic.named_buffers())
+                targets = dict(self.target_critic.named_parameters()) | dict(self.target_critic.named_buffers())
+                for key, target in targets.items():
+                    if target.is_floating_point():
+                        target.lerp_(online[key], self.config["tau"])
+                    else:
+                        target.copy_(online[key])
+
+            self.learner_updates += 1
+            self.sampled_transitions += logical_batch_count
+            update_losses = dict(
+                critic_loss=critic_loss_value, policy_loss=policy_loss_value,
+                alpha_loss=alpha_loss.detach().item(), entropy=mean_entropy.item(), alpha=self.alpha.item(),
+                q1=q1_value, q2=q2_value, target=target_value,
+            )
+            profile("train_misc", epoch)
+            for key, value in update_losses.items():
+                losses[key] += value * logical_batch_count / total_sampled_transitions
         return total_minibatches
 
     def mean_and_log(self):
@@ -781,6 +898,13 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             }
 
             vecenv = vecenv or ppo.load_env(env_name, startup_args, seed=env_seed)
+            resolved_sizes = resolve_sac_batch_sizes(config, vecenv)
+            config.update(
+                batch_size=resolved_sizes["batch_size"],
+                minibatch_size=resolved_sizes["minibatch_size"],
+            )
+            train_args["batch_size"] = config["batch_size"]
+            train_args["minibatch_size"] = config["minibatch_size"]
             driver_env = getattr(vecenv, "driver_env", None)
             if not getattr(driver_env, "capture_final_observations", False):
                 raise NotImplementedError(

@@ -14,15 +14,23 @@ train:
   torch_deterministic: false
   total_timesteps: 1000000
   gamma: 0.99
-  # Replay capacity; minibatch_size controls each learner update.
+  # Set batch_size=auto to use max(learning_starts, vecenv.agents_per_batch, minibatch_size).
   batch_size: 10000
+  # Set minibatch_size=auto to use min(256, explicit capacity), or 256 when both sizes are auto.
   minibatch_size: 256
+  max_minibatch_size: 256
   update_epochs: 1
   learning_starts: 10000
   replay_update_ratio: 0.1
   learning_rate: 0.0003
   critic_learning_rate: 0.0003
   alpha_learning_rate: 0.0003
+  optimizer: adam
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_eps: 1.0e-08
+  adam_weight_decay: 0.0
+  max_grad_norm: null
   initial_alpha: 0.2
   target_entropy: null
   tau: 0.005

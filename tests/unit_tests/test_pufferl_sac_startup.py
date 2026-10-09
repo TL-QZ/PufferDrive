@@ -18,10 +18,13 @@ def test_sac_config_inherits_drive_sections_and_filters_ppo_train_settings():
     assert args["policy"]["action_type"] == "discrete"
     assert "eval" in args and "vec" in args
     assert args["train"]["batch_size"] == 10_000
+    assert args["train"]["minibatch_size"] == 256
+    assert args["train"]["max_minibatch_size"] == 256
     assert args["train"]["learning_starts"] == 10_000
     assert args["train"]["learning_rate"] == 3e-4
     assert args["train"]["critic_learning_rate"] == 3e-4
     assert args["train"]["alpha_learning_rate"] == 3e-4
+    assert args["train"]["optimizer"] == "adam"
     assert args["train"]["initial_alpha"] == 0.2
     assert args["train"]["tau"] == 0.005
     assert not ({"compile", "amp", "precision", "clip_coef", "gae_lambda"} & args["train"].keys())
@@ -65,6 +68,8 @@ class _FakeVecEnv:
     def __init__(self, capture_final_observations=True):
         self.driver_env = SimpleNamespace(capture_final_observations=capture_final_observations)
         self.single_observation_space = SimpleNamespace(shape=(4,))
+        self.agents_per_batch = 4
+        self.num_agents = 4
         self.closed = False
 
     def close(self):
@@ -174,6 +179,45 @@ def test_startup_requires_final_observation_transport(monkeypatch, tmp_path):
     with pytest.raises(NotImplementedError, match="final-observation transport"):
         pufferl_sac.train(args=args)
     assert vecenv.closed
+
+
+def test_startup_resolves_auto_replay_sizes_before_allocation(monkeypatch, tmp_path):
+    args = _startup_args(tmp_path)
+    args["train"].update(
+        batch_size="auto", minibatch_size="auto", learning_starts=3, max_minibatch_size=2,
+    )
+    vecenv = _FakeVecEnv()
+    policy = SimpleNamespace(action_count=12)
+    observed = {}
+
+    class FakeReplay:
+        def __init__(self, capacity, observation_shape, device):
+            observed["replay_capacity"] = capacity
+
+    class FakeLearner(_FakeLearner):
+        def __init__(self, config, vecenv, policy, critic, replay, logger):
+            super().__init__(config, vecenv, policy, critic, replay, logger)
+            observed["learner_capacity"] = config["batch_size"]
+            observed["learner_minibatch_size"] = config["minibatch_size"]
+
+    saved = {}
+    monkeypatch.setattr("pufferlib.sac_replay.TensorReplay", FakeReplay)
+    monkeypatch.setattr(pufferl, "_get_git_metadata", lambda: {})
+    monkeypatch.setattr(
+        pufferl, "_save_experiment_config",
+        lambda saved_args, path: saved.update(train=dict(saved_args["train"])),
+    )
+    monkeypatch.setattr(pufferl_sac, "PuffeSAC", FakeLearner)
+
+    pufferl_sac.train(
+        args=args, vecenv=vecenv, policy=policy, critic=object(), logger=_FakeLogger(),
+    )
+
+    assert observed["replay_capacity"] == 256
+    assert observed["learner_capacity"] == 256
+    assert observed["learner_minibatch_size"] == 256
+    assert saved["train"]["batch_size"] == 256
+    assert saved["train"]["minibatch_size"] == 256
 
 
 def test_flat_injected_train_api_remains_available(monkeypatch):
