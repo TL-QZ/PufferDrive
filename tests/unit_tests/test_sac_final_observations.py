@@ -140,6 +140,10 @@ def _make_evaluate_only_sac(vecenv):
     trainer.refresh_count = 2
     trainer.config = {"total_timesteps": 2, "gamma": 0.9}
     trainer.global_step = 0
+    trainer.agent_steps = 0
+    trainer.world_size = 1
+    trainer.rank = 0
+    trainer.distributed = False
     trainer.valid_inserts = 0
     trainer.device = torch.device("cpu")
     trainer.vecenv = vecenv

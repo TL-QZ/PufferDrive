@@ -60,9 +60,13 @@ def _make_training_learner(replay, actor_state, critic_state, max_minibatch_size
     learner.uncompiled_policy = _TinyActor()
     learner.uncompiled_policy.load_state_dict(actor_state)
     learner.policy = learner.uncompiled_policy
+    learner.ddp_policy = learner.uncompiled_policy
+    learner.policy_train = learner.policy
     learner.uncompiled_critic = _TinyCritic()
     learner.uncompiled_critic.load_state_dict(critic_state)
     learner.critic = learner.uncompiled_critic
+    learner.ddp_critic = learner.uncompiled_critic
+    learner.critic_train = learner.critic
     learner.uncompiled_target_critic = copy.deepcopy(learner.uncompiled_critic).requires_grad_(False).eval()
     learner.target_critic = learner.uncompiled_target_critic
     learner.amp_context = nullcontext()
@@ -80,6 +84,8 @@ def _make_training_learner(replay, actor_state, critic_state, max_minibatch_size
     learner.minibatch_size = 4
     learner.max_minibatch_size = max_minibatch_size
     learner.replay = replay
+    learner.distributed = False
+    learner.world_size = 1
     learner.learner_updates = 0
     learner.sampled_transitions = 0
     return learner

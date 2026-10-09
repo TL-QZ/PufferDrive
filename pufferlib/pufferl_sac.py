@@ -1,8 +1,8 @@
 """Feed-forward discrete SAC using the same evaluate/train lifecycle as PuffeRL.
 
 Drive networks, replay placement, pre-reset observations, BF16 autocast, compile,
-and Hydra startup are integrated; DDP and evaluation workflows remain planned;
-recurrence and replay/environment resume remain deferred.
+DDP, and Hydra startup are integrated; evaluation workflows, recurrence, and
+replay/environment resume remain deferred.
 """
 
 from collections import defaultdict
@@ -10,6 +10,7 @@ import copy
 from contextlib import nullcontext
 import glob
 import math
+import numbers
 import os
 from pathlib import Path
 import random
@@ -30,6 +31,7 @@ from torch.nn import functional as F
 STATE_VERSION = 5
 DEFAULT_ENTROPY_FRACTION = 0.98
 FINAL_OBSERVATIONS_INFO_KEY = "_pufferlib_final_observations"
+DDP = torch.nn.parallel.DistributedDataParallel
 DEFAULT_CONFIG = dict(
     env="puffer_drive", device="cpu", seed=0, run_name="sac", batch_size=10_000,
     minibatch_size=256, max_minibatch_size=256, update_epochs=1,
@@ -147,6 +149,31 @@ def load_policy(args, vecenv, env_name="puffer_drive"):
     return actor
 
 
+def _initialize_process_group(device, pufferl):
+    launcher_world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", os.environ.get("RANK", "0")))
+    requested_device = torch.device(pufferl.torch_device(device))
+    owns_process_group = False
+    resolved_device = device
+    if not torch.distributed.is_initialized() and launcher_world_size > 1:
+        if requested_device.type == "cuda":
+            torch.cuda.set_device(local_rank)
+            resolved_device = f"cuda:{local_rank}"
+            backend = "nccl"
+        else:
+            backend = "gloo"
+        torch.distributed.init_process_group(backend=backend)
+        owns_process_group = True
+    elif torch.distributed.is_initialized() and requested_device.type == "cuda":
+        torch.cuda.set_device(local_rank)
+        if torch.distributed.get_world_size() > 1:
+            resolved_device = f"cuda:{local_rank}"
+
+    world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+    rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+    return owns_process_group, resolved_device, world_size, rank
+
+
 class PuffeSAC:
     """Injected component contracts; transition tensors are learner-owned.
 
@@ -163,8 +190,9 @@ class PuffeSAC:
     observation, which Drive transports as a sparse private info record.
     batch_size is replay capacity. evaluate() fills remaining capacity with add(),
     then replaces a replay_update_ratio fraction of distinct slots per call. It sends
-    every received row; global_step counts all received slots, including reset,
-    masked, and valid rows discarded after the insertion quota is reached.
+    every received row; global_step counts rank-local received slots and agent_steps
+    is their synchronized global total. Both include reset, masked, and valid rows
+    discarded after the insertion quota is reached.
     """
 
     def __init__(self, config, vecenv=None, policy=None, critic=None, replay=None, logger=None):
@@ -217,8 +245,6 @@ class PuffeSAC:
             config["target_entropy"] = DEFAULT_ENTROPY_FRACTION * math.log(config["action_count"])
         if not 0 <= config["target_entropy"] <= math.log(config["action_count"]):
             raise ValueError("target_entropy must be in [0, log(action_count)]")
-        if int(os.environ.get("WORLD_SIZE", "1")) != 1:
-            raise NotImplementedError("SAC DDP is deferred; run one process")
         if set(policy.parameters()) & set(critic.parameters()):
             raise ValueError("Policy and critic optimizers must own separate parameters")
 
@@ -234,9 +260,17 @@ class PuffeSAC:
         torch.backends.cudnn.deterministic = config["torch_deterministic"]
         torch.backends.cudnn.benchmark = not config["torch_deterministic"]
         torch.use_deterministic_algorithms(config["torch_deterministic"], warn_only=True)
-        torch_seed, _ = pufferl.derive_rank_seeds(None, config["seed"], 1, 0)
+        self.world_size = torch.distributed.get_world_size() if torch.distributed.is_initialized() else 1
+        self.rank = torch.distributed.get_rank() if torch.distributed.is_initialized() else 0
+        self.distributed = self.world_size > 1
+        torch_seed, _ = pufferl.derive_rank_seeds(None, config["seed"], self.world_size, self.rank)
+        reset_seed = config["seed"]
+        if self.distributed:
+            _, reset_seed = pufferl.derive_rank_seeds(
+                config["seed"], config["seed"], self.world_size, self.rank,
+            )
         random.seed(torch_seed)
-        np.random.seed(torch_seed)
+        np.random.seed(torch_seed % 2**32)
         torch.manual_seed(torch_seed)
 
         self.helpers = pufferl
@@ -288,6 +322,21 @@ class PuffeSAC:
             parameter.numel() for parameter in self.uncompiled_policy.parameters() if parameter.requires_grad
         )
         self.uncompiled_critic = critic.to(self.device, dtype=torch.float32)
+
+        if self.distributed:
+            ddp_kwargs = {}
+            if self.device.type == "cuda":
+                local_rank = torch.cuda.current_device()
+                ddp_kwargs.update(device_ids=[local_rank], output_device=local_rank)
+            self.ddp_policy = DDP(self.uncompiled_policy, **ddp_kwargs)
+            self.ddp_critic = DDP(self.uncompiled_critic, **ddp_kwargs)
+        else:
+            self.ddp_policy = self.uncompiled_policy
+            self.ddp_critic = self.uncompiled_critic
+        self.policy_train = self.ddp_policy
+        self.critic_train = self.ddp_critic
+
+        # DDP synchronizes the online critic from rank 0 during construction.
         self.uncompiled_target_critic = copy.deepcopy(self.uncompiled_critic).requires_grad_(False).eval()
         self.policy = self.uncompiled_policy
         self.critic = self.uncompiled_critic
@@ -300,6 +349,12 @@ class PuffeSAC:
             self.policy = torch.compile(self.uncompiled_policy, **compile_kwargs)
             self.critic = torch.compile(self.uncompiled_critic, **compile_kwargs)
             self.target_critic = torch.compile(self.uncompiled_target_critic, **compile_kwargs)
+            if self.distributed:
+                self.policy_train = torch.compile(self.ddp_policy, **compile_kwargs)
+                self.critic_train = torch.compile(self.ddp_critic, **compile_kwargs)
+            else:
+                self.policy_train = self.policy
+                self.critic_train = self.critic
         self.log_alpha = torch.nn.Parameter(torch.tensor(
             math.log(config["initial_alpha"]), device=self.device, dtype=torch.float32
         ))
@@ -308,12 +363,16 @@ class PuffeSAC:
             self.uncompiled_critic.parameters(), config["critic_learning_rate"]
         )
         self.alpha_optimizer = torch.optim.Adam([self.log_alpha], lr=config["alpha_learning_rate"])
-        scheduler_steps = max(1, math.ceil(config["total_timesteps"] / self.refresh_count))
+        scheduler_steps = max(1, math.ceil(
+            config["total_timesteps"] / (self.world_size * self.refresh_count)
+        ))
         self.scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(self.optimizer, T_max=scheduler_steps)
         self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.critic_optimizer, T_max=scheduler_steps
         )
         self.total_epochs = scheduler_steps
+        if self.rank != 0:
+            logger = None
         self.logger = logger if logger is not None else pufferl.NoLogger(config)
         self.profile = pufferl.Profile()
         self.global_step = 0
@@ -334,7 +393,7 @@ class PuffeSAC:
         self.final_model_path = None
         self.utilization = pufferl.Utilization()
         try:
-            vecenv.async_reset(config["seed"])
+            vecenv.async_reset(reset_seed)
             self.print_dashboard(clear=True)
         except BaseException:
             self.utilization.stop()
@@ -403,10 +462,11 @@ class PuffeSAC:
         self.scheduler.load_state_dict(state["scheduler_state_dict"])
         self.critic_scheduler.load_state_dict(state["critic_scheduler_state_dict"])
         self.total_epochs = self.scheduler.T_max
-        for name in ("global_step", "epoch", "valid_inserts", "learner_updates", "sampled_transitions",
-                     "best_score"):
+        for name in ("epoch", "valid_inserts", "learner_updates", "sampled_transitions", "best_score"):
             setattr(self, name, state[name])
-        self.agent_steps = self.global_step
+        self.agent_steps = state.get("agent_steps", state["global_step"])
+        local_step, remainder = divmod(self.agent_steps, self.world_size)
+        self.global_step = local_step + int(self.rank < remainder)
         self.pending.zero_()
         self.observations.zero_()
         self.actions.zero_()
@@ -420,7 +480,16 @@ class PuffeSAC:
         self.profile.profiles.clear()
         self.profile.stack.clear()
         self.helpers.restore_rng_state(state)
-        print(f"Resumed SAC learner from {path}: epoch={self.epoch}, global_step={self.global_step}")
+        if self.rank != 0:
+            torch_seed, _ = self.helpers.derive_rank_seeds(
+                None, self.config["seed"], self.world_size, self.rank,
+            )
+            resume_seed = int(np.random.SeedSequence([torch_seed, self.epoch, self.agent_steps]).generate_state(1)[0])
+            random.seed(resume_seed)
+            np.random.seed(resume_seed)
+            torch.manual_seed(resume_seed)
+        if self.rank == 0:
+            print(f"Resumed SAC learner from {path}: epoch={self.epoch}, global_step={self.global_step}")
 
     @property
     def uptime(self):
@@ -493,8 +562,10 @@ class PuffeSAC:
         else:
             insert_target = self.refresh_count
             refresh_indices = torch.randperm(replay_size, device="cpu")[:insert_target]
-        received_budget = max(0, self.config["total_timesteps"] - self.global_step)
-        agent_steps = 0
+        received_budget = max(
+            0, math.ceil((self.config["total_timesteps"] - self.agent_steps) / self.world_size)
+        )
+        received_count_total = 0
         valid_inserts = 0
         for _ in range(received_budget):
             profile("env", epoch)
@@ -507,7 +578,7 @@ class PuffeSAC:
             env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
             masks = torch.as_tensor(masks, device=self.device, dtype=torch.bool)
             received_count = env_ids.numel()
-            agent_steps += received_count
+            received_count_total += received_count
             self.global_step += received_count
 
             # The received mask qualifies the preceding action, not the new observation.
@@ -590,9 +661,18 @@ class PuffeSAC:
                 self.vecenv.send(continuous_actions.detach().cpu().numpy())
             else:
                 self.vecenv.send(actions.detach().cpu().numpy())
-            if valid_inserts >= insert_target or agent_steps >= received_budget:
+            if valid_inserts >= insert_target or received_count_total >= received_budget:
                 break
 
+        if self.distributed:
+            deltas = torch.tensor(
+                [received_count_total, valid_inserts],
+                device=self.device,
+                dtype=torch.int64,
+            )
+            torch.distributed.all_reduce(deltas, op=torch.distributed.ReduceOp.SUM)
+            received_count_total, valid_inserts = deltas.tolist()
+        self.agent_steps += received_count_total
         self.valid_inserts += valid_inserts
         profile.end()
         return self.helpers.pufferlib.utils.reduce_environment_metrics(self.stats)
@@ -606,7 +686,16 @@ class PuffeSAC:
         profile("train", epoch)
         profile("train_misc", epoch, nest=True)
         losses = defaultdict(float)
-        updates = self._train_sac_transition(losses, profile, epoch)
+        replay_ready = True
+        if self.distributed:
+            ready = torch.tensor(
+                int(len(self.replay) == self.batch_size),
+                device=self.device,
+                dtype=torch.int32,
+            )
+            torch.distributed.all_reduce(ready, op=torch.distributed.ReduceOp.MIN)
+            replay_ready = bool(ready.item())
+        updates = self._train_sac_transition(losses, profile, epoch) if replay_ready else 0
         profile("train_misc", epoch)
         if updates and self.config["anneal_lr"]:
             if self.scheduler.last_epoch < self.scheduler.T_max:
@@ -617,9 +706,12 @@ class PuffeSAC:
 
         self.losses = losses
         self.epoch += 1
-        done_training = self.global_step >= self.config["total_timesteps"]
+        done_training = self.agent_steps >= self.config["total_timesteps"]
         logs = None
-        if done_training or self.global_step == 0 or time.time() > self.last_log_time + 0.25:
+        log_decision = self.rank == 0 and (
+            done_training or self.agent_steps == 0 or time.time() > self.last_log_time + 0.25
+        )
+        if self.helpers.dist_sum(int(log_decision), self.device):
             logs = self.mean_and_log()
             self.print_dashboard()
             self.stats = defaultdict(list)
@@ -646,7 +738,7 @@ class PuffeSAC:
 
     def _critic_loss(self, mb_obs, mb_actions, mb_targets):
         with self.amp_context:
-            q1, q2 = self.critic(mb_obs)
+            q1, q2 = self.critic_train(mb_obs)
         q1 = q1.float()
         q2 = q2.float()
         q1 = q1.gather(1, mb_actions.unsqueeze(-1)).squeeze(-1)
@@ -656,7 +748,7 @@ class PuffeSAC:
 
     def _policy_loss(self, mb_obs):
         with self.amp_context:
-            logits = self.policy(mb_obs)
+            logits = self.policy_train(mb_obs)
         logprobs = F.log_softmax(logits.float(), dim=-1)
         probs = logprobs.exp()
         with torch.no_grad(), self.amp_context:
@@ -697,10 +789,17 @@ class PuffeSAC:
                     for tensor in self.replay.get_batch(micro_indices)
                 )
                 profile("train_forward", epoch)
-                mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
-                critic_loss, q1, q2 = self._critic_loss(mb_obs, mb_actions, mb_targets)
-                profile("learn", epoch)
-                (critic_loss * (micro_count / logical_batch_count)).backward()
+                last_microbatch = micro_start + micro_count == logical_batch_count
+                sync_context = (
+                    self.ddp_critic.no_sync()
+                    if self.distributed and not last_microbatch
+                    else nullcontext()
+                )
+                with sync_context:
+                    mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
+                    critic_loss, q1, q2 = self._critic_loss(mb_obs, mb_actions, mb_targets)
+                    profile("learn", epoch)
+                    (critic_loss * (micro_count / logical_batch_count)).backward()
                 critic_loss_value += critic_loss.detach().item() * micro_count / logical_batch_count
                 q1_value += q1.item() * micro_count / logical_batch_count
                 q2_value += q2.item() * micro_count / logical_batch_count
@@ -719,9 +818,16 @@ class PuffeSAC:
                 profile("train_copy", epoch)
                 mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device, non_blocking=True)
                 profile("train_forward", epoch)
-                policy_loss, entropy = self._policy_loss(mb_obs)
-                profile("learn", epoch)
-                (policy_loss * (micro_count / logical_batch_count)).backward()
+                last_microbatch = micro_start + micro_count == logical_batch_count
+                sync_context = (
+                    self.ddp_policy.no_sync()
+                    if self.distributed and not last_microbatch
+                    else nullcontext()
+                )
+                with sync_context:
+                    policy_loss, entropy = self._policy_loss(mb_obs)
+                    profile("learn", epoch)
+                    (policy_loss * (micro_count / logical_batch_count)).backward()
                 policy_loss_value += policy_loss.detach().item() * micro_count / logical_batch_count
                 entropy_sum += entropy * micro_count
 
@@ -733,6 +839,9 @@ class PuffeSAC:
             alpha_loss = self.log_alpha * (mean_entropy - self.config["target_entropy"])
             self.alpha_optimizer.zero_grad(set_to_none=True)
             alpha_loss.backward()
+            if self.distributed:
+                torch.distributed.all_reduce(self.log_alpha.grad, op=torch.distributed.ReduceOp.SUM)
+                self.log_alpha.grad.div_(self.world_size)
             self.alpha_optimizer.step()
 
             profile("train_misc", epoch)
@@ -751,7 +860,7 @@ class PuffeSAC:
                         target.copy_(online[key])
 
             self.learner_updates += 1
-            self.sampled_transitions += logical_batch_count
+            self.sampled_transitions += logical_batch_count * self.world_size
             update_losses = dict(
                 critic_loss=critic_loss_value, policy_loss=policy_loss_value,
                 alpha_loss=alpha_loss.detach().item(), entropy=mean_entropy.item(), alpha=self.alpha.item(),
@@ -762,14 +871,55 @@ class PuffeSAC:
                 losses[key] += value * logical_batch_count / total_sampled_transitions
         return total_minibatches
 
+    def _reduce_environment_metrics(self):
+        if not self.distributed:
+            return self.helpers.pufferlib.utils.reduce_environment_metrics(self.stats)
+        local_totals = {}
+        for key, values in self.stats.items():
+            if values and isinstance(values[0], numbers.Number):
+                local_totals[key] = (float(np.sum(values)), len(values))
+        gathered_keys = [None] * self.world_size
+        torch.distributed.all_gather_object(gathered_keys, list(local_totals))
+        metric_keys = sorted({key for rank_keys in gathered_keys for key in rank_keys})
+        if not metric_keys:
+            return {}
+        metric_totals = torch.zeros(len(metric_keys) * 2, device=self.device, dtype=torch.float64)
+        for index, key in enumerate(metric_keys):
+            if key in local_totals:
+                metric_totals[index] = local_totals[key][0]
+                metric_totals[len(metric_keys) + index] = local_totals[key][1]
+        torch.distributed.all_reduce(metric_totals, op=torch.distributed.ReduceOp.SUM)
+        reduced_metrics = {}
+        total_distance = None
+        total_infractions = None
+        for index, key in enumerate(metric_keys):
+            value_sum = metric_totals[index].item()
+            value_count = metric_totals[len(metric_keys) + index].item()
+            if key == "total_distance_travelled_sum":
+                total_distance = value_sum
+            elif key == "total_infraction_count":
+                total_infractions = value_sum
+            else:
+                reduced_metrics[key] = value_sum / max(value_count, 1)
+        if total_distance is not None and total_infractions is not None:
+            reduced_metrics["total_distance_travelled"] = total_distance
+            reduced_metrics["total_infractions"] = total_infractions
+            reduced_metrics["avg_distance_per_infraction"] = total_distance / max(total_infractions, 1.0)
+        return reduced_metrics
+
     def mean_and_log(self):
-        self.stats = self.helpers.pufferlib.utils.reduce_environment_metrics(self.stats)
+        self.stats = self._reduce_environment_metrics()
         self.last_stats = dict(self.stats)
         self.last_stats_epoch = self.epoch
-        self.agent_steps = self.global_step
+        if self.distributed:
+            self.losses = {
+                key: self.helpers.dist_mean(value, self.device)
+                for key, value in sorted(self.losses.items())
+            }
+        performance = {key: value["elapsed"] for key, value in self.profile}
         logs = {
-            "SPS": self.sps,
-            "agent_steps": self.global_step,
+            "SPS": self.helpers.dist_sum(self.sps, self.device),
+            "agent_steps": self.agent_steps,
             "uptime": self.uptime,
             "epoch": self.epoch,
             "learning_rate": self.optimizer.param_groups[0]["lr"],
@@ -779,9 +929,11 @@ class PuffeSAC:
             "sac/learner_updates": self.learner_updates,
             **{f"environment/{key}": value for key, value in self.stats.items()},
             **{f"losses/{key}": value for key, value in self.losses.items()},
-            **{f"performance/{key}": value["elapsed"] for key, value in self.profile},
+            **{f"performance/{key}": value for key, value in performance.items()},
         }
-        self.logger.log(logs, self.global_step)
+        if self.rank != 0:
+            return None
+        self.logger.log(logs, self.agent_steps)
         return logs
 
     def close(self):
@@ -802,6 +954,8 @@ class PuffeSAC:
         if close_error is not None:
             raise close_error
 
+        if self.rank != 0:
+            return None
         model_path = self.save_checkpoint()
         final_path = Path(self.config["data_dir"]) / self.config["final_model_name"]
         final_path.parent.mkdir(parents=True, exist_ok=True)
@@ -813,6 +967,8 @@ class PuffeSAC:
 
     def save_checkpoint(self):
         """Atomically save the actor artifact and full learner-only state."""
+        if self.rank != 0:
+            return None
         data_dir = Path(self.config["data_dir"])
         models_dir = data_dir / "models"
         models_dir.mkdir(parents=True, exist_ok=True)
@@ -849,6 +1005,7 @@ class PuffeSAC:
             "scheduler_state_dict": self.scheduler.state_dict(),
             "critic_scheduler_state_dict": self.critic_scheduler.state_dict(),
             "global_step": self.global_step,
+            "agent_steps": self.agent_steps,
             "epoch": self.epoch,
             "valid_inserts": self.valid_inserts,
             "learner_updates": self.learner_updates,
@@ -893,6 +1050,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
     last_logs = {}
     cleanup_logger = logger
     close_started = False
+    owns_process_group = False
     try:
         if args is None or "train" in args:
             previous_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -921,21 +1079,25 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                 raise NotImplementedError(
                     "SAC model loading by load_model_path/load_id is deferred; set both to null."
                 )
-            world_size = int(os.environ.get("WORLD_SIZE", "1"))
-            if world_size != 1:
-                raise NotImplementedError("SAC DDP is deferred; launch one process with WORLD_SIZE=1")
 
             train_args = startup_args["train"]
+            owns_process_group, train_args["device"], world_size, global_rank = _initialize_process_group(
+                train_args["device"], ppo,
+            )
+            if global_rank != 0:
+                logger = None
+                cleanup_logger = None
             run_name = startup_args.get("run_name", train_args.get("run_name", "sac"))
             train_seed = train_args.get("seed")
             if train_seed is None:
-                train_seed = time.time_ns() & 0xFFFFFFFF
+                train_seed = time.time_ns() & 0xFFFFFFFF if global_rank == 0 else 0
+                train_seed = ppo.dist_sum(train_seed, train_args["device"])
             train_args["seed"] = train_seed
             torch_seed, env_seed = ppo.derive_rank_seeds(
-                startup_args["vec"].get("seed"), train_seed, world_size, 0,
+                startup_args["vec"].get("seed"), train_seed, world_size, global_rank,
             )
             random.seed(torch_seed)
-            np.random.seed(torch_seed)
+            np.random.seed(torch_seed % 2**32)
             torch.manual_seed(torch_seed)
 
             config = {key: value for key, value in train_args.items() if key in SAC_TRAIN_KEYS}
@@ -986,9 +1148,10 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             config["action_count"] = policy.action_count
 
             startup_args["git"] = ppo._get_git_metadata()
-            ppo._save_experiment_config(startup_args, config["data_dir"])
+            if global_rank == 0:
+                ppo._save_experiment_config(startup_args, config["data_dir"])
 
-            if logger is None:
+            if logger is None and global_rank == 0:
                 if startup_args.get("neptune"):
                     logger = ppo.NeptuneLogger(startup_args)
                 elif startup_args.get("wandb"):
@@ -1002,22 +1165,40 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
         else:
             # Keep the original flat config + injected-component API intact.
             config = {**args, "env": env_name}
+            previous_sigint_handler = signal.getsignal(signal.SIGINT)
+            try:
+                from pufferlib import pufferl as ppo
+            finally:
+                signal.signal(signal.SIGINT, previous_sigint_handler)
+            owns_process_group, config["device"], _, global_rank = _initialize_process_group(
+                config.get("device", DEFAULT_CONFIG["device"]), ppo,
+            )
+            if global_rank != 0:
+                logger = None
+                cleanup_logger = None
 
         pufferl = PuffeSAC(config, vecenv, policy, critic, replay, logger)
         cleanup_logger = pufferl.logger
         resume_state_path = pufferl.config["resume_state_path"]
         if resume_state_path is not None:
             pufferl.load_training_state(resume_state_path)
-        remaining_steps = max(0, pufferl.config["total_timesteps"] - pufferl.global_step)
+        remaining_steps = max(0, pufferl.config["total_timesteps"] - pufferl.agent_steps)
         for _ in range(remaining_steps):
-            if pufferl.global_step >= pufferl.config["total_timesteps"]:
+            if pufferl.agent_steps >= pufferl.config["total_timesteps"]:
                 break
             pufferl.evaluate()
             logs = pufferl.train()
-            if logs is None:
-                continue
-            last_logs = logs
-            if early_stop_fn is not None and early_stop_fn(logs):
+            if logs is not None:
+                last_logs = logs
+            rank_zero_early_stop = (
+                pufferl.rank == 0 and logs is not None
+                and early_stop_fn is not None and early_stop_fn(logs)
+            )
+            if pufferl.distributed:
+                rank_zero_early_stop = bool(
+                    pufferl.helpers.dist_sum(int(rank_zero_early_stop), pufferl.device)
+                )
+            if rank_zero_early_stop:
                 early_stop = True
                 break
         model_path = pufferl.close()
@@ -1051,6 +1232,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             except BaseException:
                 pass
         raise
+    finally:
+        if owns_process_group and torch.distributed.is_initialized():
+            torch.distributed.destroy_process_group()
 
 
 def main(argv=None):

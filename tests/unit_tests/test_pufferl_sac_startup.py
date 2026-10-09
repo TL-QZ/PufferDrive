@@ -89,6 +89,9 @@ class _FakeLearner:
     def __init__(self, config, vecenv, policy, critic, replay, logger):
         self.config = {**pufferl_sac.DEFAULT_CONFIG, **config}
         self.global_step = config["total_timesteps"]
+        self.agent_steps = self.global_step
+        self.rank = 0
+        self.distributed = False
         self.closed = False
         self.logger = logger or _FakeLogger()
         self.vecenv = vecenv
