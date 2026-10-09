@@ -1,8 +1,8 @@
 # SAC implementation plan — selected capabilities
 
-Updated 2026-10-09. This plan contains the 20 selected gaps, numbered consecutively within each section. Previous learner options C1/C2/C3/C5 are now B1–B4; previous execution items B1/B3/B4/B5 are now C1–C4. Progress: A1 networks and A2 storage are implemented and CPU-tested; component startup remains A4. Other items remain open.
+Updated 2026-10-09. This plan contains the 20 selected gaps, numbered consecutively within each section. Previous learner options C1/C2/C3/C5 are now B1–B4; previous execution items B1/B3/B4/B5 are now C1–C4. Progress: A1–A4 are implemented and CPU-verified; D1 logger selection is wired. B, C, D2–D3 and E remain open.
 
-**Current foundation:** collection and random replay refresh, shuffled full-replay epochs, SAC updates, logging/dashboard, LR scheduling and learner checkpoints work with supplied components. A small CPU smoke passed; real Drive training is not yet validated. Keep the existing PPO-style structure and naming.
+**Current foundation:** collection and random replay refresh, shuffled full-replay epochs, SAC updates, logging/dashboard, LR scheduling and learner checkpoints work with supplied components. A real CPU Drive CLI smoke passed: 64 received agent rows, 12 training cycles and 24 learner updates, including scenario/map resets. This verifies integration, not training quality or GPU performance. Keep the existing PPO-style structure and naming.
 
 **Reuse approach:** reuse existing utilities directly or copy the corresponding code with necessary SAC adaptations. Preserve existing names and structure; identify where new SAC behavior is required.
 
@@ -10,10 +10,10 @@ Updated 2026-10-09. This plan contains the 20 selected gaps, numbered consecutiv
 
 | ID | Capability | Existing code to reuse | SAC adaptation |
 |---|---|---|---|
-| A1 | Drive actor and twin critics | [`DriveBackbone`](../../pufferlib/ocean/torch.py#L17), [`Drive`](../../pufferlib/ocean/torch.py#L311), its observation encoding and discrete-action conversion methods, and [`load_policy()`](../../pufferlib/pufferl.py#L2367). | Reuse the encoder and action mapping. Implemented logits-only `DriveSAC` and independent twin-Q `DriveSACCritic` in [torch_sac.py](../../pufferlib/ocean/torch_sac.py). Four CPU tests cover gradients, parameter ownership and PPO action-map parity. Startup wiring remains A4. |
-| A2 | Replay storage | [PPO tensor allocation](../../pufferlib/pufferl.py#L179), indexed minibatch reads in `_train_ppo_transition()`, and [SAC replay insertion/replacement](../../pufferlib/pufferl_sac.py#L253). | Implemented [TensorReplay](../../pufferlib/sac_replay.py) with copied fixed-capacity storage behind `len`, `add`, `replace` and `get_batch`. Eight CPU tests cover ownership, replacement, ordering and capacity. Startup wiring remains A4; refresh/epoch scheduling already exists. |
-| A3 | Reset-boundary transport | [`Drive.step()`](../../pufferlib/ocean/drive/drive.py#L655), [C truncation/reset path](../../pufferlib/ocean/drive/drive.h#L4609), vector transport in [vector.py](../../pufferlib/vector.py), and [`PuffeSAC.evaluate()`](../../pufferlib/pufferl_sac.py#L253). | Extend these existing paths to transport pre-reset final observations with correct slot alignment and masks/terminal flags. This transport is new work; replace SAC's truncation error with correct bootstrapping, not PPO's approximate workaround. |
-| A4 | Configuration and startup | [`load_config()`](../../pufferlib/pufferl.py#L2409), `main()`, [`load_env()`](../../pufferlib/pufferl.py#L2356), [`train()`](../../pufferlib/pufferl.py#L1432), `_get_git_metadata()` and `_save_experiment_config()`. | Preserve Hydra/CLI and run-setup structure; add SAC settings, construct actor/critics/replay and select `PuffeSAC`. Save resolved configuration and metadata using existing helpers. |
+| A1 | Drive actor and twin critics | [`DriveBackbone`](../../pufferlib/ocean/torch.py#L17), [`Drive`](../../pufferlib/ocean/torch.py#L311), its observation encoding and discrete-action conversion methods, and [`load_policy()`](../../pufferlib/pufferl.py#L2367). | Reuse the encoder and action mapping. Implemented logits-only `DriveSAC` and independent twin-Q `DriveSACCritic` in [torch_sac.py](../../pufferlib/ocean/torch_sac.py). Four CPU tests cover gradients, parameter ownership and PPO action-map parity. Startup wiring is implemented. |
+| A2 | Replay storage | [PPO tensor allocation](../../pufferlib/pufferl.py#L179), indexed minibatch reads in `_train_ppo_transition()`, and [SAC replay insertion/replacement](../../pufferlib/pufferl_sac.py#L363). | Implemented [TensorReplay](../../pufferlib/sac_replay.py) with copied fixed-capacity storage behind `len`, `add`, `replace` and `get_batch`. Eight CPU tests cover ownership, replacement, ordering and capacity. Startup wiring, refresh and epoch scheduling are implemented. |
+| A3 | Reset-boundary transport | [`Drive.step()`](../../pufferlib/ocean/drive/drive.py#L670), [C truncation/reset path](../../pufferlib/ocean/drive/drive.h#L4622), vector transport in [vector.py](../../pufferlib/vector.py), and [`PuffeSAC.evaluate()`](../../pufferlib/pufferl_sac.py#L363). | Implemented opt-in C final-observation capture, map-resample preservation and sparse vector info transport. SAC matches final observations by agent ID, bootstraps truncations and zeros terminal discounts. Paired real environments verified the pre-reset state; focused tests cover slot mapping and learner discounts. |
+| A4 | Configuration and startup | [`load_config()`](../../pufferlib/pufferl.py#L2409), `main()`, [`load_env()`](../../pufferlib/pufferl.py#L2356), [`train()`](../../pufferlib/pufferl.py#L1432), `_get_git_metadata()` and `_save_experiment_config()`. | Implemented [SAC config](../../pufferlib/config/puffer_drive_sac.yaml), `load_config()`, `load_policy()` and component construction in `train()`. Run with `python -m pufferlib.pufferl_sac train puffer_drive [overrides]` (or `puffer-sac` after installation). Resolved config and metadata are saved; real CPU CLI smoke and startup/cleanup tests passed. |
 
 ## B — Learner options
 
@@ -37,7 +37,7 @@ Updated 2026-10-09. This plan contains the 20 selected gaps, numbered consecutiv
 
 | ID | Capability | Existing code to reuse | SAC adaptation |
 |---|---|---|---|
-| D1 | Logger construction | [Logger classes](../../pufferlib/pufferl.py#L1257) and the logger-selection block in `train()`. | Reuse W&B, Neptune and TensorBoard classes; connect configuration and rank-zero construction. Supplying a compatible logger already works. |
+| D1 | Logger construction | [Logger classes](../../pufferlib/pufferl.py#L1257) and the logger-selection block in `train()`. | Implemented during A4: startup selects the existing W&B, Neptune or TensorBoard class and preserves an injected logger. Rank-zero gating belongs to C1. External logging services were not contacted during validation. |
 | D2 | Architecture-aware loading and fine-tuning | [`load_policy()`](../../pufferlib/pufferl.py#L2367), configuration restoration in `train()`, and [`load_checkpoint_architecture()`](../../pufferlib/ocean/evaluation_utils/evaluation_utils.py#L203). | Retain configuration/artifact loading; construct compatible SAC networks and observation/action settings. Distinguish weight warm-start from learner resume; restore SAC critics, temperature and multiple optimizers through its own state loader. |
 | D3 | Automatic same-run checkpoint discovery | [Checkpoint-discovery block in `train()`](../../pufferlib/pufferl.py#L1544). | Copy discovery logic and call SAC's existing `load_training_state()`, preserving explicit-path precedence and adding a fresh-run control. |
 
@@ -53,6 +53,6 @@ Updated 2026-10-09. This plan contains the 20 selected gaps, numbered consecutiv
 
 **Delivery order:** complete A1–A4 for a short real Drive training run, then proceed through B (learner options), C (execution), D (run management) and E (evaluation/workflows) in bounded changes. Use focused checks for each change rather than building a large scaffold test suite.
 
-**Next implementation topic:** A3 — final-observation transport, followed by A4 startup wiring.
+**Next implementation topic:** B — learner options. A3/A4 verification: required extension rebuild succeeded; 21 focused startup/boundary/regression tests passed, plus the real Drive CLI and paired-boundary checks.
 
 Source of truth: [SAC scaffold](../../pufferlib/pufferl_sac.py) and [PPO route](../../pufferlib/pufferl.py). Archived documents are not maintained.

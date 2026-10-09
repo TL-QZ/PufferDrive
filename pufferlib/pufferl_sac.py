@@ -1,8 +1,7 @@
 """Feed-forward discrete SAC using the same evaluate/train lifecycle as PuffeRL.
 
-Drive networks and tensor replay are available in ocean.torch_sac and sac_replay.
-TODO: final-observation transport and Hydra/component startup integration.
-Supply components explicitly until then. DDP and AMP/compile are planned;
+Drive networks, replay, pre-reset observations and Hydra startup are integrated.
+Learner options, DDP, AMP/compile and evaluation workflows remain planned;
 recurrence and replay/environment resume remain deferred.
 """
 
@@ -19,13 +18,16 @@ import sys
 import time
 import traceback
 
+from hydra import compose, initialize_config_dir
 import numpy as np
 import torch
+from omegaconf import OmegaConf
 from torch.nn import functional as F
 
 
 STATE_VERSION = 5
 DEFAULT_ENTROPY_FRACTION = 0.98
+FINAL_OBSERVATIONS_INFO_KEY = "_pufferlib_final_observations"
 DEFAULT_CONFIG = dict(
     env="puffer_drive", device="cpu", seed=0, run_name="sac", batch_size=10_000,
     minibatch_size=256, update_epochs=1,
@@ -34,6 +36,72 @@ DEFAULT_CONFIG = dict(
     initial_alpha=0.2, target_entropy=None, tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
 )
+
+SAC_TRAIN_KEYS = frozenset(DEFAULT_CONFIG) - {"env"} | {"data_dir"}
+
+
+def load_config(env_name="puffer_drive", config_dir=None, overrides=None):
+    """Compose the Drive SAC config and remove inherited PPO-only train settings."""
+    if env_name != "puffer_drive":
+        raise NotImplementedError(f"Drive SAC startup is only configured for puffer_drive, got {env_name!r}")
+
+    if config_dir is None:
+        config_dir = Path(__file__).resolve().parent / "config"
+    if overrides is None:
+        overrides = sys.argv[1:]
+
+    for override in overrides:
+        if override.startswith("--"):
+            hint = override.lstrip("-").replace("-", "_").split("=")[0]
+            import pufferlib
+            raise pufferlib.APIUsageError(
+                f"'{override}' uses the old flag syntax. Use Hydra overrides: {hint}=<value>"
+            )
+        override_path = override.lstrip("+~").split("=", 1)[0]
+        if override_path == "train" or override_path.startswith("train."):
+            train_key = override_path.partition(".")[2]
+            if train_key not in SAC_TRAIN_KEYS:
+                import pufferlib
+                raise pufferlib.APIUsageError(
+                    f"Unsupported SAC training override '{override_path}'. "
+                    "PPO-only train settings are not used by SAC."
+                )
+
+    with initialize_config_dir(config_dir=str(config_dir), version_base=None):
+        cfg = compose(config_name=f"{env_name}_sac", overrides=list(overrides))
+
+    # The SAC config inherits the Drive environment but has its own train schema.
+    from pufferlib.config_schema import ENV_SCHEMAS
+    env_schema = ENV_SCHEMAS.get(env_name)
+    if env_schema is not None:
+        cfg["env"] = OmegaConf.merge(OmegaConf.structured(env_schema), cfg["env"])
+
+    args = defaultdict(dict, OmegaConf.to_container(
+        cfg, resolve=True, enum_to_str=True, throw_on_missing=True,
+    ))
+    inherited_train = args["train"]
+    args["train"] = {key: value for key, value in inherited_train.items() if key in SAC_TRAIN_KEYS}
+    args["env_name"] = env_name
+    return args
+
+
+def load_policy(args, vecenv, env_name="puffer_drive"):
+    """Build Drive SAC's FP32 actor, matching PPO's one-policy loader contract."""
+    if env_name != "puffer_drive":
+        raise NotImplementedError(f"Drive SAC policy loading is not configured for {env_name!r}")
+    if args.get("rnn_name") is not None:
+        raise NotImplementedError("SAC recurrence is deferred; set rnn_name=null")
+
+    previous_sigint_handler = signal.getsignal(signal.SIGINT)
+    try:
+        from pufferlib import pufferl as ppo
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint_handler)
+    from pufferlib.ocean.torch_sac import DriveSAC
+
+    device = ppo.torch_device(args["train"]["device"])
+    actor = DriveSAC(vecenv.driver_env, **args["policy"]).to(device=device, dtype=torch.float32)
+    return actor
 
 
 class PuffeSAC:
@@ -49,7 +117,7 @@ class PuffeSAC:
     vecenv uses Drive's same-step reset semantics: recv masks qualify the preceding
     action. Other backends need that same contract; reset-only rows are unsupported.
     Discounts include gamma. Truncated transitions need their pre-reset final
-    observation, which vecenv.recv() does not expose, so they fail before insert.
+    observation, which Drive transports as a sparse private info record.
     batch_size is replay capacity. evaluate() fills remaining capacity with add(),
     then replaces a replay_update_ratio fraction of distinct slots per call. It sends
     every received row; global_step counts all received slots, including reset,
@@ -59,11 +127,11 @@ class PuffeSAC:
     def __init__(self, config, vecenv=None, policy=None, critic=None, replay=None, logger=None):
         if vecenv is None or policy is None or critic is None or replay is None:
             raise NotImplementedError(
-                "Supply vecenv, policy, critic and replay to SAC train(...). "
-                "Drive component construction and SAC config integration are TODO."
+                "Supply vecenv, policy, critic and replay to PuffeSAC, "
+                "or use train(...) to construct Drive components from configuration."
             )
         if config is None:
-            raise NotImplementedError("Supply a SAC config dictionary; Hydra integration is TODO")
+            raise ValueError("Supply a SAC training config dictionary")
 
         config = {**DEFAULT_CONFIG, **config}
         if "data_dir" not in config or not config["data_dir"]:
@@ -250,6 +318,47 @@ class PuffeSAC:
     def alpha(self):
         return self.log_alpha.exp().detach()
 
+    def _consume_final_observation_infos(self, infos, env_ids, required_rows):
+        final_id_batches = []
+        final_observation_batches = []
+        metric_infos = []
+        for info in infos:
+            if not isinstance(info, dict) or FINAL_OBSERVATIONS_INFO_KEY not in info:
+                metric_infos.append(info)
+                continue
+
+            payload = info[FINAL_OBSERVATIONS_INFO_KEY]
+            final_id_batches.append(payload["env_ids"])
+            final_observation_batches.append(payload["observations"])
+            if len(info) > 1:
+                metric_infos.append({key: value for key, value in info.items()
+                                     if key != FINAL_OBSERVATIONS_INFO_KEY})
+
+        if not final_id_batches:
+            final_agent_ids = np.empty(0, dtype=np.int64)
+            final_observations = None
+        else:
+            final_agent_ids = np.concatenate(final_id_batches)
+            final_observations = np.concatenate(final_observation_batches)
+            final_order = np.argsort(final_agent_ids)
+            final_agent_ids = final_agent_ids[final_order]
+            final_observations = final_observations[final_order]
+
+        if required_rows:
+            agent_ids = env_ids.detach().cpu().numpy()
+            required_agent_ids = agent_ids[required_rows]
+            final_positions = np.searchsorted(final_agent_ids, required_agent_ids)
+            present = final_positions < final_agent_ids.size
+            present_rows = np.flatnonzero(present)
+            present[present_rows] = final_agent_ids[final_positions[present_rows]] == required_agent_ids[present_rows]
+            if not present.all():
+                missing_agent_ids = required_agent_ids[~present].tolist()
+                raise ValueError(
+                    "Missing pre-reset final observations for truncated transitions; "
+                    f"agent IDs: {missing_agent_ids[:8]}"
+                )
+        return final_agent_ids, final_observations, metric_infos
+
     @torch.no_grad()
     def evaluate(self):
         """Collect transitions directly from vecenv, matching PuffeRL.evaluate."""
@@ -284,11 +393,10 @@ class PuffeSAC:
             # The received mask qualifies the preceding action, not the new observation.
             completed = self.pending[env_ids] & masks
             unsupported_truncations = completed & truncations & ~terminals
-            if unsupported_truncations.any():
-                raise NotImplementedError(
-                    "SAC cannot insert a truncated transition without its pre-reset final observation; "
-                    "vecenv final-observation transport is TODO."
-                )
+            required_final_rows = torch.nonzero(unsupported_truncations, as_tuple=False).squeeze(-1)
+            final_agent_ids, final_observations, infos = self._consume_final_observation_infos(
+                infos, env_ids, required_final_rows.detach().cpu().tolist()
+            )
             self.stats["obs/max"].append(observations.max().item())
             self.stats["obs/min"].append(observations.min().item())
             self.stats["obs/mean"].append(observations.mean().item())
@@ -310,6 +418,14 @@ class PuffeSAC:
                 transition_ids = env_ids[completed_rows]
                 terminal_transitions = terminals[completed_rows]
                 next_observations = observations[completed_rows]
+                truncated_transitions = truncations[completed_rows] & ~terminal_transitions
+                if truncated_transitions.any():
+                    truncated_agent_ids = transition_ids[truncated_transitions].detach().cpu().numpy()
+                    final_positions = np.searchsorted(final_agent_ids, truncated_agent_ids)
+                    final_batch = final_observations[final_positions]
+                    next_observations[truncated_transitions] = torch.as_tensor(
+                        final_batch, device=self.device, dtype=torch.float32
+                    )
                 # Terminal rows need no successor; use a finite, already-owned state.
                 next_observations[terminal_transitions] = self.observations[
                     transition_ids[terminal_transitions]
@@ -600,16 +716,111 @@ class PuffeSAC:
 
 def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=None,
           replay=None, logger=None, early_stop_fn=None):
-    """Run injected components and return the latest emitted metric log."""
+    """Run Drive SAC from Hydra config or from explicitly injected components."""
     pufferl = None
     early_stop = False
     last_logs = {}
     cleanup_logger = logger
     close_started = False
     try:
-        if args is None:
-            raise NotImplementedError("Supply a SAC config dictionary; Hydra integration is TODO")
-        config = {**args, "env": env_name}
+        if args is None or "train" in args:
+            previous_sigint_handler = signal.getsignal(signal.SIGINT)
+            try:
+                from pufferlib import pufferl as ppo
+            finally:
+                signal.signal(signal.SIGINT, previous_sigint_handler)
+
+            startup_args = load_config(env_name) if args is None else args
+            if env_name != "puffer_drive":
+                raise NotImplementedError(f"Drive SAC startup is only configured for puffer_drive, got {env_name!r}")
+            unsupported_train_keys = set(startup_args["train"]) - SAC_TRAIN_KEYS
+            if unsupported_train_keys:
+                unsupported_names = ", ".join(sorted(unsupported_train_keys))
+                raise ValueError(
+                    f"Unsupported SAC train settings: {unsupported_names}. "
+                    "PPO-only train settings are not used by SAC."
+                )
+            if startup_args.get("rnn_name") is not None:
+                raise NotImplementedError("SAC recurrence is deferred; set rnn_name=null")
+            if startup_args["policy"].get("action_type") != "discrete":
+                raise ValueError("SAC requires policy.action_type=discrete")
+            if startup_args["policy"].get("shared_network") is not False:
+                raise ValueError("SAC requires policy.shared_network=false for independent actor and critic networks")
+            if startup_args.get("load_model_path") is not None or startup_args.get("load_id") is not None:
+                raise NotImplementedError(
+                    "SAC model loading by load_model_path/load_id is deferred; set both to null."
+                )
+            world_size = int(os.environ.get("WORLD_SIZE", "1"))
+            if world_size != 1:
+                raise NotImplementedError("SAC DDP is deferred; launch one process with WORLD_SIZE=1")
+
+            train_args = startup_args["train"]
+            run_name = startup_args.get("run_name", train_args.get("run_name", "sac"))
+            train_seed = train_args.get("seed")
+            if train_seed is None:
+                train_seed = time.time_ns() & 0xFFFFFFFF
+            train_args["seed"] = train_seed
+            torch_seed, env_seed = ppo.derive_rank_seeds(
+                startup_args["vec"].get("seed"), train_seed, world_size, 0,
+            )
+            random.seed(torch_seed)
+            np.random.seed(torch_seed)
+            torch.manual_seed(torch_seed)
+
+            config = {key: value for key, value in train_args.items() if key in SAC_TRAIN_KEYS}
+            config.update(
+                env=env_name,
+                run_name=run_name,
+            )
+            startup_args["run_name"] = run_name
+            startup_args.setdefault("no_model_upload", False)
+            startup_args["policy_name"] = "DriveSAC"
+            startup_args["env"] = {
+                **startup_args["env"],
+                "capture_final_observations": True,
+            }
+
+            vecenv = vecenv or ppo.load_env(env_name, startup_args, seed=env_seed)
+            driver_env = getattr(vecenv, "driver_env", None)
+            if not getattr(driver_env, "capture_final_observations", False):
+                raise NotImplementedError(
+                    "SAC requires Drive final-observation transport. Set "
+                    "env.capture_final_observations=True and use a Drive build with "
+                    "the _pufferlib_final_observations info payload."
+                )
+
+            if policy is None:
+                policy = load_policy(startup_args, vecenv, env_name)
+            if critic is None:
+                from pufferlib.ocean.torch_sac import DriveSACCritic
+                critic = DriveSACCritic(vecenv.driver_env, **startup_args["policy"]).to(
+                    device=ppo.torch_device(config["device"]), dtype=torch.float32,
+                )
+            if replay is None:
+                from pufferlib.sac_replay import TensorReplay
+                replay = TensorReplay(
+                    config["batch_size"], vecenv.single_observation_space.shape, device="cpu",
+                )
+            config["action_count"] = policy.action_count
+
+            startup_args["git"] = ppo._get_git_metadata()
+            ppo._save_experiment_config(startup_args, config["data_dir"])
+
+            if logger is None:
+                if startup_args.get("neptune"):
+                    logger = ppo.NeptuneLogger(startup_args)
+                elif startup_args.get("wandb"):
+                    logger = ppo.WandbLogger(startup_args)
+                elif startup_args.get("tb"):
+                    logger = ppo.TensorBoardLogger(
+                        run_id=run_name,
+                        experiment_dir=config["data_dir"],
+                    )
+            cleanup_logger = logger
+        else:
+            # Keep the original flat config + injected-component API intact.
+            config = {**args, "env": env_name}
+
         pufferl = PuffeSAC(config, vecenv, policy, critic, replay, logger)
         cleanup_logger = pufferl.logger
         resume_state_path = pufferl.config["resume_state_path"]
@@ -663,8 +874,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
     if len(argv) < 2 or argv[0] != "train":
-        raise NotImplementedError("Use the injected SAC train API; eval/sweep/export are deferred")
-    return train(env_name=argv[1])
+        raise NotImplementedError("SAC supports only: train [env_name] [Hydra overrides]")
+    env_name = argv[1]
+    return train(env_name=env_name, args=load_config(env_name, overrides=argv[2:]))
 
 
 if __name__ == "__main__":

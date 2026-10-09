@@ -180,6 +180,9 @@ struct Drive {
     unsigned char *terminals;
     unsigned char *truncations;
     unsigned char *masks;
+    float *final_observations;
+    unsigned char *final_observation_valid;
+    bool capture_final_observations;
     // Agents
     Agent *agents;
     int num_controllable_agents;
@@ -4139,6 +4142,14 @@ static void compute_observations(Drive *env) {
     }
 }
 
+static void capture_final_observations(Drive *env) {
+    float *observations = env->observations;
+    env->observations = env->final_observations;
+    compute_observations(env);
+    env->observations = observations;
+    memset(env->final_observation_valid, 1, env->active_agent_count * sizeof(unsigned char));
+}
+
 static void move_dynamics(Drive *env, int action_idx, int agent_idx) {
     Agent *agent = &env->agents[agent_idx];
     copy_pose_to_prev(agent);
@@ -4495,6 +4506,10 @@ void c_reset(Drive *env) {
 }
 
 void c_step(Drive *env) {
+    if (env->capture_final_observations) {
+        memset(env->final_observation_valid, 0, env->active_agent_count * sizeof(unsigned char));
+    }
+
     // In eval, a scenario is evaluated once: hold the env after its episode
     // ended, so a short episode does not replay and re-emit within the window.
     if (env->eval_mode && env->eval_episode_done) {
@@ -4609,6 +4624,9 @@ void c_step(Drive *env) {
             env->truncations[i] = 1;
         }
         add_log(env);
+        if (env->capture_final_observations) {
+            capture_final_observations(env);
+        }
         if (env->eval_mode) {
             env->eval_episode_done = 1;
             return;

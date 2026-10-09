@@ -94,6 +94,7 @@ class DriveEnvConfig:
     reset_accel_on_stop: bool = MISSING
     dt: float = MISSING
     resample_replay_to_dt: bool = False
+    capture_final_observations: bool = False
     spawn_initial_speed: float = MISSING
     collision_behavior: InfractionBehavior = MISSING
     offroad_behavior: InfractionBehavior = MISSING

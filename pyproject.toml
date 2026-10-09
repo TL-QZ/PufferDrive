@@ -235,6 +235,7 @@ test = [
 
 [project.scripts]
 puffer = "pufferlib.pufferl:main"
+puffer-sac = "pufferlib.pufferl_sac:main"
 
 [project.urls]
 Homepage = "https://puffer.ai"

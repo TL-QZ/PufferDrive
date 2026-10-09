@@ -73,6 +73,7 @@ class Drive(pufferlib.PufferEnv):
         use_map_cache=0,
         use_neighbor_cache=1,
         capture_replay=False,
+        capture_final_observations=False,
         replay_worker_idx=0,
         dt=0.1,
         spawn_initial_speed=0.0,
@@ -212,6 +213,7 @@ class Drive(pufferlib.PufferEnv):
             raise ValueError(f"use_map_cache must be 0 (off) or 1 (on). Got: {use_map_cache}")
         self.use_map_cache = use_map_cache
         self.capture_replay = bool(capture_replay)
+        self.capture_final_observations = bool(capture_final_observations)
         self.replay_worker_idx = replay_worker_idx
         self._replay_captures = []
         self.human_agent_idx = human_agent_idx
@@ -489,6 +491,12 @@ class Drive(pufferlib.PufferEnv):
         self.map_ids = map_ids
         self.num_envs = num_envs
         super().__init__(buf=buf)
+        if self.capture_final_observations:
+            self.final_observations = np.empty((num_agents, self.num_obs), dtype=np.float32)
+            self.final_observation_valid = np.zeros(num_agents, dtype=np.uint8)
+        else:
+            self.final_observations = None
+            self.final_observation_valid = None
         self.c_envs = None
         self._create_c_envs()
 
@@ -503,11 +511,16 @@ class Drive(pufferlib.PufferEnv):
                     self.eval_scenario_seeds[pair_start + env_idx]
                     if self.eval_scenario_seeds is not None else self.random_seed
                 )
+                env_kwargs = self._env_init_kwargs(self.map_files[self.map_ids[env_idx]], end - start)
+                env_kwargs["capture_final_observations"] = self.capture_final_observations
+                if self.capture_final_observations:
+                    env_kwargs["final_observations"] = self.final_observations[start:end]
+                    env_kwargs["final_observation_valid"] = self.final_observation_valid[start:end]
                 env_ids.append(binding.env_init(
                     self.observations[start:end], self.actions[start:end],
                     self.rewards[start:end], self.terminals[start:end],
                     self.truncations[start:end], self.masks[start:end], env_seed,
-                    **self._env_init_kwargs(self.map_files[self.map_ids[env_idx]], end - start),
+                    **env_kwargs,
                 ))
             self.c_envs = binding.vectorize(*env_ids)
         except Exception:
@@ -648,6 +661,8 @@ class Drive(pufferlib.PufferEnv):
             binding.vec_reset(self.c_envs)
         self.tick = 0
         self.truncations[:] = 0
+        if self.capture_final_observations:
+            self.final_observation_valid[:] = 0
         if self.capture_replay:
             self._initialize_replay_captures()
         return self.observations, []
@@ -663,6 +678,8 @@ class Drive(pufferlib.PufferEnv):
         if self.capture_replay:
             self._capture_replay_step()
         self.actions[:] = actions
+        if self.capture_final_observations:
+            self.final_observation_valid[:] = 0
         binding.vec_step(self.c_envs)
         self.tick += 1
         info = []
@@ -687,7 +704,12 @@ class Drive(pufferlib.PufferEnv):
                 self.current_num_eval_scenarios = self._next_eval_batch_size()
                 if self.current_num_eval_scenarios == 0:
                     self._eval_exhausted = True
+                    final_info = self._final_observation_info()
+                    if final_info is not None:
+                        info.append(final_info)
                     return (self.observations, self.rewards, self.terminals, self.truncations, info)
+                if self.capture_final_observations:
+                    self._capture_map_resample_final_observations()
                 binding.vec_close(self.c_envs)
                 self.c_envs = None
                 # Pairs already replayed this sweep; slice the rest so a deferred
@@ -732,7 +754,30 @@ class Drive(pufferlib.PufferEnv):
                     self._initialize_replay_captures()
                 # Map resampling is an external reset boundary (dataset/map switch). Treat as truncation.
                 self.truncations[:] = 1
+        final_info = self._final_observation_info()
+        if final_info is not None:
+            info.append(final_info)
         return (self.observations, self.rewards, self.terminals, self.truncations, info)
+
+    def _capture_map_resample_final_observations(self):
+        active_agent_count = int(self.agent_offsets[-1])
+        valid_slots = self.final_observation_valid[:active_agent_count]
+        missing_slots = np.flatnonzero(valid_slots == 0)
+        self.final_observations[missing_slots] = self.observations[missing_slots]
+        valid_slots[:] = 1
+
+    def _final_observation_info(self):
+        if not self.capture_final_observations:
+            return None
+        env_ids = np.flatnonzero(self.final_observation_valid)
+        if env_ids.size == 0:
+            return None
+        return {
+            "_pufferlib_final_observations": {
+                "env_ids": env_ids,
+                "observations": self.final_observations[env_ids],
+            }
+        }
 
     def get_global_agent_state(self):
         """Get current global state of all active agents.

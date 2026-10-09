@@ -15,6 +15,16 @@ RECV = 3
 CLOSE = 4
 MAIN = 5
 INFO = 6
+FINAL_OBSERVATIONS_INFO_KEY = "_pufferlib_final_observations"
+
+
+def _remap_final_observation_infos(infos, agent_ids):
+    for info in infos:
+        if not isinstance(info, dict) or FINAL_OBSERVATIONS_INFO_KEY not in info:
+            continue
+        payload = info[FINAL_OBSERVATIONS_INFO_KEY]
+        payload["env_ids"] = agent_ids[payload["env_ids"]].copy()
+    return infos
 
 
 def recv_precheck(vecenv):
@@ -175,10 +185,8 @@ class Serial:
                 o, r, d, t, i = env.step(atns)
 
             if i:
-                if isinstance(i, list):
-                    self.infos.extend(i)
-                else:
-                    self.infos.append(i)
+                env_infos = i if isinstance(i, list) else [i]
+                self.infos.extend(_remap_final_observation_infos(env_infos, self.agent_ids[ptr:end]))
 
             ptr = end
 
@@ -521,7 +529,7 @@ class Multiprocessing:
         infos = []
         for i in s_range:
             if self.infos[i]:
-                infos.extend(self.infos[i])
+                infos.extend(_remap_final_observation_infos(self.infos[i], self.agent_ids[i]))
                 self.infos[i] = []
 
         agent_ids = self.agent_ids[w_slice].ravel()
@@ -656,10 +664,12 @@ class Ray:
             env_id = [self.async_handles.index(e) for e in ready]
             recvs = self.ray.get(ready)
 
-        o, r, d, t, infos, ids, m = zip(*recvs)
+        o, r, d, t, worker_infos, ids, m = zip(*recvs)
         self.prev_env_id = env_id
 
-        infos = [i for ii in infos for i in ii]
+        infos = []
+        for worker_idx, worker_info in zip(env_id, worker_infos):
+            infos.extend(_remap_final_observation_infos(worker_info, self.agent_ids[worker_idx]))
 
         o = np.stack(o, axis=0).reshape(self.obs_batch_shape)
         r = np.stack(r, axis=0).ravel()

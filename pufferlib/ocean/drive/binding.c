@@ -57,6 +57,65 @@ static void my_reseed(Env *env, uint64_t seed) {
     env->timestep = -1;
 }
 
+static int bind_final_observations(Drive *env, PyObject *kwargs) {
+    PyObject *capture_obj = PyDict_GetItemString(kwargs, "capture_final_observations");
+    if (capture_obj == NULL) {
+        return 0;
+    }
+
+    int capture = PyObject_IsTrue(capture_obj);
+    if (capture < 0) {
+        return -1;
+    }
+    if (!capture) {
+        return 0;
+    }
+
+    PyObject *final_obs_obj = PyDict_GetItemString(kwargs, "final_observations");
+    PyObject *final_valid_obj = PyDict_GetItemString(kwargs, "final_observation_valid");
+    if (final_obs_obj == NULL || final_valid_obj == NULL
+        || !PyObject_TypeCheck(final_obs_obj, &PyArray_Type)
+        || !PyObject_TypeCheck(final_valid_obj, &PyArray_Type)) {
+        PyErr_SetString(PyExc_TypeError, "Final observation capture requires NumPy scratch arrays");
+        return -1;
+    }
+
+    PyArrayObject *final_observations = (PyArrayObject *) final_obs_obj;
+    PyArrayObject *final_observation_valid = (PyArrayObject *) final_valid_obj;
+    int expected_observation_size = compute_observation_size(env);
+    if (!PyArray_ISCONTIGUOUS(final_observations)
+        || !PyArray_ISWRITEABLE(final_observations)
+        || !PyArray_ISNOTSWAPPED(final_observations)
+        || PyArray_TYPE(final_observations) != NPY_FLOAT32
+        || PyArray_NDIM(final_observations) != 2
+        || PyArray_DIM(final_observations, 0) != env->num_controllable_agents
+        || PyArray_DIM(final_observations, 1) != expected_observation_size) {
+        PyErr_Format(
+            PyExc_ValueError,
+            "final_observations must be contiguous native float32 with shape (%d, %d)",
+            env->num_controllable_agents,
+            expected_observation_size);
+        return -1;
+    }
+    if (!PyArray_ISCONTIGUOUS(final_observation_valid)
+        || !PyArray_ISWRITEABLE(final_observation_valid)
+        || !PyArray_ISNOTSWAPPED(final_observation_valid)
+        || PyArray_TYPE(final_observation_valid) != NPY_UINT8
+        || PyArray_NDIM(final_observation_valid) != 1
+        || PyArray_DIM(final_observation_valid, 0) != env->num_controllable_agents) {
+        PyErr_Format(
+            PyExc_ValueError,
+            "final_observation_valid must be contiguous native uint8 with shape (%d,)",
+            env->num_controllable_agents);
+        return -1;
+    }
+
+    env->final_observations = PyArray_DATA(final_observations);
+    env->final_observation_valid = PyArray_DATA(final_observation_valid);
+    env->capture_final_observations = true;
+    return 0;
+}
+
 static int my_put(Env *env, PyObject *args, PyObject *kwargs) {
     PyObject *obs = PyDict_GetItemString(kwargs, "observations");
     if (!PyObject_TypeCheck(obs, &PyArray_Type)) {
@@ -1955,6 +2014,12 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->phantom_braking_prob = (float) unpack(kwargs, "phantom_braking_prob");
     env->phantom_braking_trigger_prob = (float) unpack(kwargs, "phantom_braking_trigger_prob");
     env->phantom_braking_duration = (int) unpack(kwargs, "phantom_braking_duration_seconds");
+
+    if (bind_final_observations((Drive *) env, kwargs) != 0) {
+        c_close((Drive *) env);
+        free(env);
+        return -1;
+    }
 
     if (init(env) != 0) {
         PyErr_Format(PyExc_ValueError, "Scenario %s: %s", env->map_name, env->load_error);

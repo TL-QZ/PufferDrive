@@ -1,0 +1,33 @@
+defaults:
+  - puffer_drive
+  - _self_
+
+# Keep Drive's environment, policy architecture, vectorization, and eval settings.
+# SAC startup constructs DriveSAC and DriveSACCritic directly.
+policy_name: DriveSAC
+rnn_name: null
+run_name: sac
+
+train:
+  seed: 42
+  device: cpu
+  torch_deterministic: false
+  total_timesteps: 1000000
+  gamma: 0.99
+  # Replay capacity; minibatch_size controls each learner update.
+  batch_size: 10000
+  minibatch_size: 256
+  update_epochs: 1
+  learning_starts: 10000
+  replay_update_ratio: 0.1
+  learning_rate: 0.0003
+  critic_learning_rate: 0.0003
+  alpha_learning_rate: 0.0003
+  initial_alpha: 0.2
+  target_entropy: null
+  tau: 0.005
+  anneal_lr: false
+  checkpoint_interval: 50
+  final_model_name: final_model.pt
+  resume_state_path: null
+  data_dir: experiments/puffer_drive_sac
