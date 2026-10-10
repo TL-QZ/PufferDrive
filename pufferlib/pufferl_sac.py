@@ -2,8 +2,8 @@
 
 Drive networks, replay placement, pre-reset observations, BF16 autocast, compile,
 DDP, Hydra startup, benchmark evaluation, replay rendering and experiment commands
-are integrated. Actor export remains pending; recurrence and exact replay/environment
-resume remain deferred.
+are integrated. Portable Python actor export is supported; recurrence and exact
+replay/environment resume remain deferred.
 """
 
 from collections import defaultdict
@@ -21,6 +21,7 @@ import sys
 import time
 import traceback
 import warnings
+from types import SimpleNamespace
 
 from hydra import compose, initialize_config_dir
 import numpy as np
@@ -30,6 +31,8 @@ from torch.nn import functional as F
 
 
 STATE_VERSION = 5
+ACTOR_EXPORT_FORMAT = "pufferdrive-sac-actor"
+ACTOR_EXPORT_VERSION = 1
 DEFAULT_ENTROPY_FRACTION = 0.98
 FINAL_OBSERVATIONS_INFO_KEY = "_pufferlib_final_observations"
 DDP = torch.nn.parallel.DistributedDataParallel
@@ -245,6 +248,168 @@ def _load_actor_weights(policy, model_path, device, ppo):
     """Load a local actor artifact without restoring any SAC learner state."""
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
     policy.load_state_dict(ppo.clean_policy_state_dict(state_dict))
+
+
+def _portable_actor_config(source_args):
+    """Keep only the observation and policy settings needed to rebuild DriveSAC."""
+    if source_args.get("policy_name") != "DriveSAC":
+        raise ValueError(f"SAC actor export requires policy_name='DriveSAC', got {source_args.get('policy_name')!r}")
+    if source_args.get("rnn_name") is not None:
+        raise NotImplementedError("SAC actor export does not support recurrent policies")
+    policy = source_args.get("policy")
+    env = source_args.get("env")
+    if not isinstance(policy, dict) or not isinstance(env, dict):
+        raise ValueError("SAC actor export requires policy and env mappings in the checkpoint config")
+    portable_env = copy.deepcopy(env)
+    # Evaluation supplies its own maps; their training-machine path is not portable.
+    portable_env.pop("map_dir", None)
+    return {
+        "artifact_format": ACTOR_EXPORT_FORMAT,
+        "artifact_version": ACTOR_EXPORT_VERSION,
+        "policy_name": "DriveSAC",
+        "rnn_name": None,
+        "policy": copy.deepcopy(policy),
+        # Preserve observation normalization and slot settings for existing SAC eval loaders.
+        "env": portable_env,
+        # The shared checkpoint-architecture loader expects a mapping even with no RNN.
+        "rnn": {},
+    }
+
+
+def _build_portable_actor(export_config):
+    """Reconstruct DriveSAC from metadata without creating a simulator."""
+    if not isinstance(export_config, dict):
+        raise ValueError("Portable SAC actor config must be a mapping")
+    if export_config.get("artifact_format") != ACTOR_EXPORT_FORMAT:
+        raise ValueError(f"Unsupported portable SAC actor format: {export_config.get('artifact_format')!r}")
+    if export_config.get("artifact_version") != ACTOR_EXPORT_VERSION:
+        raise ValueError(
+            f"Unsupported portable SAC actor version: {export_config.get('artifact_version')!r}"
+        )
+    if export_config.get("policy_name") != "DriveSAC" or export_config.get("rnn_name") is not None:
+        raise ValueError("Portable SAC actor config must describe a feed-forward DriveSAC policy")
+
+    env_config = export_config["env"]
+    policy_config = export_config["policy"]
+
+    dynamics_model = env_config["dynamics_model"]
+    if dynamics_model not in {"classic", "jerk"}:
+        raise ValueError(f"Unsupported SAC actor dynamics_model: {dynamics_model!r}")
+    for key in (
+        "num_goals",
+        "obs_slots_partners_n",
+        "obs_slots_lane_n",
+        "obs_slots_boundary_n",
+        "obs_slots_traffic_controls_n",
+    ):
+        value = env_config[key]
+        if isinstance(value, bool) or not isinstance(value, int) or value < (1 if key == "num_goals" else 0):
+            raise ValueError(f"Portable SAC actor env.{key} must be a valid nonnegative integer")
+    if not isinstance(env_config["reward_conditioning"], bool):
+        raise ValueError("Portable SAC actor env.reward_conditioning must be a boolean")
+    for key in ("obs_dropout_lane", "obs_dropout_boundary"):
+        value = env_config[key]
+        if isinstance(value, bool) or not isinstance(value, numbers.Real) or not math.isfinite(value):
+            raise ValueError(f"Portable SAC actor env.{key} must be finite")
+        if not 0 <= value <= 1:
+            raise ValueError(f"Portable SAC actor env.{key} must be in [0, 1]")
+    if policy_config.get("action_type") != "discrete" or policy_config.get("shared_network") is not False:
+        raise ValueError("Portable SAC actor policy requires discrete actions and shared_network=false")
+
+    from pufferlib.ocean.drive import binding
+    from pufferlib.ocean.drive.drive import compute_effective_road_obs_count
+    from pufferlib.ocean.torch_sac import DriveSAC
+
+    dynamics_model_flag = {
+        "classic": binding.DYNAMICS_MODEL_CLASSIC,
+        "jerk": binding.DYNAMICS_MODEL_JERK,
+    }[dynamics_model]
+    actor_env = SimpleNamespace(
+        dynamics_model=dynamics_model,
+        dynamics_model_flag=dynamics_model_flag,
+        ego_features=binding.EGO_FEATURES,
+        num_reward_coefs=binding.NUM_REWARD_COEFS if env_config["reward_conditioning"] else 0,
+        goal_dim=env_config["num_goals"] * binding.GOAL_FEATURES,
+        obs_slots_partners_n=env_config["obs_slots_partners_n"],
+        partner_features=binding.PARTNER_FEATURES,
+        obs_slots_lane_kept=compute_effective_road_obs_count(
+            env_config["obs_slots_lane_n"], env_config["obs_dropout_lane"],
+        ),
+        lane_features=binding.LANE_FEATURES,
+        obs_slots_boundary_kept=compute_effective_road_obs_count(
+            env_config["obs_slots_boundary_n"], env_config["obs_dropout_boundary"],
+        ),
+        boundary_features=binding.BOUNDARY_FEATURES,
+        obs_slots_traffic_controls_n=env_config["obs_slots_traffic_controls_n"],
+        traffic_control_features=binding.TRAFFIC_CONTROL_FEATURES,
+    )
+    return DriveSAC(actor_env, **policy_config)
+
+
+def load_export(path, device="cpu"):
+    """Load a portable SAC actor bundle without constructing a Drive environment.
+
+    ``path`` is the export directory containing ``actor.pt`` and ``config.yaml``.
+    """
+    import yaml
+
+    export_dir = Path(path)
+    config_path = export_dir / "config.yaml"
+    actor_path = export_dir / "actor.pt"
+    with config_path.open() as config_file:
+        export_config = yaml.safe_load(config_file)
+    actor = _build_portable_actor(export_config).to(device=torch.device(device), dtype=torch.float32)
+    actor_state = torch.load(actor_path, map_location=device, weights_only=True)
+    actor.load_state_dict(actor_state)
+    actor.eval()
+    return actor
+
+
+def export(args=None, env_name="puffer_drive", path=None, silent=False):
+    """Write actor weights and reconstruction config without loading a simulator."""
+    if env_name != "puffer_drive":
+        raise NotImplementedError(f"Drive SAC actor export is not configured for {env_name!r}")
+    args = load_config(env_name) if args is None else copy.deepcopy(args)
+    model_path = args.get("load_model_path")
+    if not isinstance(model_path, str) or not model_path.endswith(".pt") or not os.path.isfile(model_path):
+        raise ValueError("SAC actor export requires load_model_path to name a local actor .pt file")
+    path = path or args.get("export_path")
+
+    previous_sigint_handler = signal.getsignal(signal.SIGINT)
+    try:
+        from pufferlib import pufferl as ppo
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint_handler)
+
+    source_args, _ = ppo.drive_benchmark.load_checkpoint_architecture(args)
+    export_config = _portable_actor_config(source_args)
+    actor = _build_portable_actor(export_config).to(device="cpu", dtype=torch.float32)
+    _load_actor_weights(actor, model_path, torch.device("cpu"), ppo)
+    actor.eval()
+
+    source_run_dir = Path(ppo.drive_benchmark.resolve_run_dir(model_path)).resolve()
+    if path is None:
+        path = Path(model_path).resolve().parent / f"{Path(model_path).stem}_portable_actor"
+    export_dir = Path(path).expanduser().resolve()
+    if export_dir == source_run_dir:
+        raise ValueError("Portable actor export directory must differ from the source run directory")
+    export_dir.mkdir(parents=True, exist_ok=True)
+    config_path = export_dir / "config.yaml"
+    actor_path = export_dir / "actor.pt"
+    if config_path.exists() or actor_path.exists():
+        raise FileExistsError(f"Portable actor export already exists in {export_dir}")
+
+    import yaml
+
+    with config_path.open("w") as config_file:
+        yaml.safe_dump(export_config, config_file, sort_keys=False)
+    torch.save(
+        {key: value.detach().cpu() for key, value in actor.state_dict().items()},
+        actor_path,
+    )
+    if not silent:
+        print(f"Saved portable SAC actor to {export_dir}")
+    return str(export_dir)
 
 
 def load_policy(args, vecenv, env_name="puffer_drive"):
@@ -1504,9 +1669,10 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) < 2 or argv[0] not in {"train", "eval", "sweep", "controlled_exp", "profile", "autotune"}:
+    if len(argv) < 2 or argv[0] not in {
+            "train", "eval", "export", "sweep", "controlled_exp", "profile", "autotune"}:
         raise NotImplementedError(
-            "SAC commands: train, eval, sweep, controlled_exp, profile, autotune; "
+            "SAC commands: train, eval, export, sweep, controlled_exp, profile, autotune; "
             "follow the command with env_name and Hydra overrides"
         )
     command = argv[0]
@@ -1520,6 +1686,8 @@ def main(argv=None):
         return train(env_name=env_name, args=args)
     if command == "eval":
         return eval(env_name=env_name, args=args, benchmark_names=benchmark_names)
+    if command == "export":
+        return export(args=args, env_name=env_name)
     from pufferlib import sac_workflows
     if command == "autotune":
         return sac_workflows.autotune(args=args)
