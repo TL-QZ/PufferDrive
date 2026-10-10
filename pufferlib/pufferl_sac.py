@@ -46,6 +46,7 @@ DEFAULT_CONFIG = dict(
 )
 
 SAC_TRAIN_KEYS = frozenset(DEFAULT_CONFIG) - {"env"} | {"data_dir"}
+SAC_EVALUATION_KEYS = frozenset({"evaluation_interval_epochs", "evaluation_benchmarks"})
 DEFAULT_MINIBATCH_SIZE = 256
 PPO_CHECKPOINT_ENV_KEYS = frozenset({
     "action_type",
@@ -136,7 +137,7 @@ def load_config(env_name="puffer_drive", config_dir=None, overrides=None):
         override_path = override.lstrip("+~").split("=", 1)[0]
         if override_path == "train" or override_path.startswith("train."):
             train_key = override_path.partition(".")[2]
-            if train_key not in SAC_TRAIN_KEYS:
+            if train_key not in SAC_TRAIN_KEYS | SAC_EVALUATION_KEYS:
                 import pufferlib
                 raise pufferlib.APIUsageError(
                     f"Unsupported SAC training override '{override_path}'. "
@@ -156,7 +157,10 @@ def load_config(env_name="puffer_drive", config_dir=None, overrides=None):
         cfg, resolve=True, enum_to_str=True, throw_on_missing=True,
     ))
     inherited_train = args["train"]
-    args["train"] = {key: value for key, value in inherited_train.items() if key in SAC_TRAIN_KEYS}
+    args["train"] = {
+        key: value for key, value in inherited_train.items()
+        if key in SAC_TRAIN_KEYS | SAC_EVALUATION_KEYS
+    }
     args["env_name"] = env_name
     return args
 
@@ -261,6 +265,83 @@ def load_policy(args, vecenv, env_name="puffer_drive"):
     if args.get("load_model_path") is not None:
         _load_actor_weights(actor, args["load_model_path"], device, ppo)
     return actor
+
+
+def eval(env_name="puffer_drive", args=None, benchmark_names=None):
+    """Run PPO's benchmark evaluator with a Drive SAC actor."""
+    if env_name != "puffer_drive":
+        raise NotImplementedError(f"Drive SAC evaluation is not configured for {env_name!r}")
+    args = copy.deepcopy(load_config(env_name) if args is None else args)
+    eval_config = args["eval"]
+    if (
+        eval_config["render_scenarios"]
+        or eval_config["render_filter"] is not None
+        or eval_config["failure_replay_csv"] is not None
+        or eval_config["capture_observations"]
+    ):
+        import pufferlib
+        raise pufferlib.APIUsageError(
+            "SAC replay and rendering are deferred to E3. Set eval.render_scenarios=false, "
+            "eval.render_filter=null, eval.failure_replay_csv=null, and "
+            "eval.capture_observations=false."
+        )
+
+    model_path = args.get("load_model_path")
+    load_id = args.get("load_id")
+    if model_path is not None and load_id is not None:
+        import pufferlib
+        raise pufferlib.APIUsageError("Choose one SAC eval model source: load_model_path or load_id")
+    if model_path is None and load_id is None:
+        import pufferlib
+        raise pufferlib.APIUsageError("SAC eval requires load_model_path or load_id")
+
+    previous_sigint_handler = signal.getsignal(signal.SIGINT)
+    try:
+        from pufferlib import pufferl as ppo
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint_handler)
+    if load_id is not None:
+        model_path = _download_remote_model(args, global_rank=0, world_size=1)
+        args["load_model_path"] = model_path
+    if model_path == "latest":
+        import pufferlib
+        raise pufferlib.APIUsageError("SAC eval requires an explicit local load_model_path checkpoint")
+
+    _restore_checkpoint_architecture(args, model_path, ppo)
+    if args["policy"].get("action_type") != "discrete":
+        raise ValueError("SAC eval requires policy.action_type=discrete")
+    if args["policy"].get("shared_network") is not False:
+        raise ValueError("SAC eval requires policy.shared_network=false")
+
+    selected_benchmarks = benchmark_names if benchmark_names is not None else eval_config["benchmarks"]
+    environment_config, benchmarks = ppo.drive_benchmark.load_benchmark_config(
+        eval_config["benchmark_config"], selected_benchmarks,
+    )
+    actor_args = ppo.drive_benchmark.build_benchmark_args(args, benchmarks[0], environment_config)
+    actor_args["env"].update(
+        num_agents=1,
+        min_agents_per_env=1,
+        max_agents_per_env=1,
+        num_maps=1,
+    )
+    actor_args["vec"].update(
+        backend="Serial",
+        num_envs=1,
+        num_workers=1,
+        batch_size=1,
+    )
+    actor_vecenv = ppo.load_env(env_name, actor_args, seed=actor_args["vec"].get("seed"))
+    try:
+        policy = load_policy(actor_args, actor_vecenv, env_name)
+    finally:
+        actor_vecenv.close()
+
+    return ppo.eval(
+        env_name=env_name,
+        args=args,
+        policy=policy,
+        benchmark_names=benchmark_names,
+    )
 
 
 def _initialize_process_group(device, pufferl):
@@ -1172,6 +1253,8 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
     auto_resume = False
     experiment_config = None
     load_model_path = None
+    training_evaluation_scheduled = False
+    last_training_evaluation_epoch = None
     try:
         if args is None or "train" in args:
             previous_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -1183,13 +1266,15 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             startup_args = load_config(env_name) if args is None else args
             if env_name != "puffer_drive":
                 raise NotImplementedError(f"Drive SAC startup is only configured for puffer_drive, got {env_name!r}")
-            unsupported_train_keys = set(startup_args["train"]) - SAC_TRAIN_KEYS
+            unsupported_train_keys = set(startup_args["train"]) - SAC_TRAIN_KEYS - SAC_EVALUATION_KEYS
             if unsupported_train_keys:
                 unsupported_names = ", ".join(sorted(unsupported_train_keys))
                 raise ValueError(
                     f"Unsupported SAC train settings: {unsupported_names}. "
                     "PPO-only train settings are not used by SAC."
                 )
+            if startup_args["train"].get("evaluation_interval_epochs") is not None:
+                training_evaluation_scheduled = ppo.drive_benchmark.validate_training_evaluation_config(startup_args)
             train_args = startup_args["train"]
             load_model_path = startup_args.get("load_model_path")
             resume_state_path, auto_resume = _resolve_resume_state_path(
@@ -1342,6 +1427,23 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             logs = pufferl.train()
             if logs is not None:
                 last_logs = logs
+            if (
+                training_evaluation_scheduled
+                and pufferl.epoch > 0
+                and pufferl.epoch % startup_args["train"]["evaluation_interval_epochs"] == 0
+                and pufferl.epoch != last_training_evaluation_epoch
+                and global_rank == 0
+            ):
+                last_training_evaluation_epoch = pufferl.epoch
+                ppo.run_training_evaluation(
+                    env_name=env_name,
+                    args=startup_args,
+                    policy=pufferl.uncompiled_policy,
+                    logger=pufferl.logger,
+                    epoch=pufferl.epoch,
+                    global_step=pufferl.agent_steps,
+                    run_dir=config["data_dir"],
+                )
             rank_zero_early_stop = (
                 pufferl.rank == 0 and logs is not None
                 and early_stop_fn is not None and early_stop_fn(logs)
@@ -1353,6 +1455,19 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             if rank_zero_early_stop:
                 early_stop = True
                 break
+        if training_evaluation_scheduled and pufferl.epoch > 0:
+            if global_rank == 0 and last_training_evaluation_epoch != pufferl.epoch:
+                ppo.run_training_evaluation(
+                    env_name=env_name,
+                    args=startup_args,
+                    policy=pufferl.uncompiled_policy,
+                    logger=pufferl.logger,
+                    epoch=pufferl.epoch,
+                    global_step=pufferl.agent_steps,
+                    run_dir=config["data_dir"],
+                )
+            if pufferl.distributed:
+                torch.distributed.barrier()
         model_path = pufferl.close()
         close_started = True
         pufferl.logger.close(model_path, early_stop)
@@ -1391,10 +1506,18 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) < 2 or argv[0] != "train":
-        raise NotImplementedError("SAC supports only: train [env_name] [Hydra overrides]")
+    if len(argv) < 2 or argv[0] not in {"train", "eval"}:
+        raise NotImplementedError("SAC supports: train [env_name] [Hydra overrides] or eval [env_name] [benchmark] [overrides]")
+    command = argv[0]
     env_name = argv[1]
-    return train(env_name=env_name, args=load_config(env_name, overrides=argv[2:]))
+    overrides = argv[2:]
+    benchmark_names = None
+    if command == "eval" and overrides and "=" not in overrides[0] and not overrides[0].startswith(("+", "~", "--")):
+        benchmark_names = overrides.pop(0)
+    args = load_config(env_name, overrides=overrides)
+    if command == "train":
+        return train(env_name=env_name, args=args)
+    return eval(env_name=env_name, args=args, benchmark_names=benchmark_names)
 
 
 if __name__ == "__main__":

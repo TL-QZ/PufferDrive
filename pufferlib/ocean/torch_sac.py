@@ -147,6 +147,9 @@ class DriveSAC(nn.Module):
         hidden = self.actor_backbone(observations, self.ego_dim)
         return self.actor_head(hidden)
 
+    def forward_eval(self, observations, state=None):
+        return self(observations), None
+
 
 class DriveSACCritic(nn.Module):
     """Twin discrete Drive Q networks returning two ``[B, K]`` tensors."""

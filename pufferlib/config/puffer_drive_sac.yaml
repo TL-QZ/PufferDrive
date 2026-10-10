@@ -48,4 +48,8 @@ train:
   resume_state_path: null
   # Skip same-directory trainer_state.pt autodiscovery; an explicit resume_state_path still loads.
   fresh_run: false
+  # Null disables scheduled benchmark evaluation during SAC training.
+  evaluation_interval_epochs: null
+  # Selected benchmarks must exist in eval.benchmark_config.
+  evaluation_benchmarks: carla_fast
   data_dir: experiments/puffer_drive_sac
