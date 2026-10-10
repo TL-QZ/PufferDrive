@@ -46,4 +46,6 @@ train:
   checkpoint_interval: 50
   final_model_name: final_model.pt
   resume_state_path: null
+  # Skip same-directory trainer_state.pt autodiscovery; an explicit resume_state_path still loads.
+  fresh_run: false
   data_dir: experiments/puffer_drive_sac

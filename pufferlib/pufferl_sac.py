@@ -42,10 +42,41 @@ DEFAULT_CONFIG = dict(
     compile_fullgraph=False, cpu_offload=True,
     initial_alpha=0.2, target_entropy=None, tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
+    fresh_run=False,
 )
 
 SAC_TRAIN_KEYS = frozenset(DEFAULT_CONFIG) - {"env"} | {"data_dir"}
 DEFAULT_MINIBATCH_SIZE = 256
+PPO_CHECKPOINT_ENV_KEYS = frozenset({
+    "action_type",
+    "dynamics_model",
+    "goal_source",
+    "goal_regen_mode",
+    "num_goals",
+    "min_goal_spacing",
+    "max_goal_spacing",
+    "obs_goal_lane_distance",
+    "reward_conditioning",
+    "reward_randomization",
+    "trajectory_prediction_length",
+    "num_trajectory_scaling_factors",
+    "trajectory_scaling_factors",
+    "obs_slots_boundary_n",
+    "obs_slots_lane_n",
+    "obs_boundary_stride",
+    "obs_lane_stride",
+    "obs_dropout_boundary",
+    "obs_dropout_lane",
+    "partner_blindness_duration_seconds",
+    "partner_blindness_prob",
+    "partner_blindness_trigger_prob",
+    "phantom_braking_duration_seconds",
+    "phantom_braking_prob",
+    "phantom_braking_trigger_prob",
+    "obs_slots_partners_n",
+    "obs_slots_traffic_controls_n",
+    "traffic_control_scope",
+})
 
 
 def resolve_sac_batch_sizes(config, vecenv):
@@ -130,6 +161,87 @@ def load_config(env_name="puffer_drive", config_dir=None, overrides=None):
     return args
 
 
+def _resolve_resume_state_path(train_config, load_model_path=None, load_id=None):
+    """Resolve an explicit learner resume or same-run local autodiscovery."""
+    resume_state_path = train_config.get("resume_state_path")
+    if resume_state_path is not None and (load_model_path is not None or load_id is not None):
+        raise ValueError("Cannot combine train.resume_state_path with an actor warmstart")
+    if load_model_path is not None and load_id is not None:
+        raise ValueError("Choose one actor warmstart source: load_model_path or load_id")
+    if load_model_path == "latest":
+        raise ValueError(
+            "SAC requires an explicit local load_model_path actor artifact; the 'latest' shorthand is unsupported."
+        )
+    if load_id is not None and (not isinstance(load_id, str) or not load_id.strip()):
+        raise ValueError("SAC remote model loading requires a non-empty load_id")
+    fresh_run = train_config.get("fresh_run", False)
+    if not isinstance(fresh_run, bool):
+        raise ValueError("train.fresh_run must be a boolean")
+    auto_resume = False
+    if resume_state_path is None and load_model_path is None and load_id is None and not fresh_run:
+        data_dir = train_config.get("data_dir")
+        if not data_dir:
+            raise ValueError("SAC requires an explicit data_dir")
+        discovered_path = Path(data_dir) / "trainer_state.pt"
+        if discovered_path.is_file():
+            resume_state_path = str(discovered_path)
+            auto_resume = True
+    return resume_state_path, auto_resume
+
+
+def _download_remote_model(args, global_rank, world_size):
+    """Download an actor once and share its path with the learner ranks."""
+    if world_size == 1:
+        from pufferlib.sac_logging import download_model
+
+        return download_model(args)
+
+    payload = [None]
+    download_error = None
+    if global_rank == 0:
+        try:
+            from pufferlib.sac_logging import download_model
+
+            payload[0] = (True, download_model(args))
+        except Exception as error:
+            download_error = error
+            payload[0] = (False, f"{type(error).__name__}: {error}")
+    torch.distributed.broadcast_object_list(payload, src=0)
+    succeeded, result = payload[0]
+    if not succeeded:
+        if download_error is not None:
+            raise download_error
+        raise RuntimeError(f"Remote SAC model download failed on rank 0: {result}")
+    return result
+
+
+def _restore_checkpoint_architecture(startup_args, source_path, ppo):
+    """Restore source network settings and PPO's observation whitelist."""
+    source_args_for_loading = copy.deepcopy(startup_args)
+    source_args_for_loading["load_model_path"] = source_path
+    source_args, _ = ppo.drive_benchmark.load_checkpoint_architecture(source_args_for_loading)
+    if source_args["policy_name"] != "DriveSAC":
+        raise ValueError(
+            f"SAC checkpoint policy_name must be 'DriveSAC', got {source_args['policy_name']!r}"
+        )
+    if source_args["rnn_name"] is not None:
+        raise NotImplementedError("SAC checkpoint recurrence is deferred; expected rnn_name=null")
+
+    startup_args["policy"].update(source_args["policy"])
+    startup_args["rnn"].update(source_args["rnn"])
+    startup_args["policy_name"] = source_args["policy_name"]
+    startup_args["rnn_name"] = source_args["rnn_name"]
+    for key in PPO_CHECKPOINT_ENV_KEYS:
+        if key in source_args["env"]:
+            startup_args["env"][key] = source_args["env"][key]
+
+
+def _load_actor_weights(policy, model_path, device, ppo):
+    """Load a local actor artifact without restoring any SAC learner state."""
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    policy.load_state_dict(ppo.clean_policy_state_dict(state_dict))
+
+
 def load_policy(args, vecenv, env_name="puffer_drive"):
     """Build Drive SAC's FP32 actor, matching PPO's one-policy loader contract."""
     if env_name != "puffer_drive":
@@ -146,6 +258,8 @@ def load_policy(args, vecenv, env_name="puffer_drive"):
 
     device = ppo.torch_device(args["train"]["device"])
     actor = DriveSAC(vecenv.driver_env, **args["policy"]).to(device=device, dtype=torch.float32)
+    if args.get("load_model_path") is not None:
+        _load_actor_weights(actor, args["load_model_path"], device, ppo)
     return actor
 
 
@@ -434,7 +548,7 @@ class PuffeSAC:
             heavyball_momentum=True,
         )
 
-    def load_training_state(self, path):
+    def load_training_state(self, path, same_run=False):
         """Restore learner state into a fresh environment and empty replay."""
         if (len(self.replay) or self.global_step or self.epoch or self.valid_inserts
                 or self.learner_updates or self.sampled_transitions):
@@ -446,9 +560,13 @@ class PuffeSAC:
         operational_config = {
             "device", "total_timesteps", "run_name", "data_dir", "final_model_name",
             "checkpoint_interval", "resume_state_path", "amp", "precision", "compile",
-            "compile_mode", "compile_fullgraph", "cpu_offload",
+            "compile_mode", "compile_fullgraph", "cpu_offload", "fresh_run",
         }
         saved_config = {**DEFAULT_CONFIG, **state["config"]}
+        if same_run and saved_config["run_name"] != self.config["run_name"]:
+            raise ValueError(
+                "Auto-discovered SAC checkpoint run_name does not match the target run_name"
+            )
         for key, value in saved_config.items():
             if key not in operational_config and self.config[key] != value:
                 raise ValueError(f"Checkpoint config mismatch: {key}")
@@ -1051,6 +1169,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
     cleanup_logger = logger
     close_started = False
     owns_process_group = False
+    auto_resume = False
+    experiment_config = None
+    load_model_path = None
     try:
         if args is None or "train" in args:
             previous_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -1069,24 +1190,35 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                     f"Unsupported SAC train settings: {unsupported_names}. "
                     "PPO-only train settings are not used by SAC."
                 )
-            if startup_args.get("rnn_name") is not None:
-                raise NotImplementedError("SAC recurrence is deferred; set rnn_name=null")
-            if startup_args["policy"].get("action_type") != "discrete":
-                raise ValueError("SAC requires policy.action_type=discrete")
-            if startup_args["policy"].get("shared_network") is not False:
-                raise ValueError("SAC requires policy.shared_network=false for independent actor and critic networks")
-            if startup_args.get("load_model_path") is not None or startup_args.get("load_id") is not None:
-                raise NotImplementedError(
-                    "SAC model loading by load_model_path/load_id is deferred; set both to null."
-                )
-
             train_args = startup_args["train"]
+            load_model_path = startup_args.get("load_model_path")
+            resume_state_path, auto_resume = _resolve_resume_state_path(
+                train_args, load_model_path, startup_args.get("load_id"),
+            )
+            train_args["resume_state_path"] = resume_state_path
             owns_process_group, train_args["device"], world_size, global_rank = _initialize_process_group(
                 train_args["device"], ppo,
             )
             if global_rank != 0:
                 logger = None
                 cleanup_logger = None
+            if startup_args.get("load_id") is not None:
+                load_model_path = _download_remote_model(startup_args, global_rank, world_size)
+                startup_args["load_model_path"] = load_model_path
+            architecture_source_path = resume_state_path or load_model_path
+            if architecture_source_path is not None:
+                _restore_checkpoint_architecture(startup_args, architecture_source_path, ppo)
+            if startup_args.get("policy_name") != "DriveSAC":
+                raise ValueError(
+                    f"SAC requires policy_name='DriveSAC', got {startup_args.get('policy_name')!r}"
+                )
+            if startup_args.get("rnn_name") is not None:
+                raise NotImplementedError("SAC recurrence is deferred; set rnn_name=null")
+            if startup_args["policy"].get("action_type") != "discrete":
+                raise ValueError("SAC requires policy.action_type=discrete")
+            if startup_args["policy"].get("shared_network") is not False:
+                raise ValueError("SAC requires policy.shared_network=false for independent actor and critic networks")
+
             run_name = startup_args.get("run_name", train_args.get("run_name", "sac"))
             train_seed = train_args.get("seed")
             if train_seed is None:
@@ -1107,7 +1239,6 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             )
             startup_args["run_name"] = run_name
             startup_args.setdefault("no_model_upload", False)
-            startup_args["policy_name"] = "DriveSAC"
             startup_args["env"] = {
                 **startup_args["env"],
                 "capture_final_observations": True,
@@ -1132,6 +1263,8 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             learner_device = torch.device(ppo.torch_device(config["device"]))
             if policy is None:
                 policy = load_policy(startup_args, vecenv, env_name)
+            elif load_model_path is not None:
+                _load_actor_weights(policy, load_model_path, learner_device, ppo)
             if critic is None:
                 from pufferlib.ocean.torch_sac import DriveSACCritic
                 critic = DriveSACCritic(vecenv.driver_env, **startup_args["policy"]).to(
@@ -1148,12 +1281,13 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             config["action_count"] = policy.action_count
 
             startup_args["git"] = ppo._get_git_metadata()
-            if global_rank == 0:
-                ppo._save_experiment_config(startup_args, config["data_dir"])
+            experiment_config = startup_args
 
             if logger is None and global_rank == 0:
                 if startup_args.get("neptune"):
-                    logger = ppo.NeptuneLogger(startup_args)
+                    from pufferlib.sac_logging import SACNeptuneLogger
+
+                    logger = SACNeptuneLogger(startup_args)
                 elif startup_args.get("wandb"):
                     logger = ppo.WandbLogger(startup_args)
                 elif startup_args.get("tb"):
@@ -1165,23 +1299,41 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
         else:
             # Keep the original flat config + injected-component API intact.
             config = {**args, "env": env_name}
+            load_model_path = args.get("load_model_path")
             previous_sigint_handler = signal.getsignal(signal.SIGINT)
             try:
                 from pufferlib import pufferl as ppo
             finally:
                 signal.signal(signal.SIGINT, previous_sigint_handler)
-            owns_process_group, config["device"], _, global_rank = _initialize_process_group(
+            resume_state_path, auto_resume = _resolve_resume_state_path(
+                config, load_model_path, args.get("load_id"),
+            )
+            config["resume_state_path"] = resume_state_path
+            for key in (
+                "load_model_path", "load_id", "wandb", "wandb_project", "wandb_group",
+                "neptune", "neptune_name", "neptune_project", "no_model_upload", "tag",
+            ):
+                config.pop(key, None)
+            if (load_model_path is not None or args.get("load_id") is not None) and policy is None:
+                raise ValueError("Injected SAC actor warmstart requires an explicitly supplied policy")
+            owns_process_group, config["device"], world_size, global_rank = _initialize_process_group(
                 config.get("device", DEFAULT_CONFIG["device"]), ppo,
             )
             if global_rank != 0:
                 logger = None
                 cleanup_logger = None
+            if args.get("load_id") is not None:
+                load_model_path = _download_remote_model(args, global_rank, world_size)
+            if load_model_path is not None:
+                _load_actor_weights(policy, load_model_path, ppo.torch_device(config["device"]), ppo)
 
         pufferl = PuffeSAC(config, vecenv, policy, critic, replay, logger)
         cleanup_logger = pufferl.logger
         resume_state_path = pufferl.config["resume_state_path"]
         if resume_state_path is not None:
-            pufferl.load_training_state(resume_state_path)
+            pufferl.load_training_state(resume_state_path, same_run=auto_resume)
+        if experiment_config is not None and global_rank == 0:
+            ppo._save_experiment_config(experiment_config, pufferl.config["data_dir"])
         remaining_steps = max(0, pufferl.config["total_timesteps"] - pufferl.agent_steps)
         for _ in range(remaining_steps):
             if pufferl.agent_steps >= pufferl.config["total_timesteps"]:
