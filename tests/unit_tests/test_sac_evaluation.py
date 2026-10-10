@@ -5,7 +5,6 @@ import pytest
 import torch
 from torch import nn
 
-import pufferlib
 from pufferlib import pufferl
 from pufferlib import pufferl_sac
 
@@ -46,7 +45,8 @@ def test_sac_config_keeps_evaluation_metadata_out_of_learner_keys():
     assert not (pufferl_sac.SAC_EVALUATION_KEYS & pufferl_sac.SAC_TRAIN_KEYS)
 
 
-def test_standalone_eval_bootstraps_from_benchmark_env_and_passes_actor(monkeypatch):
+@pytest.mark.parametrize("render_scenarios", [False, True])
+def test_standalone_eval_bootstraps_from_benchmark_env_and_passes_actor(monkeypatch, render_scenarios):
     args = {
         "load_model_path": "actor.pt",
         "load_id": None,
@@ -61,7 +61,7 @@ def test_standalone_eval_bootstraps_from_benchmark_env_and_passes_actor(monkeypa
         },
         "vec": {"backend": "Multiprocessing", "num_envs": 8, "num_workers": 8, "batch_size": 8, "seed": 123},
         "eval": {
-            "render_scenarios": False,
+            "render_scenarios": render_scenarios,
             "render_filter": None,
             "failure_replay_csv": None,
             "capture_observations": False,
@@ -102,7 +102,11 @@ def test_standalone_eval_bootstraps_from_benchmark_env_and_passes_actor(monkeypa
         return {"carla_fast": {"summary": None, "episodes": []}}
 
     monkeypatch.setattr(pufferl, "load_env", load_env)
-    monkeypatch.setattr(pufferl, "eval", run_eval)
+    if render_scenarios:
+        from pufferlib import sac_evaluation
+        monkeypatch.setattr(sac_evaluation, "eval", run_eval)
+    else:
+        monkeypatch.setattr(pufferl, "eval", run_eval)
 
     result = pufferl_sac.eval("puffer_drive", args=args, benchmark_names="carla_fast")
 
@@ -121,22 +125,6 @@ def test_standalone_eval_bootstraps_from_benchmark_env_and_passes_actor(monkeypa
     assert captured["eval"]["args"]["load_model_path"] == "actor.pt"
     assert captured["eval"]["benchmark_names"] == "carla_fast"
     assert args["env"]["num_agents"] == 16
-
-
-def test_standalone_eval_rejects_deferred_render_and_replay_options():
-    args = {
-        "load_model_path": "actor.pt",
-        "load_id": None,
-        "eval": {
-            "render_scenarios": True,
-            "render_filter": None,
-            "failure_replay_csv": None,
-            "capture_observations": False,
-        },
-    }
-
-    with pytest.raises(pufferlib.APIUsageError, match="deferred to E3"):
-        pufferl_sac.eval("puffer_drive", args=args)
 
 
 @pytest.mark.parametrize(("global_rank", "expected_epochs"), [(0, [2, 3]), (1, [])])

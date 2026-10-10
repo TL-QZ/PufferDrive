@@ -1,8 +1,8 @@
 """Feed-forward discrete SAC using the same evaluate/train lifecycle as PuffeRL.
 
 Drive networks, replay placement, pre-reset observations, BF16 autocast, compile,
-DDP, Hydra startup, benchmark evaluation and experiment commands are integrated.
-Export/replay rendering remain pending; recurrence and exact replay/environment
+DDP, Hydra startup, benchmark evaluation, replay rendering and experiment commands
+are integrated. Actor export remains pending; recurrence and exact replay/environment
 resume remain deferred.
 """
 
@@ -269,23 +269,17 @@ def load_policy(args, vecenv, env_name="puffer_drive"):
 
 
 def eval(env_name="puffer_drive", args=None, benchmark_names=None):
-    """Run PPO's benchmark evaluator with a Drive SAC actor."""
+    """Run Drive benchmarks with a SAC actor and optional value-free replay capture."""
     if env_name != "puffer_drive":
         raise NotImplementedError(f"Drive SAC evaluation is not configured for {env_name!r}")
     args = copy.deepcopy(load_config(env_name) if args is None else args)
     eval_config = args["eval"]
-    if (
+    rendering_requested = (
         eval_config["render_scenarios"]
         or eval_config["render_filter"] is not None
         or eval_config["failure_replay_csv"] is not None
         or eval_config["capture_observations"]
-    ):
-        import pufferlib
-        raise pufferlib.APIUsageError(
-            "SAC replay and rendering are deferred to E3. Set eval.render_scenarios=false, "
-            "eval.render_filter=null, eval.failure_replay_csv=null, and "
-            "eval.capture_observations=false."
-        )
+    )
 
     model_path = args.get("load_model_path")
     load_id = args.get("load_id")
@@ -337,7 +331,10 @@ def eval(env_name="puffer_drive", args=None, benchmark_names=None):
     finally:
         actor_vecenv.close()
 
-    return ppo.eval(
+    evaluator = ppo.eval
+    if rendering_requested:
+        from pufferlib.sac_evaluation import eval as evaluator
+    return evaluator(
         env_name=env_name,
         args=args,
         policy=policy,
