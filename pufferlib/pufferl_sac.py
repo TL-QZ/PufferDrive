@@ -1,8 +1,9 @@
 """Feed-forward discrete SAC using the same evaluate/train lifecycle as PuffeRL.
 
 Drive networks, replay placement, pre-reset observations, BF16 autocast, compile,
-DDP, and Hydra startup are integrated; evaluation workflows, recurrence, and
-replay/environment resume remain deferred.
+DDP, Hydra startup, benchmark evaluation and experiment commands are integrated.
+Export/replay rendering remain pending; recurrence and exact replay/environment
+resume remain deferred.
 """
 
 from collections import defaultdict
@@ -1246,7 +1247,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
     """Run Drive SAC from Hydra config or from explicitly injected components."""
     pufferl = None
     early_stop = False
-    last_logs = {}
+    all_logs = []
     cleanup_logger = logger
     close_started = False
     owns_process_group = False
@@ -1426,7 +1427,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             pufferl.evaluate()
             logs = pufferl.train()
             if logs is not None:
-                last_logs = logs
+                all_logs.append(logs)
             if (
                 training_evaluation_scheduled
                 and pufferl.epoch > 0
@@ -1471,7 +1472,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
         model_path = pufferl.close()
         close_started = True
         pufferl.logger.close(model_path, early_stop)
-        return last_logs
+        return all_logs
     except BaseException:
         if pufferl is not None and not pufferl.closed:
             pufferl.closed = True
@@ -1506,8 +1507,11 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
 
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
-    if len(argv) < 2 or argv[0] not in {"train", "eval"}:
-        raise NotImplementedError("SAC supports: train [env_name] [Hydra overrides] or eval [env_name] [benchmark] [overrides]")
+    if len(argv) < 2 or argv[0] not in {"train", "eval", "sweep", "controlled_exp", "profile", "autotune"}:
+        raise NotImplementedError(
+            "SAC commands: train, eval, sweep, controlled_exp, profile, autotune; "
+            "follow the command with env_name and Hydra overrides"
+        )
     command = argv[0]
     env_name = argv[1]
     overrides = argv[2:]
@@ -1517,7 +1521,12 @@ def main(argv=None):
     args = load_config(env_name, overrides=overrides)
     if command == "train":
         return train(env_name=env_name, args=args)
-    return eval(env_name=env_name, args=args, benchmark_names=benchmark_names)
+    if command == "eval":
+        return eval(env_name=env_name, args=args, benchmark_names=benchmark_names)
+    from pufferlib import sac_workflows
+    if command == "autotune":
+        return sac_workflows.autotune(args=args)
+    return getattr(sac_workflows, command)(env_name=env_name, args=args)
 
 
 if __name__ == "__main__":

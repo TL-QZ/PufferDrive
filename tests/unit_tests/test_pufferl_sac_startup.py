@@ -171,7 +171,7 @@ def test_startup_seeds_before_models_and_builds_sac_components(monkeypatch, tmp_
     assert saved["args"]["env"]["capture_final_observations"] is True
     assert saved["args"]["git"] == {"commit_hash": "test"}
     assert learner.closed and learner.logger.closed
-    assert result == {}
+    assert result == []
 
 
 def test_startup_requires_final_observation_transport(monkeypatch, tmp_path):
@@ -258,5 +258,5 @@ def test_flat_injected_train_api_remains_available(monkeypatch):
         replay=object(),
     )
 
-    assert result == {}
+    assert result == []
     assert vecenv.closed

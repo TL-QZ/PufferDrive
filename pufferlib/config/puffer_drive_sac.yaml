@@ -1,5 +1,6 @@
 defaults:
   - puffer_drive
+  - sac_workflows
   - _self_
 
 # Keep Drive's environment, policy architecture, vectorization, and eval settings.
