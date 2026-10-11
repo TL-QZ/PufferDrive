@@ -20,7 +20,7 @@ def test_sac_config_inherits_drive_sections_and_filters_ppo_train_settings():
     assert args["train"]["batch_size"] == 10_000
     assert args["train"]["minibatch_size"] == 256
     assert args["train"]["max_minibatch_size"] == 256
-    assert args["train"]["learning_starts"] == 10_000
+    assert "learning_starts" not in args["train"]
     assert args["train"]["learning_rate"] == 3e-4
     assert args["train"]["critic_learning_rate"] == 3e-4
     assert args["train"]["alpha_learning_rate"] == 3e-4
@@ -37,6 +37,9 @@ def test_sac_config_inherits_drive_sections_and_filters_ppo_train_settings():
 def test_sac_config_rejects_ppo_only_train_override():
     with pytest.raises(pufferl.pufferlib.APIUsageError, match="PPO-only train settings"):
         pufferl_sac.load_config("puffer_drive", overrides=["train.clip_coef=0.1"])
+
+    with pytest.raises(pufferl.pufferlib.APIUsageError, match="PPO-only train settings"):
+        pufferl_sac.load_config("puffer_drive", overrides=["train.learning_starts=100"])
 
 
 def test_main_passes_hydra_composed_config_to_train(monkeypatch):
@@ -60,7 +63,7 @@ def test_main_passes_hydra_composed_config_to_train(monkeypatch):
 
 def _startup_args(tmp_path):
     args = copy.deepcopy(pufferl_sac.load_config("puffer_drive", overrides=[]))
-    args["train"].update(total_timesteps=1, batch_size=2, learning_starts=1, data_dir=str(tmp_path))
+    args["train"].update(total_timesteps=1, batch_size=2, data_dir=str(tmp_path))
     args["vec"].update(seed=7)
     args["wandb"] = False
     args["neptune"] = False
@@ -196,7 +199,7 @@ def test_startup_resolves_replay_placement_and_auto_sizes(
         monkeypatch, tmp_path, cpu_offload, expected_device, expected_pin_memory):
     args = _startup_args(tmp_path)
     args["train"].update(
-        batch_size="auto", minibatch_size="auto", learning_starts=3, max_minibatch_size=2,
+        batch_size="auto", minibatch_size="auto", max_minibatch_size=2,
         device="cuda", cpu_offload=cpu_offload,
     )
     vecenv = _FakeVecEnv()
@@ -243,7 +246,6 @@ def test_flat_injected_train_api_remains_available(monkeypatch):
         "batch_size": 1,
         "minibatch_size": 1,
         "update_epochs": 1,
-        "learning_starts": 1,
         "action_count": 12,
         "data_dir": "unused",
     }

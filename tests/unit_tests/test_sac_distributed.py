@@ -140,7 +140,6 @@ def _config(data_dir, **overrides):
         "update_epochs": 1,
         "total_timesteps": 100,
         "gamma": 0.97,
-        "learning_starts": 2,
         "replay_update_ratio": 0.5,
         "learning_rate": 0.001,
         "critic_learning_rate": 0.001,
@@ -336,7 +335,6 @@ def _small_budget_train_worker(rank, init_method, result_dir, data_dir):
             batch_size=8,
             minibatch_size=2,
             max_minibatch_size=2,
-            learning_starts=8,
             total_timesteps=4,
         )
         pufferl_sac.train(
@@ -370,7 +368,6 @@ def _small_budget_train_worker(rank, init_method, result_dir, data_dir):
             batch_size=2,
             minibatch_size=2,
             max_minibatch_size=2,
-            learning_starts=2,
             total_timesteps=100,
         )
         pufferl_sac.train(
@@ -450,7 +447,6 @@ def test_gloo_full_replay_ddp_updates_checkpoint_and_fresh_env_resume(tmp_path, 
         batch_size=4,
         minibatch_size=4,
         max_minibatch_size=4,
-        learning_starts=4,
         target_entropy=rank_results[0]["target_entropy"],
     )
     baseline_replay = TensorReplay(4, _OBSERVATION_SHAPE)

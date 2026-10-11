@@ -23,13 +23,12 @@ train:
   cpu_offload: true
   total_timesteps: 1000000
   gamma: 0.99
-  # Set batch_size=auto to use max(learning_starts, vecenv.agents_per_batch, minibatch_size).
+  # Set batch_size=auto to use max(vecenv.agents_per_batch, minibatch_size).
   batch_size: 10000
   # Set minibatch_size=auto to use min(256, explicit capacity), or 256 when both sizes are auto.
   minibatch_size: 256
   max_minibatch_size: 256
   update_epochs: 1
-  learning_starts: 10000
   replay_update_ratio: 0.1
   learning_rate: 0.0003
   critic_learning_rate: 0.0003

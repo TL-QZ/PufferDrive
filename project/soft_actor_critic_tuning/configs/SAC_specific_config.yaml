@@ -11,10 +11,8 @@
 
 
 train:
-  # Total replay capacity in complete transitions per rank. Positive integer or auto=max(learning_starts, received agent batch, minibatch_size).
+  # Total replay capacity in complete transitions per rank. Positive integer or auto=max(received agent batch, minibatch_size). Learning begins once replay is full.
   batch_size: 10000
-  # Minimum replay entries for learning; 0 < learning_starts <= batch_size. Distributed learning waits until every rank has full replay.
-  learning_starts: 10000
   # Fraction of replay replaced each evaluate cycle after initial fill; (0, 1]. Quota = ceil(batch_size * ratio), with distinct random old entries replaced.
   replay_update_ratio: 0.1
   # Twin-critic optimizer learning rate (>0).

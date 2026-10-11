@@ -75,12 +75,12 @@ def _make_training_learner(replay, actor_state, critic_state, max_minibatch_size
     learner.critic_optimizer = torch.optim.Adam(learner.critic.parameters(), lr=0.004)
     learner.alpha_optimizer = torch.optim.Adam([learner.log_alpha], lr=0.002)
     learner.config = {
-        "learning_starts": 1,
         "update_epochs": 2,
         "target_entropy": 0.7,
         "tau": 0.15,
         "max_grad_norm": max_grad_norm,
     }
+    learner.batch_size = replay.capacity
     learner.minibatch_size = 4
     learner.max_minibatch_size = max_minibatch_size
     learner.replay = replay
@@ -168,14 +168,34 @@ def test_gradient_clipping_runs_after_each_accumulated_update(monkeypatch):
         assert after_norm <= max_norm * 1.001
 
 
+def test_partial_replay_does_not_update_before_full_capacity():
+    torch.manual_seed(13)
+    replay = _RecordingReplay(7, (3,))
+    partial = _make_replay()
+    replay.add(*partial.get_batch(torch.arange(6)))
+    learner = _make_training_learner(
+        replay,
+        copy.deepcopy(_TinyActor().state_dict()),
+        copy.deepcopy(_TinyCritic().state_dict()),
+        max_minibatch_size=4,
+    )
+
+    updates = learner._train_sac_transition(defaultdict(float), lambda *_args, **_kwargs: None, 0)
+
+    assert updates == 0
+    assert learner.learner_updates == 0
+    assert learner.sampled_transitions == 0
+    assert replay.sampled_indices == []
+
+
 @pytest.mark.parametrize(
     "config, agents_per_batch, expected_capacity, expected_minibatch",
     [
-        ({"batch_size": "auto", "minibatch_size": "auto", "learning_starts": 64}, 512, 512, 256),
-        ({"batch_size": "auto", "minibatch_size": 384, "learning_starts": 700}, 512, 700, 384),
-        ({"batch_size": 900, "minibatch_size": "auto", "learning_starts": 100}, 512, 900, 256),
-        ({"batch_size": 100, "minibatch_size": "auto", "learning_starts": 20}, 512, 100, 100),
-        ({"batch_size": 913, "minibatch_size": 347, "learning_starts": 20}, 512, 913, 347),
+        ({"batch_size": "auto", "minibatch_size": "auto"}, 512, 512, 256),
+        ({"batch_size": "auto", "minibatch_size": 384}, 256, 384, 384),
+        ({"batch_size": 900, "minibatch_size": "auto"}, 512, 900, 256),
+        ({"batch_size": 100, "minibatch_size": "auto"}, 512, 100, 100),
+        ({"batch_size": 913, "minibatch_size": 347}, 512, 913, 347),
     ],
 )
 def test_auto_and_explicit_replay_sizes(config, agents_per_batch, expected_capacity, expected_minibatch):
@@ -217,7 +237,6 @@ def _make_checkpoint_learner(monkeypatch, tmp_path, replay=None, vecenv=None, **
         "batch_size": 8,
         "minibatch_size": 4,
         "max_minibatch_size": 256,
-        "learning_starts": 2,
         **config_updates,
     }
     return pufferl_sac.PuffeSAC(
@@ -253,6 +272,7 @@ class _CollectVecEnv(_FakeVecEnv):
 
 def _old_version_five_checkpoint(learner):
     config = dict(learner.config)
+    config["learning_starts"] = 2
     for key in (
         "max_minibatch_size", "optimizer", "adam_beta1", "adam_beta2", "adam_eps",
         "adam_weight_decay", "max_grad_norm",
@@ -302,7 +322,6 @@ def test_cpu_bfloat16_autocasts_networks_and_keeps_sac_arithmetic_float32(monkey
         vecenv=_CollectVecEnv(),
         batch_size=8,
         total_timesteps=2,
-        learning_starts=1,
         amp=True,
         precision="bfloat16",
     )
@@ -343,7 +362,6 @@ def test_compiled_cpu_learner_trains_tail_batches_and_round_trips_uncompiled_sta
         "batch_size": 7,
         "minibatch_size": 7,
         "max_minibatch_size": 3,
-        "learning_starts": 1,
         "update_epochs": 2,
     }
     torch.manual_seed(23)

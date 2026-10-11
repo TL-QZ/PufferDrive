@@ -39,7 +39,7 @@ DDP = torch.nn.parallel.DistributedDataParallel
 DEFAULT_CONFIG = dict(
     env="puffer_drive", device="cpu", seed=0, run_name="sac", batch_size=10_000,
     minibatch_size=256, max_minibatch_size=256, update_epochs=1,
-    total_timesteps=None, gamma=0.99, learning_starts=10_000, replay_update_ratio=0.1,
+    total_timesteps=None, gamma=0.99, replay_update_ratio=0.1,
     learning_rate=3e-4, critic_learning_rate=3e-4, alpha_learning_rate=3e-4,
     optimizer="adam", adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8, adam_weight_decay=0.0,
     max_grad_norm=None, amp=False, precision="float32", compile=False, compile_mode="default",
@@ -89,11 +89,8 @@ def resolve_sac_batch_sizes(config, vecenv):
     resolved = dict(config)
     batch_size = resolved.get("batch_size", DEFAULT_CONFIG["batch_size"])
     minibatch_size = resolved.get("minibatch_size", DEFAULT_CONFIG["minibatch_size"])
-    learning_starts = resolved.get("learning_starts", DEFAULT_CONFIG["learning_starts"])
     max_minibatch_size = resolved.get("max_minibatch_size", DEFAULT_CONFIG["max_minibatch_size"])
 
-    if not isinstance(learning_starts, int) or isinstance(learning_starts, bool) or learning_starts <= 0:
-        raise ValueError("learning_starts must be a positive integer")
     if not isinstance(max_minibatch_size, int) or isinstance(max_minibatch_size, bool) or max_minibatch_size <= 0:
         raise ValueError("max_minibatch_size must be a positive integer")
     if batch_size != "auto" and (
@@ -111,13 +108,11 @@ def resolve_sac_batch_sizes(config, vecenv):
 
     if batch_size == "auto":
         agents_per_batch = vecenv.agents_per_batch
-        batch_size = max(learning_starts, agents_per_batch, minibatch_size)
+        batch_size = max(agents_per_batch, minibatch_size)
 
     resolved["batch_size"] = batch_size
     resolved["minibatch_size"] = minibatch_size
     resolved["max_minibatch_size"] = max_minibatch_size
-    if learning_starts > batch_size:
-        raise ValueError("Require learning_starts <= batch_size replay capacity")
     return resolved
 
 
@@ -807,6 +802,7 @@ class PuffeSAC:
             "compile_mode", "compile_fullgraph", "cpu_offload", "fresh_run",
         }
         saved_config = {**DEFAULT_CONFIG, **state["config"]}
+        saved_config.pop("learning_starts", None)
         if same_run and saved_config["run_name"] != self.config["run_name"]:
             raise ValueError(
                 "Auto-discovered SAC checkpoint run_name does not match the target run_name"
@@ -1123,7 +1119,7 @@ class PuffeSAC:
 
     def _train_sac_transition(self, losses, profile, epoch):
         replay_size = len(self.replay)
-        if replay_size < self.config["learning_starts"]:
+        if replay_size < self.batch_size:
             return 0
         minibatches_per_epoch = math.ceil(replay_size / self.minibatch_size)
         total_minibatches = self.config["update_epochs"] * minibatches_per_epoch
