@@ -1,0 +1,71 @@
+# SAC-specific learner and replay configuration
+# Settings specific to this SAC route compared with the PPO route. Replay and
+# target-network controls are also used by other off-policy algorithms.
+# train.batch_size is included because here it means replay capacity, whereas
+# PPO uses that name for its rollout batch. Shared gamma, actor learning_rate,
+# minibatch_size, update_epochs and optimizer settings stay in SAC_tunable_config.yaml.
+# Values and search ranges are copied unchanged from the existing catalog.
+# Corresponding sweep/grid entries live here too; workflow controls stay tunable.
+# Deep-merge SAC_fixed_config.yaml, SAC_tunable_config.yaml and this file.
+# These are partial configs; the CLI does not automatically load them.
+
+
+train:
+  # Total replay capacity in complete transitions per rank. Positive integer or auto=max(learning_starts, received agent batch, minibatch_size).
+  batch_size: 10000
+  # Minimum replay entries for learning; 0 < learning_starts <= batch_size. Distributed learning waits until every rank has full replay.
+  learning_starts: 10000
+  # Fraction of replay replaced each evaluate cycle after initial fill; (0, 1]. Quota = ceil(batch_size * ratio), with distinct random old entries replaced.
+  replay_update_ratio: 0.1
+  # Twin-critic optimizer learning rate (>0).
+  critic_learning_rate: 0.0003
+  # Temperature log-alpha Adam learning rate (>0); temperature always uses Adam.
+  alpha_learning_rate: 0.0003
+  # Initial entropy temperature (>0); subsequently learned automatically.
+  initial_alpha: 0.2
+  # null = 0.98 * log(K), in nats, where K is the number of action classes. Explicit value must be in [0, log(K)].
+  target_entropy: null
+  # Target-critic Polyak coefficient in (0, 1]: target <- (1-tau)*target + tau*online after each learner update.
+  tau: 0.005
+
+sweep:
+  train:
+    replay_update_ratio:
+      distribution: log_normal
+      min: 0.05
+      mean: 0.1
+      max: 0.5
+      scale: auto
+    critic_learning_rate:
+      distribution: log_normal
+      min: 0.0001
+      mean: 0.0003
+      max: 0.001
+      scale: auto
+    initial_alpha:
+      distribution: log_normal
+      min: 0.05
+      mean: 0.2
+      max: 0.5
+      scale: auto
+    tau:
+      distribution: logit_normal
+      min: 0.001
+      mean: 0.005
+      max: 0.02
+      scale: auto
+
+controlled_exp:
+  train:
+    replay_update_ratio:
+      values:
+      - 0.05
+      - 0.1
+    initial_alpha:
+      values:
+      - 0.1
+      - 0.2
+    tau:
+      values:
+      - 0.005
+      - 0.01
