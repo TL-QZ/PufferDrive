@@ -1126,12 +1126,27 @@ static bool generate_new_goals_from_route(Drive *env, Agent *agent) {
     return true;
 }
 
+
 static bool generate_new_goals_from_map(Drive *env, Agent *agent) {
+    static long fail_empty_cell = 0, fail_chain = 0, seed_no_exit = 0; // For debugging
     // Map goal source: seed from a uniform map lane, then chain 1..num_goals goals forward
     // via a route-free random lane-walk. No route is stored; the agent navigates by the GPS lane-distance feature,
     // not by following a path.
 
     // Pick a uniform drivable grid cell, then collect every drivable lane entity inside it.
+    //begin debug
+    static char last_map[512] = "";
+    if (strcmp(last_map, env->map_name) != 0) {
+        int drivable = 0, no_exit = 0;
+        for (int i = 0; i < env->num_road_elements; i++) {
+            if (!is_drivable_road_lane(env->road_elements[i].type)) continue;
+            drivable++;
+            if (env->road_elements[i].num_exits == 0) no_exit++;
+        }
+        fprintf(stderr, "[goal_regen] map %s drivable_lanes=%d no_exit=%d cells=%d\n", env->map_name, drivable, no_exit, env->grid_map->num_drivable_grid_cell);
+        snprintf(last_map, sizeof last_map, "%s", env->map_name);
+    }
+    //end debug
     int drivable_cell_list_idx = rng_below(&env->rng_state, env->grid_map->num_drivable_grid_cell);
     int grid_cell_idx = env->grid_map->grid_index_drivable[drivable_cell_list_idx];
     GridMapEntity drivable_lane_candidates[MAX_ENTITIES_PER_CELL];
@@ -1143,6 +1158,7 @@ static bool generate_new_goals_from_map(Drive *env, Agent *agent) {
         }
     }
     if (candidate_count == 0) {
+        fail_empty_cell++;
         return false; // cell held no drivable lane: caller retries with another cell
     }
 
@@ -1150,6 +1166,7 @@ static bool generate_new_goals_from_map(Drive *env, Agent *agent) {
     GridMapEntity seed_entity = drivable_lane_candidates[rng_below(&env->rng_state, candidate_count)];
     int seed_lane_idx = seed_entity.entity_idx;
     RoadMapElement *seed_lane = &env->road_elements[seed_lane_idx];
+    if (seed_lane->num_exits == 0) { seed_no_exit++; }
     float seed_x = seed_lane->x[seed_entity.geometry_idx];
     float seed_y = seed_lane->y[seed_entity.geometry_idx];
     float seed_heading = seed_lane->headings[seed_entity.geometry_idx];
@@ -1177,6 +1194,10 @@ static bool generate_new_goals_from_map(Drive *env, Agent *agent) {
         goal_z,
         goal_lane);
     if (placed_goal_count == 0) {
+        fail_chain++;
+        if ((fail_chain & 4095) == 0) {
+            fprintf(stderr, "[goal_regen] map-fail empty_cell=%ld chain=%ld seed_no_exit=%ld\n", fail_empty_cell, fail_chain, seed_no_exit);
+        }
         return false;
     }
     commit_goals(env, agent, goal_x, goal_y, goal_z, goal_lane, placed_goal_count, 0);
@@ -4491,6 +4512,15 @@ void c_reset(Drive *env) {
         }
         compute_metrics(env, agent_idx, x);
     }
+    /*
+    {
+        int saturated = 0;
+        for (int i = 0; i < env->active_agent_count; i++) {
+            Agent *a = &env->agents[env->active_agent_indices[i]];
+            if (!a->removed && a->sim_valid && a->current_goal_idx >= a->goal_count) saturated++;
+        }
+        //if (saturated > 0) fprintf(stderr, "[reset_check] saturated=%d of %d\n", saturated, env->active_agent_count);
+    }*/
     compute_observations(env);
 }
 
@@ -4617,14 +4647,11 @@ void c_step(Drive *env) {
         return;
     }
 
-    // -> 4. Compute observations
-    compute_observations(env);
-
     // -> 5. Update goals for agents that reached their goal
     for (int i = 0; i < env->active_agent_count; i++) {
         int agent_idx = env->active_agent_indices[i];
         Agent *agent = &env->agents[agent_idx];
-        if (agent->metrics_array[REACHED_GOAL_IDX] == 0.0f) {
+        if (agent->metrics_array[REACHED_GOAL_IDX] == 0.0f && agent->current_goal_idx < agent->goal_count) {
             continue;
         }
         if (env->goal_source == GOAL_SOURCE_GT) {
@@ -4638,7 +4665,7 @@ void c_step(Drive *env) {
         bool regen;
         if (env->goal_regen_mode == GOAL_REGEN_ROLLING) {
             regen = !roll_goals(env, agent);
-        } else if (agent->current_goal_idx == agent->goal_count) {
+        } else if (agent->current_goal_idx >= agent->goal_count) {//else if (agent->current_goal_idx == agent->goal_count){
             regen = true;
         } else {
             agent->current_goal_x = agent->list_goal_x[agent->current_goal_idx];
@@ -4651,13 +4678,57 @@ void c_step(Drive *env) {
         }
         // On regen failure remove the agent (route helper self-invalidates; the extra call is idempotent),
         // otherwise a stale current_goal_idx >= goal_count leaves an empty goal window and the agent freezes.
-        bool regen_ok = (env->goal_source == GOAL_SOURCE_MAP) ? generate_new_goals_from_map(env, agent)
-                                                              : generate_new_goals_from_route(env, agent);
+        // bool regen_ok = (env->goal_source == GOAL_SOURCE_MAP) ? generate_new_goals_from_map(env, agent)
+        //                                                      : generate_new_goals_from_route(env, agent);
+        
+        bool regen_ok = false;
+        for (int attempt = 0; attempt < 32 && !regen_ok; attempt++){
+            regen_ok = (env->goal_source == GOAL_SOURCE_MAP) ? generate_new_goals_from_map(env, agent)
+                                                             : generate_new_goals_from_route(env, agent);
+        }
+        
         if (!regen_ok) {
+            //fprintf(stderr, "[goal_regen] agent %d removed at t=%d after 32 attempts map=%s\n", agent_idx, env->timestep, env->map_name);            
             invalidate_agent(agent);
             agent->removed = 1;
         }
     }
+    
+    //Debug block: 
+    #if 0
+    if (env->timestep >= 1 && env->timestep <= 5){//env -> timestep >= 50 && env -> timestep <= env -> scenario_length){
+        int live_agents, fresh_agents, stale_agents, removed_agents, stopped_agents;
+        live_agents = fresh_agents = stale_agents = removed_agents = stopped_agents = 0;
+        for (int i = 0; i < env->active_agent_count; i++){
+            int agent_idx = env->active_agent_indices[i];
+            Agent *agent = &env->agents[agent_idx];
+            if (agent -> removed || !agent -> sim_valid) {
+                removed_agents++;
+                continue;
+            }
+            live_agents++;
+            if (agent -> sim_speed < AGENT_STOPPED_SPEED_THRESHOLD) {
+                stopped_agents++;
+            }
+            if (agent -> current_goal_idx >= agent -> goal_count){
+                if (agent -> metrics_array[REACHED_GOAL_IDX] > 0.0f) {
+                    fresh_agents++;
+                } else {
+                    stale_agents++;
+                    if (stale_agents <= 2){
+                        fprintf(stderr, "[goal_check] STALE t=%d agent %d goal_idx=%d goal_count=%d speed=%.2f stopped=%d mask=%d\n",
+                                env->timestep, agent_idx, agent->current_goal_idx, agent->goal_count, agent->sim_speed, agent->stopped, env->masks[i]);
+                    }
+                }
+            }
+        }
+        fprintf(stderr, "[goal_check] t=%d live=%d fresh_empty=%d stale_empty=%d removed=%d stopped=%d\n",
+                env->timestep, live_agents, fresh_agents, stale_agents, removed_agents, stopped_agents);
+    }
+    #endif
+    
+    // -> 4. Compute observations
+    compute_observations(env);
 }
 
 #include "render.h"
