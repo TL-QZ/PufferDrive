@@ -19,7 +19,7 @@ train.gamma: 0.999
 train.gae_lambda: 0.95
 train.bptt_horizon: 128
 train.use_value_bootstrapping: true
-train.checkpoint_interval: 500
+train.checkpoint_interval: 100
 train.evaluation_interval_epochs: 100
 train.evaluation_benchmarks: carla_fast
 

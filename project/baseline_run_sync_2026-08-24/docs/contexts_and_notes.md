@@ -143,3 +143,5 @@ fine-tune stages only the CARLA run's `final_model.pt` and `config.yaml`, never
 its `trainer_state.pt`. It resumes only from the fine-tune run's own trainer
 state. Run standalone evaluation before rendering because renderers consume the
 saved `episode_metrics.csv`.
+2026-09-15: checkpoint_interval 500->100 in nightly_best.yaml for 13h-walltime resilience on ELSA (Vijay)
+2026-09-18: pulled upstream to ad1de483; CARLA reproduction ran on e17fc353; fine-tune (not yet run) will use the updated nuplan_sdc_finetune.yaml (num_maps 169715, 66-step scenarios) (Vijay)

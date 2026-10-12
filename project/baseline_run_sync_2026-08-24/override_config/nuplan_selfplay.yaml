@@ -7,14 +7,17 @@ policy.action_type: discrete
 policy.actor_head_layer_norm: false
 policy.critic_head_layer_norm: false
 
-env.action_type: discrete
+env.action_type: continuous
 env.simulation_mode: replay
+env.num_goals: 1
+env.min_goal_spacing: 12.0
+env.max_goal_spacing: 30.0
 env.control_mode: control_vehicles
 env.sdc_controller: policy
 env.non_sdc_controller: policy
 env.non_vehicle_controller: replay
 env.init_mode: create_all_valid
-env.map_dir: data/nuplan_train
+env.map_dir: /projects/csail/p01-crowd/data/pufferdrive/nuplan_train
 env.num_maps: 169715
 env.num_agents: 512
 env.max_agents_per_env: 300
@@ -29,6 +32,7 @@ env.terminate_on_goal: 0
 env.use_neighbor_cache: 0
 env.reset_accel_on_stop: false
 env.reward_log_sampling: false
+env.goal_regen_mode: rolling
 
 vec.num_envs: 20
 vec.num_workers: 20

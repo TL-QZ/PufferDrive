@@ -79,7 +79,7 @@ benchmarks:
       sdc_controller: policy
       non_sdc_controller: replay
       non_vehicle_controller: replay
-      map_dir: data/nuplan_val
+      map_dir: /projects/csail/p01-crowd/data/pufferdrive/nuplan_val
       use_neighbor_cache: 0
 
   - name: nuplan_multi
@@ -95,5 +95,5 @@ benchmarks:
       sdc_controller: policy
       non_sdc_controller: policy
       non_vehicle_controller: replay
-      map_dir: data/nuplan_val
+      map_dir: /projects/csail/p01-crowd/data/pufferdrive/nuplan_val
       use_neighbor_cache: 0

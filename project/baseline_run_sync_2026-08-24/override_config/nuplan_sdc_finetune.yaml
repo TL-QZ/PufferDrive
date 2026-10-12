@@ -11,7 +11,7 @@ env.sdc_controller: policy
 env.non_sdc_controller: replay
 env.non_vehicle_controller: replay
 env.init_mode: create_all_valid
-env.map_dir: data/nuplan_train
+env.map_dir: /projects/csail/p01-crowd/data/pufferdrive/nuplan_train
 env.num_maps: 169715
 env.num_agents: 32
 env.dt: 0.3
