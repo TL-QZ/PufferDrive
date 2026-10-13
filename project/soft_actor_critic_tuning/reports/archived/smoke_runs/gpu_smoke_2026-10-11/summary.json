@@ -1,0 +1,49 @@
+{
+  "agent_steps": 390400,
+  "artifacts": {
+    "final_model": "/common/users/ql236/auto_driving/PufferDrive/project/soft_actor_critic_tuning/runs/gpu_smoke_verified_20261011/trial_01/learner/final_model.pt",
+    "metrics_jsonl": "/common/users/ql236/auto_driving/PufferDrive/project/soft_actor_critic_tuning/runs/gpu_smoke_verified_20261011/trial_01/metrics.jsonl",
+    "trainer_state": "/common/users/ql236/auto_driving/PufferDrive/project/soft_actor_critic_tuning/runs/gpu_smoke_verified_20261011/trial_01/learner/trainer_state.pt"
+  },
+  "epoch": 5,
+  "exit_code": 0,
+  "full_time_seconds": 72.52347690612078,
+  "gpu_ranks": [
+    {
+      "cuda_device_index": 0,
+      "cuda_visible_id": "0",
+      "device_name": "NVIDIA RTX A6000",
+      "elapsed_seconds": 67.38583905249834,
+      "error": null,
+      "local_rank": 0,
+      "peak_allocated_bytes": 4999407104,
+      "peak_reserved_bytes": 6427770880,
+      "rank": 0
+    },
+    {
+      "cuda_device_index": 1,
+      "cuda_visible_id": "1",
+      "device_name": "NVIDIA RTX A6000",
+      "elapsed_seconds": 66.88430945947766,
+      "error": null,
+      "local_rank": 1,
+      "peak_allocated_bytes": 4999407104,
+      "peak_reserved_bytes": 6427770880,
+      "rank": 1
+    }
+  ],
+  "hard_timeout": false,
+  "learner_updates": 15,
+  "missing_artifacts": [],
+  "parameters": {
+    "train.initial_alpha": 0.1,
+    "train.replay_update_ratio": 0.05,
+    "train.tau": 0.005,
+    "train.update_epochs": 3
+  },
+  "sampled_transitions": 3840000,
+  "samples": 390400,
+  "status": "completed",
+  "stop_reason": "deadline",
+  "trial_id": 1
+}

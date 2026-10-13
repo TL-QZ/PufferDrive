@@ -5,9 +5,9 @@
 # If a fixed setting must change, apply the equivalent change to the PPO baseline
 # and record it in the experiment report before comparing results.
 #
-# Values are copied from SAC_all_configs.yaml, which uses the current PPO-derived
-# repository defaults. A particular baseline run may have additional overrides;
-# match those resolved run settings in both algorithms before claiming run parity.
+# Values began with SAC_all_configs.yaml. Agent count and benchmark definitions
+# now match project/baseline_run_sync_2026-08-24/override_config/nightly_best.yaml.
+# SAC retains its continuous environment interface for discrete action decoding.
 # Benchmark definitions referenced by eval.benchmark_config must also stay matched.
 # Inherited unused fields are retained for consistency; they do not affect SAC learning.
 # SAC-specific interface requirements below intentionally retain SAC's policy class.
@@ -71,7 +71,7 @@ env:
   # Options: "gigaflow", "replay"
   simulation_mode: gigaflow
   # Agent slots per Drive instance (not the total across vec.num_envs or distributed ranks).
-  num_agents: 1024
+  num_agents: 3200
   # GIGAFLOW-specific: minimum/maximum number of agents per environment
   min_agents_per_env: 1
   max_agents_per_env: 120
@@ -218,7 +218,7 @@ eval:
   num_agents: 128
   # Worker cap for replay benchmarks that control only the SDC. Needed for now to limit RAM usage.
   max_sdc_replay_workers: 4
-  benchmark_config: pufferlib/config/evaluation/benchmark.yaml
+  benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
   # null uses the catalog selection behavior; supply benchmark name(s) for explicit standalone evaluation.
   benchmarks: null
   output_name: null

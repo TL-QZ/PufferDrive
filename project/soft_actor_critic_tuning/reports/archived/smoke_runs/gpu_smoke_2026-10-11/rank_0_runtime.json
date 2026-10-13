@@ -1,0 +1,11 @@
+{
+  "cuda_device_index": 0,
+  "cuda_visible_id": "0",
+  "device_name": "NVIDIA RTX A6000",
+  "elapsed_seconds": 67.38583905249834,
+  "error": null,
+  "local_rank": 0,
+  "peak_allocated_bytes": 4999407104,
+  "peak_reserved_bytes": 6427770880,
+  "rank": 0
+}

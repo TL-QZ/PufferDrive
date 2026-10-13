@@ -3,9 +3,13 @@
 # SAC_fixed_config.yaml nor SAC_specific_config.yaml.
 # Includes shared learner hyperparameters, logging, paths, vectorization,
 # evaluation cadence and workflow controls. Network architecture remains fixed.
-# Values are current catalog defaults, not tuned recommendations.
+# Learner execution now targets the two-GPU CARLA tuning experiment. Shared
+# gamma, actor learning rate, optimizer and clipping match the nightly PPO baseline.
+# Microbatch size, compilation and worker layout also match PPO.
+# CPU replay, fixed learning rates and the wall-time cap are explicit SAC experiment choices.
 # train.evaluation_interval_epochs and train.evaluation_benchmarks remain here.
-# Deep-merge all three partial files to reconstruct SAC_all_configs.yaml.
+# The launcher deep-merges tunable, specific, then fixed settings for this experiment.
+# SAC_all_configs.yaml remains a catalog of defaults, not a launch input.
 # These files are not automatically loaded by the existing CLI.
 
 
@@ -22,11 +26,11 @@ load_id: null
 export_path: null
 
 # Enable W&B logging; if several logger flags are true, priority is Neptune, W&B, then TensorBoard.
-wandb: false
+wandb: true
 
-wandb_project: pufferlib
+wandb_project: pufferdrive_vanilla_sac_tuning
 
-wandb_group: debug
+wandb_group: vanilla_sac_grid
 
 neptune: false
 
@@ -44,56 +48,58 @@ tag: null
 
 # Shared learner settings and run controls. SAC-specific settings live in SAC_specific_config.yaml.
 train:
-  # Torch/NumPy/Python seed; torchrun derives per-rank seeds. CLI default 42 (injected learner default is 0).
-  seed: 42
+  # Hold baseline seed 0 fixed across this grid; torchrun derives per-rank seeds.
+  seed: 0
   # Filename of the final model copy written into train.data_dir when training ends.
   final_model_name: final_model.pt
   # null disables scheduled benchmark evaluation; positive integer runs every N train cycles and at the end if needed.
-  evaluation_interval_epochs: null
+  evaluation_interval_epochs: 1
   # Benchmark names in eval.benchmark_config; comma-separated selections are supported.
   evaluation_benchmarks: carla_fast
   torch_deterministic: false
   # true stores replay on CPU (pinned for CUDA transfer); false stores it on the learner device.
   cpu_offload: true
   # cpu | cuda | cuda:N. torchrun sets the local CUDA device from LOCAL_RANK.
-  device: cpu
+  device: cuda
   # adam | adamw | muon for actor/critics. Muon requires Heavyball; log-alpha stays Adam.
-  optimizer: adam
+  optimizer: adamw
   # Enable cosine schedules for actor and critic once per training cycle with updates; alpha learning rate is unchanged.
+  # Explicit experiment choice: keep actor and critic learning rates fixed for this sweep.
   anneal_lr: false
   # Autocast network forwards when true; SAC targets, probabilities, losses and temperature arithmetic remain FP32.
-  amp: false
+  amp: true
   # float32 (default) | bfloat16. bfloat16 requires amp=true; FP16 is not supported.
-  precision: float32
+  precision: bfloat16
   # Global received agent-row budget across ranks; vector batches can overshoot. Not a learner-update count.
-  total_timesteps: 1000000
+  # Match PPO's 10-billion global transition ceiling; the three-hour deadline can stop earlier.
+  total_timesteps: 10000000000
   # Actor optimizer learning rate (>0).
-  learning_rate: 0.0003
+  learning_rate: 0.0005
   # Bootstrap discount in [0, 1]. Applied during collection; true terminal transitions use zero.
-  gamma: 0.99
+  gamma: 0.999
   # Positive integer: shuffled passes over the currently stored replay per train() call.
-  update_epochs: 1
+  update_epochs: 3
   # null disables clipping; positive value clips actor/critic gradients once per logical update.
-  max_grad_norm: null
+  max_grad_norm: 0.5
   # Optimizer moment coefficients in [0, 1); passed to Adam/AdamW and Heavyball Muon.
   adam_beta1: 0.9
   adam_beta2: 0.999
   adam_eps: 1.0e-08
   # Adam/AdamW actor/critic weight decay; not forwarded to Muon or applied to log-alpha.
-  adam_weight_decay: 0.0
-  # Run output/checkpoint directory. Current default preserved; select an experiment-specific directory before launching tuning.
-  data_dir: experiments/puffer_drive_sac
+  adam_weight_decay: 0.01
+  # The launcher replaces this with a unique per-trial learner directory.
+  data_dir: experiments/pufferdrive_vanilla_sac_tuning
   # Explicit learner checkpoint: restores networks/optimizers/temperature/counters/RNG. Environment and replay restart; cannot combine with actor warmstart.
   resume_state_path: null
-  # Positive integer training-cycle interval, not received steps; also saves at the end.
-  checkpoint_interval: 50
+  # null disables periodic checkpoints; normal completion still saves the final actor and learner state.
+  checkpoint_interval: null
   # Transitions per logical learner update. Positive integer or auto=min(256, explicit replay capacity), otherwise 256.
-  minibatch_size: 256
+  minibatch_size: 128000
   # Maximum rows per forward/backward microbatch; gradients accumulate to one logical minibatch update.
-  max_minibatch_size: 256
+  max_minibatch_size: 32000
   # Compile actor and online/target critics with torch.compile; false uses eager execution.
-  compile: false
-  # torch.compile mode, e.g. default | reduce-overhead | max-autotune | max-autotune-no-cudagraphs. CUDA modes not runtime-verified here.
+  compile: true
+  # torch.compile mode. This experiment uses default; other modes need separate runtime checks.
   compile_mode: default
   compile_fullgraph: false
   # true disables automatic trainer_state.pt discovery only. Independent trials still need a unique data_dir (and run_name), since outputs are written there.
@@ -108,12 +114,11 @@ vec:
   # Positive integer or auto (= num_envs). num_envs must be divisible by num_workers.
   num_workers: auto
   # Environment instances received together, NOT replay transitions. auto = num_envs // 2 (1 for one env); null = num_envs. Must align with environments per worker.
-  batch_size: auto
+  batch_size: 10
   zero_copy: true
   # Environment seed; rank-specific seeds are derived under torchrun. Separate from train.seed.
   seed: 42
-  # Multiprocessing receive order: true waits for workers in order; false polls for ready workers. CLI addition: +vec.sync_traj=false.
-  sync_traj: true
+  # vector.make does not forward sync_traj; use Multiprocessing's default ordered receives.
   # Multiprocessing constructor default; true permits more workers than physical CPU cores. CLI: +vec.overwork=true.
   overwork: false
 

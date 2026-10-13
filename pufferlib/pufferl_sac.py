@@ -565,9 +565,14 @@ class PuffeSAC:
         }
         if set(config) - supported_config:
             raise ValueError("Unsupported SAC config fields; use DEFAULT_CONFIG plus action_count and data_dir")
-        for key in ("action_count", "total_timesteps", "update_epochs", "checkpoint_interval"):
+        for key in ("action_count", "total_timesteps", "update_epochs"):
             if not isinstance(config[key], int) or isinstance(config[key], bool) or config[key] <= 0:
                 raise ValueError(f"{key} must be a positive integer")
+        checkpoint_interval = config["checkpoint_interval"]
+        if checkpoint_interval is not None and (
+                not isinstance(checkpoint_interval, int) or isinstance(checkpoint_interval, bool)
+                or checkpoint_interval <= 0):
+            raise ValueError("checkpoint_interval must be a positive integer or None")
         if config["action_count"] < 2:
             raise ValueError("Require action_count >= 2")
         for key in ("learning_rate", "critic_learning_rate", "alpha_learning_rate",
@@ -1077,7 +1082,9 @@ class PuffeSAC:
             self.last_log_step = self.global_step
             profile.clear()
 
-        if self.epoch % self.config["checkpoint_interval"] == 0 or done_training:
+        checkpoint_interval = self.config["checkpoint_interval"]
+        if checkpoint_interval is not None and (
+                self.epoch % checkpoint_interval == 0 or done_training):
             self.save_checkpoint()
             self.msg = f"Checkpoint saved at update {self.epoch}"
         return logs
