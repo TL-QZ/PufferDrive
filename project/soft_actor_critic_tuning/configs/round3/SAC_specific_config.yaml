@@ -1,0 +1,57 @@
+# SAC-specific learner and replay configuration
+# Settings specific to this SAC route compared with the PPO route. Replay and
+# target-network controls are also used by other off-policy algorithms.
+# train.batch_size is included because here it means replay capacity, whereas
+# PPO uses that name for its rollout batch. Shared gamma, actor learning_rate,
+# minibatch_size, the base update_epochs and optimizer settings stay in SAC_tunable_config.yaml.
+# Round three revisits three round-two candidates with small per-GPU replay,
+# one-GPU trials, and additional update/replay settings.
+# Selected trial IDs retain all 4 * 3 combinations for each candidate.
+# Corresponding sweep/grid entries live here too; workflow controls stay tunable.
+# Deep-merge SAC_fixed_config.yaml, SAC_tunable_config.yaml and this file.
+# These are partial configs; the CLI does not automatically load them.
+
+
+train:
+  # Total replay capacity in complete transitions per rank, matching round two.
+  batch_size: 512000
+  # Fraction of replay replaced each evaluate cycle after initial fill; (0, 1]. Quota = ceil(batch_size * ratio), with distinct random old entries replaced.
+  replay_update_ratio: 0.1
+  # Twin-critic optimizer learning rate; match PPO's non-swept model optimizer LR.
+  critic_learning_rate: 0.0005
+  # Temperature log-alpha Adam learning rate (>0); temperature always uses Adam.
+  alpha_learning_rate: 0.0003
+  # Initial entropy temperature (>0); subsequently learned automatically.
+  initial_alpha: 0.1
+  # null = 0.98 * log(K), in nats, where K is the number of action classes. Explicit value must be in [0, log(K)].
+  target_entropy: 0.621227
+  # Target-critic Polyak coefficient in (0, 1]: target <- (1-tau)*target + tau*online after each learner update.
+  tau: 0.005
+
+sweep:
+  train:
+    gamma:
+      distribution: categorical
+      values: [0.95, 0.99, 0.999]
+    target_entropy:
+      distribution: categorical
+      values: [0.621227, 1.242453, 1.863680]
+    update_epochs:
+      distribution: categorical
+      values: [3, 15, 50, 100]
+    replay_update_ratio:
+      distribution: categorical
+      values: [0.1, 0.5, 0.75]
+
+controlled_exp:
+  train:
+    # Axis order is significant: each prior candidate gets 4 epoch x 3 replay settings.
+    # The 3 * 3 * 4 * 3 grid has 108 total combinations; trial_ids selects 36.
+    gamma:
+      values: [0.95, 0.99, 0.999]
+    target_entropy:
+      values: [0.621227, 1.242453, 1.863680]
+    update_epochs:
+      values: [3, 15, 50, 100]
+    replay_update_ratio:
+      values: [0.1, 0.5, 0.75]

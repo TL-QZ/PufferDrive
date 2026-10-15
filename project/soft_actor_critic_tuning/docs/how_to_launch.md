@@ -6,7 +6,38 @@ For completed-checkpoint evaluation and comparison plots, follow
 Run commands from the PufferDrive repository root. The shell wrapper activates
 `.venv` and limits each process's numerical-library threads to one.
 
+The default command below uses the **first-round experiment** in
+[`configs/round1/`](../configs/round1/). The new
+single-GPU resource profile lives separately in
+[`configs/round2/`](../configs/round2/); see its
+[configuration notes](../configs/round2/README.md). Select it explicitly:
+
+```bash
+bash project/soft_actor_critic_tuning/scripts/launch_sweep.sh \
+  --config-dir project/soft_actor_critic_tuning/configs/round2 --dry-run
+```
+
+Round two uses one GPU per trial, eight concurrent trials, 512,000 replay
+transitions, and a 1-billion received-agent-row budget. The logical minibatch
+remains 128,000 and the microbatch remains 32,000. Its 64-trial grid sweeps
+tau, gamma, and target entropy; its README contains the experiment plan and
+launch commands.
+Default artifacts go under `runs/round2/`, and its W&B group is
+`vanilla_sac_round2`. The rest of this guide describes the original sweep.
+
 ## 1. Inspect the grid without starting training
+
+For the update-frequency sweep based on round-two candidates **17, 26 and 31**,
+use [`configs/round3/`](../configs/round3/README.md). It uses round-two resources
+(one GPU and 512,000 replay transitions per trial), a 500-million-row ceiling,
+and a three-hour wall-time target. Each candidate sweeps epochs `[3, 15, 50, 100]`
+and replay refresh ratios `[0.1, 0.5, 0.75]`: **36 selected trials**. The README
+maps the new trial IDs; the manifest includes 72 additional skipped combinations.
+
+```bash
+bash project/soft_actor_critic_tuning/scripts/launch_sweep.sh \
+  --config-dir project/soft_actor_critic_tuning/configs/round3 --dry-run
+```
 
 ```bash
 bash project/soft_actor_critic_tuning/scripts/launch_sweep.sh --dry-run
@@ -142,13 +173,13 @@ must be distinct, and the launcher does not reserve GPUs against other jobs.
 
 The launch inputs are these partial configurations, merged in this order:
 
-1. [SAC_tunable_config.yaml](../configs/SAC_tunable_config.yaml): shared learner,
+1. [SAC_tunable_config.yaml](../configs/round1/SAC_tunable_config.yaml): shared learner,
    vectorization, logging, and run settings.
-2. [SAC_specific_config.yaml](../configs/SAC_specific_config.yaml): replay,
+2. [SAC_specific_config.yaml](../configs/round1/SAC_specific_config.yaml): replay,
    temperature, target critics, and the four grid axes.
-3. [SAC_fixed_config.yaml](../configs/SAC_fixed_config.yaml): fixed environment
+3. [SAC_fixed_config.yaml](../configs/round1/SAC_fixed_config.yaml): fixed environment
    and network settings, which override overlapping fields.
-4. [SAC_run_config.yaml](../configs/SAC_run_config.yaml): launcher-only duration,
+4. [SAC_run_config.yaml](../configs/round1/SAC_run_config.yaml): launcher-only duration,
    GPU pairs, concurrency, and shutdown grace.
 
 `SAC_all_configs.yaml` is a catalog of package defaults, not a launch input.

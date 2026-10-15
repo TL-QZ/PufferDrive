@@ -1,0 +1,22 @@
+# Launcher controls only. Learner, environment and vector settings remain in
+# SAC_fixed_config.yaml, SAC_tunable_config.yaml and SAC_specific_config.yaml.
+launcher:
+  # Retain 12 update/replay settings for each prior candidate: (gamma, entropy)
+  # (.95, .621227), (.99, 1.242453), and (.999, 1.863680).
+  trial_ids: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 97, 98, 99, 100, 101, 102, 103, 104, 105, 106, 107, 108]
+  trial_hours: 3
+  grace_seconds: 600
+  smoke_trial_seconds: 60
+  # First compiled cycle and its benchmark may exceed the short smoke target.
+  smoke_grace_seconds: 600
+  # One GPU per trial, matching the round-two resource profile.
+  gpu_pairs:
+    - [0]
+    - [1]
+    - [2]
+    - [3]
+    - [4]
+    - [5]
+    - [6]
+    - [7]
+  max_concurrent: 8

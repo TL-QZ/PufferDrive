@@ -67,8 +67,8 @@ requirements of the SAC algorithm.
 | `train.anneal_lr` | `true` | `false` | **Mismatch:** the launcher preparation disabled a shared learning mechanism. Literal parity restores cosine annealing, together with the baseline step budget. Do not merely enable it against the current enlarged ceiling. |
 | `train.total_timesteps` | Configured `10,000,000,000` global; PPO's loader divides this into per-rank budgets under torchrun | `1,000,000,000,000` global ceiling | **Different run choice:** the oversized ceiling was introduced for the requested three-hour deadline. Literal config parity can retain the baseline 10B global budget while also imposing the requested three-hour cap. SAC already counts global received rows, so do not divide its setting again. Actual LR progress will still differ between algorithms and replay replacement ratios. |
 
-Sources: [SAC shared settings](../configs/SAC_tunable_config.yaml),
-[SAC-specific settings](../configs/SAC_specific_config.yaml),
+Sources: [SAC shared settings](../configs/round1/SAC_tunable_config.yaml),
+[SAC-specific settings](../configs/round1/SAC_specific_config.yaml),
 [PPO optimizer and scheduler](../../../pufferlib/pufferl.py),
 [SAC optimizers and scheduler](../../../pufferlib/pufferl_sac.py), and
 [automatic worker resolution](../../../pufferlib/vector.py).

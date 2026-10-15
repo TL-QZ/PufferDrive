@@ -1,0 +1,52 @@
+# SAC-specific learner and replay configuration
+# Settings specific to this SAC route compared with the PPO route. Replay and
+# target-network controls are also used by other off-policy algorithms.
+# train.batch_size is included because here it means replay capacity, whereas
+# PPO uses that name for its rollout batch. Shared gamma, actor learning_rate,
+# minibatch_size, the base update_epochs and optimizer settings stay in SAC_tunable_config.yaml.
+# Round two sweeps only tau, gamma and target entropy; other settings use trial 6.
+# SAC ranges began with the catalog; replay capacity is reduced to 512,000
+# transitions for each single-GPU trial to allow more concurrent experiments.
+# Corresponding sweep/grid entries live here too; workflow controls stay tunable.
+# Deep-merge SAC_fixed_config.yaml, SAC_tunable_config.yaml and this file.
+# These are partial configs; the CLI does not automatically load them.
+
+
+train:
+  # Total replay capacity in complete transitions per rank. Positive integer or auto=max(received agent batch, minibatch_size). Learning begins once replay is full.
+  batch_size: 512000
+  # Fraction of replay replaced each evaluate cycle after initial fill; (0, 1]. Quota = ceil(batch_size * ratio), with distinct random old entries replaced.
+  replay_update_ratio: 0.1
+  # Twin-critic optimizer learning rate; match PPO's non-swept model optimizer LR.
+  critic_learning_rate: 0.0005
+  # Temperature log-alpha Adam learning rate (>0); temperature always uses Adam.
+  alpha_learning_rate: 0.0003
+  # Initial entropy temperature (>0); subsequently learned automatically.
+  initial_alpha: 0.1
+  # null = 0.98 * log(K), in nats, where K is the number of action classes. Explicit value must be in [0, log(K)].
+  target_entropy: 2.435209
+  # Target-critic Polyak coefficient in (0, 1]: target <- (1-tau)*target + tau*online after each learner update.
+  tau: 0.01
+
+sweep:
+  train:
+    tau:
+      distribution: categorical
+      values: [0.001, 0.005, 0.01, 0.05]
+    gamma:
+      distribution: categorical
+      values: [0.95, 0.98, 0.99, 0.999]
+    target_entropy:
+      distribution: categorical
+      values: [0.621227, 1.242453, 1.863680, 2.435209]
+
+controlled_exp:
+  train:
+    # 4 * 4 * 4 = 64 trials. Tau varies slowest; entropy varies fastest.
+    tau:
+      values: [0.001, 0.005, 0.01, 0.05]
+    gamma:
+      values: [0.95, 0.98, 0.99, 0.999]
+    # Absolute nats: [0.25, 0.50, 0.75, 0.98] * log(12), rounded to six decimals.
+    target_entropy:
+      values: [0.621227, 1.242453, 1.863680, 2.435209]

@@ -37,6 +37,41 @@ def _write_json(path, data):
     temporary_path.replace(path)
 
 
+def _positive_finite_hours(value):
+    if isinstance(value, bool):
+        raise argparse.ArgumentTypeError("trial hours must be finite and positive")
+    try:
+        hours = float(value)
+    except (TypeError, ValueError) as error:
+        raise argparse.ArgumentTypeError("trial hours must be finite and positive") from error
+    if not math.isfinite(hours) or hours <= 0 or not math.isfinite(hours * 3600):
+        raise argparse.ArgumentTypeError("trial hours must be finite and positive")
+    return hours
+
+
+def _build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--artifact-dir", required=True)
+    parser.add_argument("--trial-hours", type=_positive_finite_hours)
+    return parser
+
+
+def _resolve_deadline_monotonic(trial_hours):
+    if trial_hours is None:
+        return None
+    deadline_value = os.environ.get("SAC16_TRIAL_DEADLINE_MONOTONIC")
+    if deadline_value is None:
+        return time.monotonic() + trial_hours * 3600
+    try:
+        deadline_monotonic = float(deadline_value)
+    except ValueError as error:
+        raise ValueError("SAC16_TRIAL_DEADLINE_MONOTONIC must be finite") from error
+    if not math.isfinite(deadline_monotonic):
+        raise ValueError("SAC16_TRIAL_DEADLINE_MONOTONIC must be finite")
+    return deadline_monotonic
+
+
 class TrialMonitor:
     def __init__(self, metrics_path, stop_path, deadline_monotonic):
         self.metrics_path = metrics_path
@@ -60,6 +95,9 @@ class TrialMonitor:
                 self.stop_reason = "nonfinite_learner_loss"
                 _write_json(self.stop_path, {"stop_reason": self.stop_reason, "metric": name})
                 return True
+
+        if self.deadline_monotonic is None:
+            return False
 
         now = time.monotonic()
         cycle_seconds = now - self.last_cycle_finished
@@ -97,21 +135,14 @@ def _runtime_record(torch, rank, local_rank, device_name, elapsed_seconds, error
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", required=True)
-    parser.add_argument("--artifact-dir", required=True)
-    parser.add_argument("--trial-hours", required=True, type=float)
-    args = parser.parse_args(argv)
+    args = _build_parser().parse_args(argv)
 
     started = time.monotonic()
     artifact_dir = Path(args.artifact_dir)
     artifact_dir.mkdir(parents=True, exist_ok=True)
     rank = int(os.environ.get("RANK", "0"))
     local_rank = int(os.environ.get("LOCAL_RANK", "0"))
-    deadline_monotonic = float(os.environ.get(
-        "SAC16_TRIAL_DEADLINE_MONOTONIC",
-        time.monotonic() + args.trial_hours * 3600,
-    ))
+    deadline_monotonic = _resolve_deadline_monotonic(args.trial_hours)
     with Path(args.config).open(encoding="utf-8") as source:
         config = yaml.safe_load(source)
 

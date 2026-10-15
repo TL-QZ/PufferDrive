@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Launch the configured 16-trial Drive SAC grid as isolated two-GPU jobs."""
+"""Launch the configured Drive SAC grid as isolated GPU jobs."""
 
 import argparse
 from copy import deepcopy
@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import itertools
 import json
 import math
+import numbers
 import os
 from pathlib import Path
 import shlex
@@ -21,7 +22,7 @@ import yaml
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = SCRIPT_DIR.parent
-CONFIG_DIR = PROJECT_DIR / "configs"
+CONFIG_DIR = PROJECT_DIR / "configs" / "round1"
 REPO_ROOT = PROJECT_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -57,13 +58,18 @@ def _load_yaml(path):
     return data
 
 
-def _load_configs():
-    fixed = _load_yaml(FIXED_CONFIG_PATH)
-    tunable = _load_yaml(TUNABLE_CONFIG_PATH)
-    specific = _load_yaml(SPECIFIC_CONFIG_PATH)
-    run_profile = _load_yaml(RUN_CONFIG_PATH).get("launcher")
+def _load_configs(config_dir=CONFIG_DIR):
+    config_dir = Path(config_dir).expanduser().resolve()
+    fixed_config_path = config_dir / FIXED_CONFIG_PATH.name
+    tunable_config_path = config_dir / TUNABLE_CONFIG_PATH.name
+    specific_config_path = config_dir / SPECIFIC_CONFIG_PATH.name
+    run_config_path = config_dir / RUN_CONFIG_PATH.name
+    fixed = _load_yaml(fixed_config_path)
+    tunable = _load_yaml(tunable_config_path)
+    specific = _load_yaml(specific_config_path)
+    run_profile = _load_yaml(run_config_path).get("launcher")
     if not isinstance(run_profile, dict):
-        raise ValueError(f"{RUN_CONFIG_PATH} must define a launcher mapping")
+        raise ValueError(f"{run_config_path} must define a launcher mapping")
 
     resolved = _deep_merge(_deep_merge(tunable, specific), fixed)
     return fixed, resolved, run_profile
@@ -96,9 +102,16 @@ def _set_dotted(config, path, value):
 
 
 def _parse_trial_ids(raw, trial_count, smoke):
+    configured_ids = isinstance(raw, list)
     if raw is None:
         ids = [1] if smoke else list(range(1, trial_count + 1))
+    elif configured_ids:
+        if any(not isinstance(value, int) or isinstance(value, bool) for value in raw):
+            raise ValueError("launcher.trial_ids must contain only positive integers")
+        ids = list(raw)
     else:
+        if not isinstance(raw, str):
+            raise ValueError("--trial-ids must be comma-separated 1-based integers")
         try:
             ids = [int(value.strip()) for value in raw.split(",") if value.strip()]
         except ValueError as error:
@@ -107,9 +120,15 @@ def _parse_trial_ids(raw, trial_count, smoke):
             raise ValueError("--trial-ids must include at least one 1-based integer")
     if len(ids) != len(set(ids)):
         raise ValueError("--trial-ids contains a duplicate trial ID")
+    if not ids:
+        if configured_ids:
+            raise ValueError("launcher.trial_ids must include at least one positive integer")
+        raise ValueError("--trial-ids must include at least one 1-based integer")
     invalid = [trial_id for trial_id in ids if trial_id < 1 or trial_id > trial_count]
     if invalid:
         raise ValueError(f"Trial IDs must be in [1, {trial_count}], got {invalid}")
+    if configured_ids and smoke:
+        return ids[:1]
     return ids
 
 
@@ -117,30 +136,41 @@ def _parse_gpu_pairs(raw):
     pairs = []
     try:
         for item in raw.split(";"):
-            pair = tuple(int(value.strip()) for value in item.split(","))
-            if len(pair) != 2 or min(pair) < 0 or pair[0] == pair[1]:
+            values = item.split(",")
+            if len(values) not in (1, 2) or any(not value.strip() for value in values):
+                raise ValueError
+            pair = tuple(int(value.strip()) for value in values)
+            if min(pair) < 0 or len(set(pair)) != len(pair):
                 raise ValueError
             pairs.append(pair)
     except ValueError as error:
-        raise ValueError("--gpu-pairs must look like '0,1;2,3' with distinct nonnegative IDs") from error
+        raise ValueError(
+            "--gpu-groups must look like '0;1;2,3' with one or two distinct nonnegative IDs per group"
+        ) from error
     if not pairs:
-        raise ValueError("At least one two-GPU pair is required")
+        raise ValueError("At least one GPU group is required")
     flattened = [gpu for pair in pairs for gpu in pair]
     if len(flattened) != len(set(flattened)):
-        raise ValueError("GPU IDs cannot appear in more than one configured pair")
+        raise ValueError("GPU IDs cannot appear in more than one configured group")
     return pairs
 
 
 def _validate_launcher(profile, gpu_pairs, max_concurrent, trial_hours):
-    if not math.isfinite(trial_hours) or trial_hours <= 0:
-        raise ValueError("--trial-hours must be finite and positive")
+    if trial_hours is not None and (
+        isinstance(trial_hours, bool)
+        or not isinstance(trial_hours, numbers.Real)
+        or not math.isfinite(float(trial_hours))
+        or trial_hours <= 0
+        or not math.isfinite(float(trial_hours) * 3600)
+    ):
+        raise ValueError("launcher.trial_hours / --trial-hours must be null or finite and positive")
     grace_seconds = profile.get("grace_seconds")
     if not isinstance(grace_seconds, int) or isinstance(grace_seconds, bool) or grace_seconds < 0:
         raise ValueError("launcher.grace_seconds must be a nonnegative integer")
     if not isinstance(max_concurrent, int) or isinstance(max_concurrent, bool) or max_concurrent < 1:
         raise ValueError("--max-concurrent must be a positive integer")
     if max_concurrent > len(gpu_pairs):
-        raise ValueError("--max-concurrent cannot exceed the number of configured GPU pairs")
+        raise ValueError("--max-concurrent cannot exceed the number of configured GPU groups")
     return grace_seconds
 
 
@@ -183,9 +213,9 @@ def _write_yaml(path, data):
         yaml.safe_dump(data, output, sort_keys=False, allow_unicode=True)
 
 
-def _make_run_dir(output_dir):
+def _make_run_dir(output_dir, trial_count=16):
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    return output_dir / f"sac16_grid_{timestamp}"
+    return output_dir / f"sac{trial_count}_grid_{timestamp}"
 
 
 def _estimate_observation_size(environment_config):
@@ -213,25 +243,32 @@ def _available_memory_bytes():
     return psutil.virtual_memory().available
 
 
-def _memory_preflight(config, max_concurrent_trials):
+def _memory_preflight(config, gpu_groups, max_concurrent_trials):
     replay_capacity = config["train"]["batch_size"]
     if not isinstance(replay_capacity, int) or isinstance(replay_capacity, bool) or replay_capacity <= 0:
         raise ValueError("train.batch_size must be a positive integer for replay memory preflight")
+    active_groups = gpu_groups[:max_concurrent_trials]
+    if len(active_groups) != max_concurrent_trials:
+        raise ValueError("Replay RAM preflight requires one configured GPU group per concurrent trial")
+    ranks_per_trial = [len(group) for group in active_groups]
+    total_ranks = sum(ranks_per_trial)
     observation_size = _estimate_observation_size(config["env"])
     # TensorReplay allocates two float32 observations plus int64 action, float32
     # reward and float32 discount for each transition on every rank.
     bytes_per_transition = observation_size * 8 + 16
     bytes_per_rank = replay_capacity * bytes_per_transition
     required_bytes = math.ceil(
-        bytes_per_rank * 2 * max_concurrent_trials * REPLAY_MEMORY_HEADROOM
+        bytes_per_rank * total_ranks * REPLAY_MEMORY_HEADROOM
     )
     available_bytes = _available_memory_bytes()
     result = {
         "observation_size": observation_size,
         "replay_capacity_per_rank": replay_capacity,
         "replay_bytes_per_rank": bytes_per_rank,
-        "concurrent_trials": max_concurrent_trials,
-        "ranks_per_trial": 2,
+        "concurrent_trials": len(active_groups),
+        "total_ranks": total_ranks,
+        "rank_counts_by_trial": ranks_per_trial,
+        "ranks_per_trial": ranks_per_trial[0] if len(set(ranks_per_trial)) == 1 else None,
         "headroom_factor": REPLAY_MEMORY_HEADROOM,
         "required_host_memory_bytes": required_bytes,
         "available_host_memory_bytes": available_bytes,
@@ -250,7 +287,7 @@ def _memory_preflight(config, max_concurrent_trials):
 
 
 def _build_command(config_path, trial_dir, gpu_pair, trial_hours):
-    return [
+    command = [
         sys.executable,
         "-m",
         "torch.distributed.run",
@@ -263,9 +300,10 @@ def _build_command(config_path, trial_dir, gpu_pair, trial_hours):
         str(config_path),
         "--artifact-dir",
         str(trial_dir),
-        "--trial-hours",
-        str(trial_hours),
     ]
+    if trial_hours is not None:
+        command.extend(("--trial-hours", str(trial_hours)))
+    return command
 
 
 def _trial_command_for_log(command, gpu_pair, disable_loggers):
@@ -532,8 +570,16 @@ def _build_parser():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dry-run", action="store_true", help="Write resolved configs and commands without starting torchrun")
     parser.add_argument("--output-dir", help="Unique output directory; existing directories are refused")
-    parser.add_argument("--gpu-pairs", help="Two-GPU pairs such as '0,1;2,3;4,5;6,7'")
-    parser.add_argument("--max-concurrent", type=int, help="Maximum concurrent trial pairs")
+    parser.add_argument(
+        "--config-dir",
+        default=str(CONFIG_DIR),
+        help="Directory containing the four SAC launch YAML files",
+    )
+    parser.add_argument(
+        "--gpu-groups", "--gpu-pairs", dest="gpu_pairs",
+        help="GPU groups such as '0;1;2,3'; --gpu-pairs remains an alias",
+    )
+    parser.add_argument("--max-concurrent", type=int, help="Maximum concurrent trials")
     parser.add_argument("--trial-hours", type=float, help="Soft deadline from each trial start")
     parser.add_argument("--trial-ids", help="Comma-separated 1-based trial IDs from the deterministic grid")
     parser.add_argument("--no-wandb", action="store_true", help="Disable W&B, Neptune, TensorBoard and model upload")
@@ -543,26 +589,53 @@ def _build_parser():
 
 def main(argv=None):
     args = _build_parser().parse_args(argv)
-    _, base_config, launcher = _load_configs()
+    config_dir = Path(args.config_dir).expanduser()
+    if not config_dir.is_absolute():
+        config_dir = REPO_ROOT / config_dir
+    config_dir = config_dir.resolve()
+    _, base_config, launcher = _load_configs(config_dir)
     axes = _grid_axes(base_config)
     combinations = list(itertools.product(*(values for _, values in axes)))
-    if len(combinations) != 16:
-        raise ValueError(f"Expected the configured SAC16 grid to have 16 trials, found {len(combinations)}")
-    selected_ids = _parse_trial_ids(args.trial_ids, len(combinations), args.smoke)
+    trial_count = len(combinations)
+    if args.trial_ids is not None:
+        trial_ids = args.trial_ids
+    elif "trial_ids" in launcher:
+        trial_ids = launcher["trial_ids"]
+        if not isinstance(trial_ids, list):
+            raise ValueError("launcher.trial_ids must be a list of positive integers")
+    else:
+        trial_ids = None
+    selected_ids = _parse_trial_ids(trial_ids, trial_count, args.smoke)
 
-    gpu_pairs = _parse_gpu_pairs(args.gpu_pairs or ";".join(",".join(map(str, pair)) for pair in launcher["gpu_pairs"]))
+    configured_gpu_pairs = ";".join(",".join(map(str, pair)) for pair in launcher["gpu_pairs"])
+    gpu_pairs = _parse_gpu_pairs(configured_gpu_pairs if args.gpu_pairs is None else args.gpu_pairs)
     max_concurrent = args.max_concurrent if args.max_concurrent is not None else min(launcher["max_concurrent"], len(gpu_pairs))
     if args.trial_hours is not None:
         trial_hours = args.trial_hours
     elif args.smoke:
-        trial_hours = launcher["smoke_trial_seconds"] / 3600
+        smoke_trial_seconds = launcher["smoke_trial_seconds"]
+        if (
+            isinstance(smoke_trial_seconds, bool)
+            or not isinstance(smoke_trial_seconds, numbers.Real)
+            or not math.isfinite(float(smoke_trial_seconds))
+            or smoke_trial_seconds <= 0
+        ):
+            raise ValueError("launcher.smoke_trial_seconds must be finite and positive")
+        trial_hours = smoke_trial_seconds / 3600
     else:
         trial_hours = launcher["trial_hours"]
     grace_seconds = _validate_launcher(launcher, gpu_pairs, max_concurrent, trial_hours)
     if args.smoke:
         grace_seconds = launcher["smoke_grace_seconds"]
 
-    output_dir = Path(args.output_dir).expanduser() if args.output_dir else _make_run_dir(PROJECT_DIR / "runs")
+    default_output_root = PROJECT_DIR / "runs"
+    if config_dir != CONFIG_DIR.resolve():
+        default_output_root /= config_dir.name
+    output_dir = (
+        Path(args.output_dir).expanduser()
+        if args.output_dir
+        else _make_run_dir(default_output_root, trial_count)
+    )
     if not output_dir.is_absolute():
         output_dir = REPO_ROOT / output_dir
     output_dir = output_dir.resolve()
@@ -613,9 +686,10 @@ def main(argv=None):
         trials.append(trial_record)
 
     manifest = {
-        "experiment": "SAC16-grid",
+        "experiment": f"SAC{trial_count}-grid",
         "created_at_utc": datetime.now(timezone.utc).isoformat(),
         "output_dir": str(output_dir),
+        "config_dir": str(config_dir),
         "dry_run": args.dry_run,
         "smoke": args.smoke,
         "selected_trial_ids": selected_ids,
@@ -648,7 +722,7 @@ def main(argv=None):
     active_trial_count = min(max_concurrent, len(selected_ids))
     try:
         memory_report = _memory_preflight(
-            trials[selected_ids[0] - 1]["_resolved_config"], active_trial_count,
+            trials[selected_ids[0] - 1]["_resolved_config"], gpu_pairs, active_trial_count,
         )
     except (MemoryError, RuntimeError, ValueError) as error:
         manifest["memory_preflight"] = {"status": "failed", "error": str(error)}
@@ -729,8 +803,13 @@ def main(argv=None):
                     MKL_NUM_THREADS="1",
                     OPENBLAS_NUM_THREADS="1",
                     NUMEXPR_NUM_THREADS="1",
-                    SAC16_TRIAL_DEADLINE_MONOTONIC=str(time.monotonic() + trial_hours * 3600),
                 )
+                if trial_hours is None:
+                    environment.pop("SAC16_TRIAL_DEADLINE_MONOTONIC", None)
+                else:
+                    environment["SAC16_TRIAL_DEADLINE_MONOTONIC"] = str(
+                        time.monotonic() + trial_hours * 3600
+                    )
                 if args.smoke or args.no_wandb:
                     environment["WANDB_MODE"] = "disabled"
                 Path(trial["_resolved_config"]["train"]["data_dir"]).mkdir(parents=True, exist_ok=False)
@@ -759,7 +838,11 @@ def main(argv=None):
                     "gpu_pair": gpu_pair,
                     "log_file": log_file,
                     "started_monotonic": time.monotonic(),
-                    "hard_deadline": time.monotonic() + trial_hours * 3600 + grace_seconds,
+                    "hard_deadline": (
+                        None
+                        if trial_hours is None
+                        else time.monotonic() + trial_hours * 3600 + grace_seconds
+                    ),
                     "hard_timeout": False,
                     "owned_descendants": {},
                 }
@@ -770,7 +853,8 @@ def main(argv=None):
                 process = process_info["process"]
                 exit_code = process.poll()
                 hard_timeout = False
-                if exit_code is None and now >= process_info["hard_deadline"]:
+                hard_deadline = process_info["hard_deadline"]
+                if exit_code is None and hard_deadline is not None and now >= hard_deadline:
                     hard_timeout = True
                     process_info["hard_timeout"] = True
                     exit_code = _terminate_owned_group(process, process_info["owned_descendants"])
