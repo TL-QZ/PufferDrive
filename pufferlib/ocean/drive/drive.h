@@ -4694,9 +4694,9 @@ void c_step(Drive *env) {
         }
     }
     
-    //Debug block: 
+    //Debug block 1: check for stale agents.
     #if 0
-    if (env->timestep >= 1 && env->timestep <= 5){//env -> timestep >= 50 && env -> timestep <= env -> scenario_length){
+    if (env->timestep >= 1 && env->timestep <= 66){//env -> timestep >= 50 && env -> timestep <= env -> scenario_length){
         int live_agents, fresh_agents, stale_agents, removed_agents, stopped_agents;
         live_agents = fresh_agents = stale_agents = removed_agents = stopped_agents = 0;
         for (int i = 0; i < env->active_agent_count; i++){
@@ -4727,6 +4727,214 @@ void c_step(Drive *env) {
     }
     #endif
     
+    #if 0
+    #define STOP_CHECK_AHEAD_RAD 1.047198f
+    #define STOP_CHECK_SIDE_RAD 1.570796f
+    if (env->timestep > 10 && env->timestep <= 66){
+        int agent_stopped_goal_ahead = 0, agent_stopped_goal_side = 0, agent_stopped_goal_behind = 0;
+        int agent_stopped_goal_badslot = 0, agent_stopped_goal_near = 0, agent_stopped_zfail = 0;
+        float stopping_distance_from_goal_sum = 0.0;
+        for (int i = 0; i < env->active_agent_count; i++) {
+            int agent_idx = env->active_agent_indices[i];
+            Agent *agent = &env->agents[agent_idx];
+            if (agent->removed || !agent->sim_valid) {
+                continue;
+            } 
+            if (agent->sim_speed >= AGENT_STOPPED_SPEED_THRESHOLD) {
+                continue;
+            } 
+            if (agent->current_goal_idx >= agent->goal_count) {
+                continue;
+            } 
+            int goal_idx = agent->current_goal_idx;
+            if (agent->list_goal_lane[goal_idx] < 0) {
+                agent_stopped_goal_badslot++;
+                continue;
+            }
+            float dx = agent->current_goal_x - agent->sim_x;
+            float dy = agent->current_goal_y - agent->sim_y;
+            float dz = fabsf(agent->sim_z - agent->current_goal_z);
+            float dist = sqrtf(dx*dx + dy*dy);
+            float bearing = atan2f(dy, dx) - agent->sim_heading;
+            while (bearing > M_PI) {
+                bearing -= 2.0f*M_PI;
+            }
+            while (bearing < -M_PI) {
+                bearing += 2.0f*M_PI;
+            }
+            float abs_bearing = fabsf(bearing);
+            if (dist < agent->reward_coefs[REWARD_COEF_GOAL_RADIUS]) {
+                if (dz < Z_BUFFER) {
+                    agent_stopped_goal_near++;
+                }  else {
+                    agent_stopped_zfail++;
+                } 
+            }
+            else if (abs_bearing < STOP_CHECK_AHEAD_RAD) {
+                agent_stopped_goal_ahead++;
+            }
+            else if (abs_bearing < STOP_CHECK_SIDE_RAD) {
+                agent_stopped_goal_side++;
+            }
+            else {
+                agent_stopped_goal_behind++;
+            }
+            stopping_distance_from_goal_sum += dist;
+        }
+        fprintf(stderr, "[stop_check] t=%d s_ahead=%d s_side=%d s_behind=%d s_near=%d s_zfail=%d s_badslot=%d s_dist=%.1f\n",
+                env->timestep, agent_stopped_goal_ahead, agent_stopped_goal_side, agent_stopped_goal_behind,
+                agent_stopped_goal_near, agent_stopped_zfail, agent_stopped_goal_badslot, stopping_distance_from_goal_sum);
+    }
+    #undef STOP_CHECK_AHEAD_RAD
+    #undef STOP_CHECK_SIDE_RAD
+    #endif
+    
+    //Debug block 3: why are agents stopped, and is any goal on an opposing lane
+    #if 0
+    #define STOP_CHECK_BLOCK_AHEAD_M 12.0f
+    #define STOP_CHECK_BLOCK_LATERAL_M 2.5f
+    #define STOP_CHECK_PERSIST_S 3.0f
+    #define STOP_CHECK_BEHIND_RAD 1.570796f
+    #define STOP_CHECK_OPPOSING_RAD 1.570796f
+    if (env->timestep > 10 && env->timestep <= 66) {
+        int agent_live_count = 0, agent_live_goal_behind = 0, agent_live_goal_opposing_lane = 0;
+        int agent_stopped_count = 0, agent_stopped_frozen = 0, agent_stopped_at_red_light = 0;
+        int agent_stopped_blocked_by_controlled = 0, agent_stopped_blocked_by_logged = 0;
+        int agent_stopped_free = 0, agent_stopped_persistent = 0;
+        for (int i = 0; i < env->active_agent_count; i++) {
+            int agent_idx = env->active_agent_indices[i];
+            Agent *agent = &env->agents[agent_idx];
+            if (agent->removed || !agent->sim_valid) {
+                continue;
+            }
+            agent_live_count++;
+            if (agent->current_goal_idx < agent->goal_count) {
+                int goal_idx = agent->current_goal_idx;
+                float dx = agent->current_goal_x - agent->sim_x;
+                float dy = agent->current_goal_y - agent->sim_y;
+                float bearing = compute_heading_diff(atan2f(dy, dx), agent->sim_heading);
+                if (fabsf(bearing) > STOP_CHECK_BEHIND_RAD) {
+                    agent_live_goal_behind++;
+                }
+                int goal_lane_idx = agent->list_goal_lane[goal_idx];
+                if (goal_lane_idx >= 0) {
+                    RoadMapElement *goal_lane = &env->road_elements[goal_lane_idx];
+                    int closest_segment_idx = 0;
+                    float closest_segment_distance = 1e30f;
+                    for (int segment_idx = 0; segment_idx < goal_lane->segment_size - 1; segment_idx++) {
+                        float segment_distance = compute_point_to_segment_distance(
+                            agent->current_goal_x,
+                            agent->current_goal_y,
+                            goal_lane->x[segment_idx],
+                            goal_lane->y[segment_idx],
+                            goal_lane->x[segment_idx + 1],
+                            goal_lane->y[segment_idx + 1]);
+                        if (segment_distance < closest_segment_distance) {
+                            closest_segment_distance = segment_distance;
+                            closest_segment_idx = segment_idx;
+                        }
+                    }
+                    float goal_lane_heading_diff = compute_heading_diff(agent->sim_heading, goal_lane->headings[closest_segment_idx]);
+                    if (fabsf(goal_lane_heading_diff) > STOP_CHECK_OPPOSING_RAD) {
+                        agent_live_goal_opposing_lane++;
+                    }
+                }
+            }
+            if (agent->sim_speed >= AGENT_STOPPED_SPEED_THRESHOLD) {
+                continue;
+            }
+            agent_stopped_count++;
+            if (agent->seconds_stopped > STOP_CHECK_PERSIST_S) {
+                agent_stopped_persistent++;
+            }
+            if (agent->stopped) {
+                agent_stopped_frozen++;
+                continue;
+            }
+            int at_red_light = 0;
+            if (agent->current_lane_idx != -1) {
+                for (int traffic_idx = 0; traffic_idx < env->num_traffic_elements && !at_red_light; traffic_idx++) {
+                    TrafficControlElement *tc = &env->traffic_elements[traffic_idx];
+                    if (tc->type != TRAFFIC_CONTROL_TYPE_TRAFFIC_LIGHT || tc->num_controlled_lanes == 0) {
+                        continue;
+                    }
+                    if (env->timestep >= tc->state_size) {
+                        continue;
+                    }
+                    if (tc->states[env->timestep] != TRAFFIC_CONTROL_STATE_RED) {
+                        continue;
+                    }
+                    int controls_lane = 0;
+                    for (int lane_slot = 0; lane_slot < tc->num_controlled_lanes; lane_slot++) {
+                        if (tc->controlled_lanes[lane_slot] == agent->current_lane_idx) {
+                            controls_lane = 1;
+                            break;
+                        }
+                    }
+                    if (!controls_lane) {
+                        continue;
+                    }
+                    float stop_line_mid_x = (tc->stop_line[0] + tc->stop_line[3]) * 0.5f;
+                    float stop_line_mid_y = (tc->stop_line[1] + tc->stop_line[4]) * 0.5f;
+                    float stop_line_dx = agent->sim_x - stop_line_mid_x;
+                    float stop_line_dy = agent->sim_y - stop_line_mid_y;
+                    if (stop_line_dx * stop_line_dx + stop_line_dy * stop_line_dy > STOP_LINE_DIST_SQ) {
+                        continue;
+                    }
+                    if (fabsf(compute_heading_diff(agent->sim_heading, tc->heading)) > STOP_LINE_HEADING_THRESHOLD) {
+                        continue;
+                    }
+                    at_red_light = 1;
+                }
+            }
+            if (at_red_light) {
+                agent_stopped_at_red_light++;
+                continue;
+            }
+            int blocker_slot = -1;
+            for (int other_slot = 0; other_slot < env->num_agents; other_slot++) {
+                int other_idx;
+                if (other_slot < env->active_agent_count) {
+                    other_idx = env->active_agent_indices[other_slot];
+                } else {
+                    other_idx = env->static_agent_indices[other_slot - env->active_agent_count];
+                }
+                if (other_idx == agent_idx) {
+                    continue;
+                }
+                Agent *other = &env->agents[other_idx];
+                if (other->sim_x == INVALID_POSITION || other->removed || other->sim_valid != 1) {
+                    continue;
+                }
+                float other_rel_x, other_rel_y;
+                project_point_to_ego_frame(agent, other->sim_x, other->sim_y, &other_rel_x, &other_rel_y);
+                if (other_rel_x > 0.0f && other_rel_x <= STOP_CHECK_BLOCK_AHEAD_M && fabsf(other_rel_y) < STOP_CHECK_BLOCK_LATERAL_M) {
+                    blocker_slot = other_slot;
+                    break;
+                }
+            }
+            if (blocker_slot >= 0) {
+                if (blocker_slot < env->active_agent_count) {
+                    agent_stopped_blocked_by_controlled++;
+                } else {
+                    agent_stopped_blocked_by_logged++;
+                }
+                continue;
+            }
+            agent_stopped_free++;
+        }
+        fprintf(stderr, "[stop_why] t=%d live=%d g_behind=%d g_opp=%d stopped=%d frozen=%d red=%d blk_ctrl=%d blk_log=%d free=%d persist=%d\n",
+                env->timestep, agent_live_count, agent_live_goal_behind, agent_live_goal_opposing_lane,
+                agent_stopped_count, agent_stopped_frozen, agent_stopped_at_red_light,
+                agent_stopped_blocked_by_controlled, agent_stopped_blocked_by_logged,
+                agent_stopped_free, agent_stopped_persistent);
+    }
+    #undef STOP_CHECK_BLOCK_AHEAD_M
+    #undef STOP_CHECK_BLOCK_LATERAL_M
+    #undef STOP_CHECK_PERSIST_S
+    #undef STOP_CHECK_BEHIND_RAD
+    #undef STOP_CHECK_OPPOSING_RAD
+    #endif
     // -> 4. Compute observations
     compute_observations(env);
 }

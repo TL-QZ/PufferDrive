@@ -38,7 +38,7 @@ if (( ${#RUN_DIRS[@]} != 1 )); then
 fi
 
 RUN_DIR="${RUN_DIRS[0]}"
-MODEL_PATH="${RUN_DIR}/final_model.pt"
+MODEL_PATH="${MODEL_PATH:-${RUN_DIR}/final_model.pt}"
 CHECKPOINT_CONFIG="${RUN_DIR}/config.yaml"
 if [[ ! -f "${MODEL_PATH}" ]]; then
     echo "Missing final checkpoint: ${MODEL_PATH}" >&2
@@ -61,7 +61,7 @@ EVAL_COMMAND=(
     puffer eval puffer_drive carla,nuplan_single,nuplan_multi
     "load_model_path=${MODEL_PATH}"
     "eval.benchmark_config=${BENCHMARK_CONFIG}"
-    "eval.output_name=final_model_mean_metrics"
+    "eval.output_name=${OUTPUT_NAME:-final_model_mean_metrics}"
     "eval.num_agents=300"
     "eval.action_selection=mean"
     "eval.render_scenarios=false"

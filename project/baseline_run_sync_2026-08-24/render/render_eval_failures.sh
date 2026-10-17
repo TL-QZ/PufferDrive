@@ -71,11 +71,11 @@ if (( ${#RUN_DIRS[@]} != 1 )); then
 fi
 
 RUN_DIR="${RUN_DIRS[0]}"
-MODEL_PATH="${RUN_DIR}/final_model.pt"
+MODEL_PATH="${MODEL_PATH:-${RUN_DIR}/final_model.pt}"
 CHECKPOINT_CONFIG="${RUN_DIR}/config.yaml"
 
 shopt -s nullglob
-METRICS_FILES=("${RUN_DIR}"/eval/"${DATASET}"_final_model_mean_metrics/*/episode_metrics.csv)
+METRICS_FILES=("${RUN_DIR}"/eval/"${DATASET}"_${METRICS_NAME:-final_model}_mean_metrics/*/episode_metrics.csv)
 shopt -u nullglob
 if (( ${#METRICS_FILES[@]} == 0 )); then
     echo "No final-model metrics CSV found for seed ${SEED}, dataset ${DATASET}." >&2
