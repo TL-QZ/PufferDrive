@@ -25,6 +25,22 @@ launch commands.
 Default artifacts go under `runs/round2/`, and its W&B group is
 `vanilla_sac_round2`. The rest of this guide describes the original sweep.
 
+## Round four: one full-scale candidate at a time
+
+Round four restores two GPUs and 8,192,000 replay transitions per rank for
+round-three candidates **97 or 99**. Choose one explicitly; the run has no
+wall-time cutoff and retains the 500-million global received-agent-row budget.
+See the [round-four README](../configs/round4/README.md) for stopping behavior,
+resource requirements, and the candidate comparison.
+
+```bash
+bash project/soft_actor_critic_tuning/scripts/launch_round4.sh \
+  --trial 97 --gpus 0,1 --dry-run
+```
+
+Remove `--dry-run` to train that one candidate; use `--trial 99` to choose the
+other. The script waits for the selected run and does not queue another trial.
+
 ## 1. Inspect the grid without starting training
 
 For the update-frequency sweep based on round-two candidates **17, 26 and 31**,
