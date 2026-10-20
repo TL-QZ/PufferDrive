@@ -121,7 +121,9 @@ def logits_to_float(logits):
 
 
 class PuffeRL:
-    def __init__(self, config, vecenv, policy, logger=None):
+    def __init__(self, config, vecenv, policy, logger=None, transition_observer=None):
+        self.transition_observer = transition_observer
+
         # Backend perf optimization
         torch.set_float32_matmul_precision("high")
         torch.backends.cudnn.deterministic = config["torch_deterministic"]
@@ -369,6 +371,7 @@ class PuffeRL:
 
         config = self.config
         device = config["device"]
+        transition_observer = getattr(self, "transition_observer", None)
 
         if config["use_rnn"]:
             for k in self.lstm_h:
@@ -381,6 +384,8 @@ class PuffeRL:
             o, r, d, t, info, env_id, mask = self.vecenv.recv()
 
             profile("eval_misc", epoch)
+            if transition_observer is not None:
+                original_env_ids = env_id
             env_id = slice(env_id[0], env_id[-1] + 1)
 
             self.global_step += env_id.stop - env_id.start
@@ -419,6 +424,17 @@ class PuffeRL:
                 action, logprob, _, cont_action = pufferlib.pytorch.sample_logits(
                     logits, env_continuous=self.env_continuous, policy=self.uncompiled_policy
                 )
+                if transition_observer is not None:
+                    info = transition_observer(
+                        observations=o_device,
+                        rewards=r,
+                        terminals=d,
+                        truncations=t,
+                        infos=info,
+                        env_ids=torch.as_tensor(original_env_ids, device=device, dtype=torch.long),
+                        masks=mask,
+                        actions=action,
+                    )
                 if config["normalize_rewards"]:
                     r = torch.sign(r) * torch.log1p(torch.abs(r))
 

@@ -44,7 +44,7 @@ DEFAULT_CONFIG = dict(
     optimizer="adam", adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8, adam_weight_decay=0.0,
     max_grad_norm=None, amp=False, precision="float32", compile=False, compile_mode="default",
     compile_fullgraph=False, cpu_offload=True,
-    initial_alpha=0.2, target_entropy=None, tau=0.005, torch_deterministic=False,
+    initial_alpha=0.2, learn_alpha=True, target_entropy=None, tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
     fresh_run=False,
 )
@@ -548,7 +548,7 @@ class PuffeSAC:
     discarded after the insertion quota is reached.
     """
 
-    def __init__(self, config, vecenv=None, policy=None, critic=None, replay=None, logger=None):
+    def __init__(self, config, vecenv=None, policy=None, critic=None, replay=None, logger=None, *, reset_env=True):
         if vecenv is None or policy is None or critic is None or replay is None:
             raise NotImplementedError(
                 "Supply vecenv, policy, critic and replay to PuffeSAC, "
@@ -575,6 +575,8 @@ class PuffeSAC:
             raise ValueError("checkpoint_interval must be a positive integer or None")
         if config["action_count"] < 2:
             raise ValueError("Require action_count >= 2")
+        if not isinstance(config["learn_alpha"], bool):
+            raise ValueError("learn_alpha must be a boolean")
         for key in ("learning_rate", "critic_learning_rate", "alpha_learning_rate",
                     "initial_alpha", "replay_update_ratio", "tau", "adam_eps"):
             if not math.isfinite(config[key]) or config[key] <= 0:
@@ -751,7 +753,8 @@ class PuffeSAC:
         self.final_model_path = None
         self.utilization = pufferl.Utilization()
         try:
-            vecenv.async_reset(reset_seed)
+            if reset_env:
+                vecenv.async_reset(reset_seed)
             self.print_dashboard(clear=True)
         except BaseException:
             self.utilization.stop()
@@ -910,6 +913,58 @@ class PuffeSAC:
         return final_agent_ids, final_observations, metric_infos
 
     @torch.no_grad()
+    def observe_transition(self, observations, rewards, terminals, truncations, infos, env_ids, masks):
+        """Assemble completed pending transitions without changing pending actions."""
+        observations = torch.as_tensor(observations, device=self.device, dtype=torch.float32)
+        rewards = torch.as_tensor(rewards, device=self.device, dtype=torch.float32)
+        terminals = torch.as_tensor(terminals, device=self.device, dtype=torch.bool)
+        truncations = torch.as_tensor(truncations, device=self.device, dtype=torch.bool)
+        env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        masks = torch.as_tensor(masks, device=self.device, dtype=torch.bool)
+
+        completed = self.pending[env_ids] & masks
+        unsupported_truncations = completed & truncations & ~terminals
+        required_final_rows = torch.nonzero(unsupported_truncations, as_tuple=False).squeeze(-1)
+        final_agent_ids, final_observations, metric_infos = self._consume_final_observation_infos(
+            infos, env_ids, required_final_rows.detach().cpu().tolist()
+        )
+        completed_rows = torch.nonzero(completed, as_tuple=False).squeeze(-1)
+        transition_ids = env_ids[completed_rows]
+        terminal_transitions = terminals[completed_rows]
+        next_observations = observations[completed_rows]
+        truncated_transitions = truncations[completed_rows] & ~terminal_transitions
+        if truncated_transitions.any():
+            truncated_agent_ids = transition_ids[truncated_transitions].detach().cpu().numpy()
+            final_positions = np.searchsorted(final_agent_ids, truncated_agent_ids)
+            final_batch = final_observations[final_positions]
+            next_observations[truncated_transitions] = torch.as_tensor(
+                final_batch, device=self.device, dtype=torch.float32
+            )
+        # Terminal rows need no successor; use a finite, already-owned state.
+        next_observations[terminal_transitions] = self.observations[
+            transition_ids[terminal_transitions]
+        ]
+        discounts = self.config["gamma"] * (~terminal_transitions).to(torch.float32)
+        transitions = (
+            self.observations[transition_ids],
+            self.actions[transition_ids],
+            rewards[completed_rows],
+            next_observations,
+            discounts,
+        )
+        return transitions, metric_infos
+
+    @torch.no_grad()
+    def record_actions(self, observations, actions, env_ids):
+        """Copy the observations and actions sent for stable agent-slot IDs."""
+        observations = torch.as_tensor(observations, device=self.device, dtype=torch.float32)
+        actions = torch.as_tensor(actions, device=self.device, dtype=torch.long).reshape(-1)
+        env_ids = torch.as_tensor(env_ids, device=self.device, dtype=torch.long)
+        self.observations[env_ids] = observations
+        self.actions[env_ids] = actions
+        self.pending[env_ids] = True
+
+    @torch.no_grad()
     def evaluate(self):
         """Collect transitions directly from vecenv, matching PuffeRL.evaluate."""
         if self.device.type == "cuda":
@@ -944,12 +999,8 @@ class PuffeSAC:
             received_count_total += received_count
             self.global_step += received_count
 
-            # The received mask qualifies the preceding action, not the new observation.
-            completed = self.pending[env_ids] & masks
-            unsupported_truncations = completed & truncations & ~terminals
-            required_final_rows = torch.nonzero(unsupported_truncations, as_tuple=False).squeeze(-1)
-            final_agent_ids, final_observations, infos = self._consume_final_observation_infos(
-                infos, env_ids, required_final_rows.detach().cpu().tolist()
+            transitions, infos = self.observe_transition(
+                observations, rewards, terminals, truncations, infos, env_ids, masks,
             )
             self.stats["obs/max"].append(observations.max().item())
             self.stats["obs/min"].append(observations.min().item())
@@ -962,46 +1013,22 @@ class PuffeSAC:
                 logits.float(), env_continuous=self.env_continuous, policy=self.uncompiled_policy
             )
 
-            if completed.any():
+            transition_count = transitions[0].shape[0]
+            if transition_count:
                 profile("eval_copy", epoch)
-                completed_rows = torch.nonzero(completed, as_tuple=False).squeeze(-1)
                 remaining_quota = insert_target - valid_inserts
-                if completed_rows.numel() > remaining_quota:
+                if transition_count > remaining_quota:
                     selected_rows = torch.randperm(
-                        completed_rows.numel(), device=completed_rows.device
+                        transition_count, device=transitions[0].device
                     )[:remaining_quota]
-                    completed_rows = completed_rows[selected_rows]
-                transition_ids = env_ids[completed_rows]
-                terminal_transitions = terminals[completed_rows]
-                next_observations = observations[completed_rows]
-                truncated_transitions = truncations[completed_rows] & ~terminal_transitions
-                if truncated_transitions.any():
-                    truncated_agent_ids = transition_ids[truncated_transitions].detach().cpu().numpy()
-                    final_positions = np.searchsorted(final_agent_ids, truncated_agent_ids)
-                    final_batch = final_observations[final_positions]
-                    next_observations[truncated_transitions] = torch.as_tensor(
-                        final_batch, device=self.device, dtype=torch.float32
-                    )
-                # Terminal rows need no successor; use a finite, already-owned state.
-                next_observations[terminal_transitions] = self.observations[
-                    transition_ids[terminal_transitions]
-                ]
-                discounts = self.config["gamma"] * (~terminal_transitions).to(torch.float32)
-                transition_rewards = rewards[completed_rows]
-                transition_observations = self.observations[transition_ids]
-                transition_actions = self.actions[transition_ids]
+                    transitions = tuple(transition[selected_rows] for transition in transitions)
+                transition_count = transitions[0].shape[0]
                 if replay_size < self.batch_size:
-                    self.replay.add(
-                        transition_observations, transition_actions, transition_rewards,
-                        next_observations, discounts,
-                    )
+                    self.replay.add(*transitions)
                 else:
-                    replace_indices = refresh_indices[valid_inserts:valid_inserts + completed_rows.numel()]
-                    self.replay.replace(
-                        replace_indices, transition_observations, transition_actions, transition_rewards,
-                        next_observations, discounts,
-                    )
-                valid_inserts += completed_rows.numel()
+                    replace_indices = refresh_indices[valid_inserts:valid_inserts + transition_count]
+                    self.replay.replace(replace_indices, *transitions)
+                valid_inserts += transition_count
 
             profile("eval_misc", epoch)
             for info in infos:
@@ -1015,9 +1042,7 @@ class PuffeSAC:
 
             # Copy before send can overwrite shared observations. Keep the final pending send.
             profile("eval_copy", epoch)
-            self.observations[env_ids] = observations
-            self.actions[env_ids] = actions.long()
-            self.pending[env_ids] = True
+            self.record_actions(observations, actions, env_ids)
 
             profile("env", epoch)
             if self.env_continuous:
@@ -1040,7 +1065,7 @@ class PuffeSAC:
         profile.end()
         return self.helpers.pufferlib.utils.reduce_environment_metrics(self.stats)
 
-    def train(self):
+    def train(self, update_policy=True, target_policy=None):
         """Optimize from replay after evaluate(); one call increments epoch once."""
         if self.device.type == "cuda":
             torch.compiler.cudagraph_mark_step_begin()
@@ -1058,10 +1083,18 @@ class PuffeSAC:
             )
             torch.distributed.all_reduce(ready, op=torch.distributed.ReduceOp.MIN)
             replay_ready = bool(ready.item())
-        updates = self._train_sac_transition(losses, profile, epoch) if replay_ready else 0
+        if replay_ready:
+            if update_policy and target_policy is None:
+                updates = self._train_sac_transition(losses, profile, epoch)
+            else:
+                updates = self._train_sac_transition(
+                    losses, profile, epoch, update_policy=update_policy, target_policy=target_policy,
+                )
+        else:
+            updates = 0
         profile("train_misc", epoch)
         if updates and self.config["anneal_lr"]:
-            if self.scheduler.last_epoch < self.scheduler.T_max:
+            if update_policy and self.scheduler.last_epoch < self.scheduler.T_max:
                 self.scheduler.step()
             if self.critic_scheduler.last_epoch < self.critic_scheduler.T_max:
                 self.critic_scheduler.step()
@@ -1090,9 +1123,12 @@ class PuffeSAC:
         return logs
 
     @torch.no_grad()
-    def _compute_targets(self, mb_rewards, mb_next_obs, mb_discounts):
+    def _compute_targets(self, mb_rewards, mb_next_obs, mb_discounts, target_policy=None):
         with self.amp_context:
-            logits = self.policy(mb_next_obs)
+            if target_policy is None:
+                logits = self.policy(mb_next_obs)
+            else:
+                logits = target_policy(mb_next_obs).detach()
             next_q1, next_q2 = self.target_critic(mb_next_obs)
         logprobs = F.log_softmax(logits.float(), dim=-1)
         probs = logprobs.exp()
@@ -1124,7 +1160,7 @@ class PuffeSAC:
         entropy = -(probs * logprobs).sum(-1).mean()
         return loss, entropy.detach()
 
-    def _train_sac_transition(self, losses, profile, epoch):
+    def _train_sac_transition(self, losses, profile, epoch, update_policy=True, target_policy=None):
         replay_size = len(self.replay)
         if replay_size < self.batch_size:
             return 0
@@ -1161,7 +1197,12 @@ class PuffeSAC:
                     else nullcontext()
                 )
                 with sync_context:
-                    mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
+                    if target_policy is None:
+                        mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
+                    else:
+                        mb_targets = self._compute_targets(
+                            mb_rewards, mb_next_obs, mb_discounts, target_policy=target_policy,
+                        )
                     critic_loss, q1, q2 = self._critic_loss(mb_obs, mb_actions, mb_targets)
                     profile("learn", epoch)
                     (critic_loss * (micro_count / logical_batch_count)).backward()
@@ -1174,40 +1215,52 @@ class PuffeSAC:
                 torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config["max_grad_norm"])
             self.critic_optimizer.step()
 
-            self.optimizer.zero_grad(set_to_none=True)
-            policy_loss_value = 0.0
-            entropy_sum = torch.zeros((), device=self.device, dtype=torch.float32)
-            for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
-                micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
-                micro_count = micro_indices.numel()
-                profile("train_copy", epoch)
-                mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device, non_blocking=True)
-                profile("train_forward", epoch)
-                last_microbatch = micro_start + micro_count == logical_batch_count
-                sync_context = (
-                    self.ddp_policy.no_sync()
-                    if self.distributed and not last_microbatch
-                    else nullcontext()
-                )
-                with sync_context:
-                    policy_loss, entropy = self._policy_loss(mb_obs)
-                    profile("learn", epoch)
-                    (policy_loss * (micro_count / logical_batch_count)).backward()
-                policy_loss_value += policy_loss.detach().item() * micro_count / logical_batch_count
-                entropy_sum += entropy * micro_count
+            update_losses = dict(
+                critic_loss=critic_loss_value,
+                q1=q1_value,
+                q2=q2_value,
+                target=target_value,
+            )
+            if update_policy:
+                self.optimizer.zero_grad(set_to_none=True)
+                policy_loss_value = 0.0
+                entropy_sum = torch.zeros((), device=self.device, dtype=torch.float32)
+                for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
+                    micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
+                    micro_count = micro_indices.numel()
+                    profile("train_copy", epoch)
+                    mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device, non_blocking=True)
+                    profile("train_forward", epoch)
+                    last_microbatch = micro_start + micro_count == logical_batch_count
+                    sync_context = (
+                        self.ddp_policy.no_sync()
+                        if self.distributed and not last_microbatch
+                        else nullcontext()
+                    )
+                    with sync_context:
+                        policy_loss, entropy = self._policy_loss(mb_obs)
+                        profile("learn", epoch)
+                        (policy_loss * (micro_count / logical_batch_count)).backward()
+                    policy_loss_value += policy_loss.detach().item() * micro_count / logical_batch_count
+                    entropy_sum += entropy * micro_count
 
-            if self.config["max_grad_norm"] is not None:
-                torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.config["max_grad_norm"])
-            self.optimizer.step()
+                if self.config["max_grad_norm"] is not None:
+                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.config["max_grad_norm"])
+                self.optimizer.step()
 
-            mean_entropy = entropy_sum / logical_batch_count
-            alpha_loss = self.log_alpha * (mean_entropy - self.config["target_entropy"])
-            self.alpha_optimizer.zero_grad(set_to_none=True)
-            alpha_loss.backward()
-            if self.distributed:
-                torch.distributed.all_reduce(self.log_alpha.grad, op=torch.distributed.ReduceOp.SUM)
-                self.log_alpha.grad.div_(self.world_size)
-            self.alpha_optimizer.step()
+                mean_entropy = entropy_sum / logical_batch_count
+                update_losses["policy_loss"] = policy_loss_value
+                update_losses["entropy"] = mean_entropy.item()
+                if self.config.get("learn_alpha", True):
+                    alpha_loss = self.log_alpha * (mean_entropy - self.config["target_entropy"])
+                    self.alpha_optimizer.zero_grad(set_to_none=True)
+                    alpha_loss.backward()
+                    if self.distributed:
+                        torch.distributed.all_reduce(self.log_alpha.grad, op=torch.distributed.ReduceOp.SUM)
+                        self.log_alpha.grad.div_(self.world_size)
+                    self.alpha_optimizer.step()
+                    update_losses["alpha_loss"] = alpha_loss.detach().item()
+            update_losses["alpha"] = self.alpha.item()
 
             profile("train_misc", epoch)
             # Polyak-update all target parameters and buffers, including encoders.
@@ -1226,11 +1279,6 @@ class PuffeSAC:
 
             self.learner_updates += 1
             self.sampled_transitions += logical_batch_count * self.world_size
-            update_losses = dict(
-                critic_loss=critic_loss_value, policy_loss=policy_loss_value,
-                alpha_loss=alpha_loss.detach().item(), entropy=mean_entropy.item(), alpha=self.alpha.item(),
-                q1=q1_value, q2=q2_value, target=target_value,
-            )
             profile("train_misc", epoch)
             for key, value in update_losses.items():
                 losses[key] += value * logical_batch_count / total_sampled_transitions

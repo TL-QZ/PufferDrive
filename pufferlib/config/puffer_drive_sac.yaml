@@ -40,6 +40,8 @@ train:
   adam_weight_decay: 0.0
   max_grad_norm: null
   initial_alpha: 0.2
+  # Disable temperature updates to keep initial_alpha fixed.
+  learn_alpha: true
   target_entropy: null
   tau: 0.005
   anneal_lr: false
