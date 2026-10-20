@@ -35,6 +35,11 @@ class _RecordingReplay(TensorReplay):
     def __init__(self, capacity, observation_shape):
         super().__init__(capacity, observation_shape)
         self.sampled_indices = []
+        self.replaced_indices = []
+
+    def replace(self, indices, *transitions):
+        self.replaced_indices.extend(indices.tolist())
+        return super().replace(indices, *transitions)
 
     def get_batch(self, indices):
         self.sampled_indices.append(indices.clone())
@@ -268,6 +273,61 @@ class _CollectVecEnv(_FakeVecEnv):
 
     def send(self, actions):
         self.last_actions = actions
+
+
+@pytest.mark.parametrize("refresh_ratio", [0.125, 0.375, 1.0])
+def test_replay_eviction_shuffles_once_then_cycles_fifo(monkeypatch, tmp_path, refresh_ratio):
+    replay = _RecordingReplay(8, (3,))
+    learner = _make_checkpoint_learner(
+        monkeypatch, tmp_path, replay=replay, vecenv=_CollectVecEnv(),
+        total_timesteps=100, replay_update_ratio=refresh_ratio,
+    )
+    learner.evaluate()
+    assert len(replay) == 8
+    assert replay.replaced_indices == []
+    original_randperm = torch.randperm
+    permutations = []
+
+    def record_randperm(*args, **kwargs):
+        result = original_randperm(*args, **kwargs)
+        permutations.append(result.clone())
+        return result
+
+    monkeypatch.setattr(torch, "randperm", record_randperm)
+    for _ in range(17):
+        learner.evaluate()
+        if len(replay.replaced_indices) >= 17:
+            break
+
+    assert len(permutations) == 1
+    eviction_order = permutations[0].tolist()
+    assert sorted(eviction_order) == list(range(8))
+    assert replay.replaced_indices == [
+        eviction_order[index % 8] for index in range(len(replay.replaced_indices))
+    ]
+    # Once the initial contents are gone, the buffer holds the eight newest rows.
+    newest_observation = float(learner.vecenv.received - 1)
+    assert sorted(replay.observations[:, 0].tolist()) == list(
+        np.arange(newest_observation - 7, newest_observation + 1)
+    )
+
+
+def test_replay_fifo_cursor_advances_only_for_inserted_rows(monkeypatch, tmp_path):
+    replay = _RecordingReplay(8, (3,))
+    learner = _make_checkpoint_learner(
+        monkeypatch, tmp_path, replay=replay, vecenv=_CollectVecEnv(),
+        total_timesteps=11, replay_update_ratio=0.5,
+    )
+    learner.evaluate()
+    learner.evaluate()  # Budget permits only two of the four requested replacements.
+    assert len(replay.replaced_indices) == 2
+    assert learner.replay_eviction_cursor == 2
+    learner.evaluate()  # Exhausted budget must not move the cursor.
+    assert learner.replay_eviction_cursor == 2
+    learner.config["total_timesteps"] = 15
+    learner.evaluate()
+    assert replay.replaced_indices == learner.replay_eviction_order[:6].tolist()
+    assert learner.replay_eviction_cursor == 6
 
 
 def _old_version_five_checkpoint(learner):
