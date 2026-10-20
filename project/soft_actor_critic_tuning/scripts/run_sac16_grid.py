@@ -606,6 +606,19 @@ def main(argv=None):
     else:
         trial_ids = None
     selected_ids = _parse_trial_ids(trial_ids, trial_count, args.smoke)
+    trial_evaluation_intervals = launcher.get("trial_evaluation_interval_epochs", {})
+    if not isinstance(trial_evaluation_intervals, dict):
+        raise ValueError("launcher.trial_evaluation_interval_epochs must be a trial-ID mapping")
+    for trial_id, interval in trial_evaluation_intervals.items():
+        if (
+            isinstance(trial_id, bool) or not isinstance(trial_id, int)
+            or not 1 <= trial_id <= trial_count
+            or isinstance(interval, bool) or not isinstance(interval, int) or interval <= 0
+        ):
+            raise ValueError(
+                "launcher.trial_evaluation_interval_epochs requires valid integer trial IDs "
+                "and positive integer intervals"
+            )
 
     configured_gpu_pairs = ";".join(",".join(map(str, pair)) for pair in launcher["gpu_pairs"])
     gpu_pairs = _parse_gpu_pairs(configured_gpu_pairs if args.gpu_pairs is None else args.gpu_pairs)
@@ -662,6 +675,8 @@ def main(argv=None):
             resolved = deepcopy(base_config)
             for path, value in parameters.items():
                 _set_dotted(resolved, path, value)
+            if trial_id in trial_evaluation_intervals:
+                resolved["train"]["evaluation_interval_epochs"] = trial_evaluation_intervals[trial_id]
             if args.smoke:
                 resolved = _smoke_config(resolved)
                 _disable_loggers(resolved)
@@ -680,6 +695,7 @@ def main(argv=None):
                 config_path=str(config_path.resolve()),
                 trial_dir=str(trial_dir.resolve()),
                 _resolved_config=resolved,
+                evaluation_interval_epochs=resolved["train"].get("evaluation_interval_epochs"),
                 command=command,
                 log_command=_trial_command_for_log(command, gpu_pair, args.no_wandb or args.smoke),
             )

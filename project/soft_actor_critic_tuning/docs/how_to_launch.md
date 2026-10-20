@@ -25,6 +25,22 @@ launch commands.
 Default artifacts go under `runs/round2/`, and its W&B group is
 `vanilla_sac_round2`. The rest of this guide describes the original sweep.
 
+## Round 4_1: longer FIFO runs
+
+Use [round 4_1](../configs/round4_1/README.md) for trials **97 or 98**, each
+with a **2-billion global received-agent-row budget** and two GPUs. Trial 97
+runs `carla_fast` every 10 outer epochs; trial 98 runs it every 2. Both schedules
+cover one full replay turnover between steady-state evaluations.
+
+```bash
+bash project/soft_actor_critic_tuning/scripts/launch_round4_1.sh \
+  --trial 97 --gpus 0,1 --dry-run
+```
+
+Remove `--dry-run` to train one candidate, or use `--trial 98`. There is no
+wall-time cutoff. Artifacts and W&B grouping are isolated under `round4_1`
+and `vanilla_sac_round4_1`, respectively.
+
 ## Round four: one full-scale candidate at a time
 
 Round four restores two GPUs and 8,192,000 replay transitions per rank for
