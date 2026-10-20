@@ -542,7 +542,9 @@ class PuffeSAC:
     Discounts include gamma. Truncated transitions need their pre-reset final
     observation, which Drive transports as a sparse private info record.
     batch_size is replay capacity. evaluate() fills remaining capacity with add(),
-    then replaces a replay_update_ratio fraction of distinct slots per call. It sends
+    then replaces a replay_update_ratio fraction of distinct slots per call.
+    Initial contents are evicted in a once-shuffled slot order; cycling through
+    that same order thereafter evicts incoming transitions FIFO. It sends
     every received row; global_step counts rank-local received slots and agent_steps
     is their synchronized global total. Both include reset, masked, and valid rows
     discarded after the insertion quota is reached.
@@ -674,6 +676,8 @@ class PuffeSAC:
         self.actions = torch.zeros(self.total_agents, device=self.device, dtype=torch.int64)
         self.pending = torch.zeros(self.total_agents, device=self.device, dtype=torch.bool)
         self.replay = replay
+        self.replay_eviction_order = None
+        self.replay_eviction_cursor = 0
 
         self.uncompiled_policy = policy.to(self.device, dtype=torch.float32)
         self.model_size = sum(
@@ -924,7 +928,12 @@ class PuffeSAC:
             insert_target = self.batch_size - replay_size
         else:
             insert_target = self.refresh_count
-            refresh_indices = torch.randperm(replay_size, device="cpu")[:insert_target]
+            if self.replay_eviction_order is None:
+                self.replay_eviction_order = torch.randperm(replay_size, device="cpu")
+            refresh_positions = (
+                torch.arange(insert_target, device="cpu") + self.replay_eviction_cursor
+            ) % replay_size
+            refresh_indices = self.replay_eviction_order[refresh_positions]
         received_budget = max(
             0, math.ceil((self.config["total_timesteps"] - self.agent_steps) / self.world_size)
         )
@@ -1001,6 +1010,9 @@ class PuffeSAC:
                         replace_indices, transition_observations, transition_actions, transition_rewards,
                         next_observations, discounts,
                     )
+                    self.replay_eviction_cursor = (
+                        self.replay_eviction_cursor + completed_rows.numel()
+                    ) % replay_size
                 valid_inserts += completed_rows.numel()
 
             profile("eval_misc", epoch)
