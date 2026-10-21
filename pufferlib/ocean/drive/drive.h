@@ -472,6 +472,7 @@ static void reset_agent_state(Agent *agent) {
     agent->displacement_sample_count = 0;
     agent->stopped = 0;
     agent->removed = 0;
+    agent->completed_goal_set = 0;
     agent->current_lane_idx = -1;
     agent->previous_lane_idx = -1;
     agent->current_route_idx = 0;
@@ -2099,8 +2100,13 @@ static void add_log(Drive *env) {
         episode_log.avg_speed_per_agent += avg_speed_per_agent / safe_timestep;
         int num_goals_reached = env->logs[i].num_goals_reached;
         episode_log.num_goals_reached += num_goals_reached;
-        // Score: 1 per agent that reached its full goal set without being removed/stopped.
-        if (num_goals_reached >= env->num_goals && !agent->removed && !agent->stopped) {
+        
+        // Score: 1 per agent that completed the goal set it was assigned and was never stopped.
+        // goal_count can be below num_goals when the route is short, so the assigned goal set is what the agent is evaluated on, not num_goals.
+        // An agent removed after completing its set (route exhausted, no regeneration possible) still counts.
+        int completed_assigned_goal_set = (num_goals_reached >= env->num_goals || agent->completed_goal_set) ? 1 : 0;
+        int removed_before_completion = (agent->removed && !agent->completed_goal_set) ? 1 : 0;
+        if (completed_assigned_goal_set && !removed_before_completion && !agent->stopped) {
             episode_log.score += 1.0f;
         }
         if (!offroad && !collided && !red_light_violations && num_goals_reached < 1) {
@@ -4666,6 +4672,9 @@ void c_step(Drive *env) {
         if (env->goal_regen_mode == GOAL_REGEN_ROLLING) {
             regen = !roll_goals(env, agent);
         } else if (agent->current_goal_idx >= agent->goal_count) {//else if (agent->current_goal_idx == agent->goal_count){
+            // All goals in the assigned set have been reached: record the set as completed before attempting regeneration
+            // so that the score credits the agent regardless of regeneration success, failure, or removal.
+            agent->completed_goal_set = 1;
             regen = true;
         } else {
             agent->current_goal_x = agent->list_goal_x[agent->current_goal_idx];
@@ -4689,6 +4698,7 @@ void c_step(Drive *env) {
         
         if (!regen_ok) {
             //fprintf(stderr, "[goal_regen] agent %d removed at t=%d after 32 attempts map=%s\n", agent_idx, env->timestep, env->map_name);            
+            // No further goal can be generated; the agent is removed from the simulation and completion is recorded.
             invalidate_agent(agent);
             agent->removed = 1;
         }
