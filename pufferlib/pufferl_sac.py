@@ -640,6 +640,7 @@ class PuffeSAC:
         self.config = config
         self.device = torch.device(pufferl.torch_device(config["device"]))
         self.vecenv = vecenv
+        self.behavior_policy = None
         self.batch_size = config["batch_size"]
         self.refresh_count = math.ceil(self.batch_size * config["replay_update_ratio"])
         if len(replay) > self.batch_size:
@@ -971,6 +972,12 @@ class PuffeSAC:
     @torch.no_grad()
     def evaluate(self):
         """Collect transitions directly from vecenv, matching PuffeRL.evaluate."""
+        behavior_policy = getattr(self, "behavior_policy", None)
+        boundary_step = None
+        if behavior_policy is not None:
+            begin_collection = getattr(behavior_policy, "begin_collection", None)
+            if begin_collection is not None:
+                boundary_step = begin_collection(self)
         if self.device.type == "cuda":
             torch.compiler.cudagraph_mark_step_begin()
         profile = self.profile
@@ -992,6 +999,11 @@ class PuffeSAC:
         received_budget = max(
             0, math.ceil((self.config["total_timesteps"] - self.agent_steps) / self.world_size)
         )
+        if boundary_step is not None:
+            boundary_budget = max(
+                0, math.ceil((boundary_step - self.agent_steps) / self.world_size)
+            )
+            received_budget = min(received_budget, boundary_budget)
         received_count_total = 0
         valid_inserts = 0
         for _ in range(received_budget):
@@ -1008,6 +1020,11 @@ class PuffeSAC:
             received_count_total += received_count
             self.global_step += received_count
 
+            transition_sources = None
+            if behavior_policy is not None:
+                source_hook = getattr(behavior_policy, "transition_sources", None)
+                if source_hook is not None:
+                    transition_sources = source_hook(env_ids, masks)
             transitions, infos = self.observe_transition(
                 observations, rewards, terminals, truncations, infos, env_ids, masks,
             )
@@ -1016,30 +1033,58 @@ class PuffeSAC:
             self.stats["obs/mean"].append(observations.mean().item())
 
             profile("eval_forward", epoch)
-            with self.amp_context:
-                logits = self.policy(observations)
-            actions, _, _, continuous_actions = self.pytorch.sample_logits(
-                logits.float(), env_continuous=self.env_continuous, policy=self.uncompiled_policy
-            )
+            if behavior_policy is None:
+                with self.amp_context:
+                    logits = self.policy(observations)
+                actions, _, _, continuous_actions = self.pytorch.sample_logits(
+                    logits.float(), env_continuous=self.env_continuous, policy=self.uncompiled_policy
+                )
+            else:
+                actions, continuous_actions = behavior_policy.sample_actions(self, observations)
+                actions = torch.as_tensor(actions, device=self.device, dtype=torch.long).reshape(-1)
+                if continuous_actions is not None:
+                    continuous_actions = torch.as_tensor(
+                        continuous_actions, device=self.device, dtype=torch.float32,
+                    )
 
+            transition_count = transitions[0].shape[0]
+            remaining_quota = insert_target - valid_inserts
+            selected_rows = None
+            if transition_count > remaining_quota:
+                selected_rows = torch.randperm(
+                    transition_count, device=transitions[0].device
+                )[:remaining_quota]
+                transitions = tuple(transition[selected_rows] for transition in transitions)
+            if transition_sources is not None and selected_rows is not None:
+                if torch.is_tensor(transition_sources):
+                    transition_sources = transition_sources[
+                        selected_rows.to(device=transition_sources.device)
+                    ]
+                else:
+                    transition_sources = np.asarray(transition_sources)[
+                        selected_rows.detach().cpu().numpy()
+                    ]
             transition_count = transitions[0].shape[0]
             if transition_count:
                 profile("eval_copy", epoch)
-                remaining_quota = insert_target - valid_inserts
-                if transition_count > remaining_quota:
-                    selected_rows = torch.randperm(
-                        transition_count, device=transitions[0].device
-                    )[:remaining_quota]
-                    transitions = tuple(transition[selected_rows] for transition in transitions)
-                transition_count = transitions[0].shape[0]
                 if replay_size < self.batch_size:
+                    insertion_start = len(self.replay)
+                    replay_indices = torch.arange(
+                        insertion_start, insertion_start + transition_count,
+                        dtype=torch.int64, device="cpu",
+                    )
                     self.replay.add(*transitions)
                 else:
                     replace_indices = refresh_indices[valid_inserts:valid_inserts + transition_count]
+                    replay_indices = replace_indices
                     self.replay.replace(replace_indices, *transitions)
                     self.replay_eviction_cursor = (
                         self.replay_eviction_cursor + transition_count
                     ) % replay_size
+                if transition_sources is not None and behavior_policy is not None:
+                    record_replay_sources = getattr(behavior_policy, "record_replay_sources", None)
+                    if record_replay_sources is not None:
+                        record_replay_sources(transition_sources, replay_indices)
                 valid_inserts += transition_count
 
             profile("eval_misc", epoch)
@@ -1055,6 +1100,10 @@ class PuffeSAC:
             # Copy before send can overwrite shared observations. Keep the final pending send.
             profile("eval_copy", epoch)
             self.record_actions(observations, actions, env_ids)
+            if behavior_policy is not None:
+                record_action_sources = getattr(behavior_policy, "record_action_sources", None)
+                if record_action_sources is not None:
+                    record_action_sources(env_ids)
 
             profile("env", epoch)
             if self.env_continuous:
@@ -1074,6 +1123,10 @@ class PuffeSAC:
             received_count_total, valid_inserts = deltas.tolist()
         self.agent_steps += received_count_total
         self.valid_inserts += valid_inserts
+        if behavior_policy is not None:
+            end_collection = getattr(behavior_policy, "end_collection", None)
+            if end_collection is not None:
+                end_collection(self)
         profile.end()
         return self.helpers.pufferlib.utils.reduce_environment_metrics(self.stats)
 
@@ -1356,6 +1409,11 @@ class PuffeSAC:
             **{f"losses/{key}": value for key, value in self.losses.items()},
             **{f"performance/{key}": value for key, value in performance.items()},
         }
+        behavior_policy = getattr(self, "behavior_policy", None)
+        if behavior_policy is not None:
+            metrics = getattr(behavior_policy, "metrics", None)
+            if metrics is not None:
+                logs.update(metrics())
         if self.rank != 0:
             return None
         self.logger.log(logs, self.agent_steps)
@@ -1468,7 +1526,7 @@ class PuffeSAC:
 
 
 def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=None,
-          replay=None, logger=None, early_stop_fn=None):
+          replay=None, logger=None, early_stop_fn=None, behavior_policy_factory=None):
     """Run Drive SAC from Hydra config or from explicitly injected components."""
     pufferl = None
     early_stop = False
@@ -1640,6 +1698,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
 
         pufferl = PuffeSAC(config, vecenv, policy, critic, replay, logger)
         cleanup_logger = pufferl.logger
+        if behavior_policy_factory is not None:
+            factory_startup_args = experiment_config if experiment_config is not None else args
+            pufferl.behavior_policy = behavior_policy_factory(pufferl, factory_startup_args)
         resume_state_path = pufferl.config["resume_state_path"]
         if resume_state_path is not None:
             pufferl.load_training_state(resume_state_path, same_run=auto_resume)

@@ -200,6 +200,8 @@ pufferlib/resources/drive/output_agent.gif pufferlib/resources/drive/output.gif 
 
 # Local artifacts and outputs
 artifacts/
+# Generated frozen-PPO behavior-policy SAC runs
+/project/soft_actor_critic_PPO_init_behavior_policy/runs/
 # Generated training and evaluation logs
 *.csv
 *.html

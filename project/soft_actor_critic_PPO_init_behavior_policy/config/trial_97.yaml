@@ -1,0 +1,273 @@
+run_name: sac
+load_model_path: null
+load_id: null
+export_path: null
+wandb: true
+wandb_project: pufferdrive_vanilla_sac_tuning
+wandb_group: sac_ppo_init_behavior_round4_1
+neptune: false
+neptune_name: pufferai
+neptune_project: ablations
+tb: false
+no_model_upload: false
+tag: null
+train:
+  seed: 0
+  final_model_name: final_model.pt
+  evaluation_interval_epochs: 10
+  evaluation_benchmarks: carla_fast
+  torch_deterministic: false
+  cpu_offload: true
+  device: cuda
+  optimizer: adamw
+  anneal_lr: false
+  amp: true
+  precision: bfloat16
+  total_timesteps: 1000000000
+  learning_rate: 0.0005
+  gamma: 0.999
+  update_epochs: 3
+  max_grad_norm: 0.5
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_eps: 1.0e-08
+  adam_weight_decay: 0.01
+  data_dir: experiments/pufferdrive_vanilla_sac_tuning
+  resume_state_path: null
+  checkpoint_interval: null
+  minibatch_size: 128000
+  max_minibatch_size: 32000
+  compile: true
+  compile_mode: default
+  compile_fullgraph: false
+  fresh_run: false
+  batch_size: 8192000
+  replay_update_ratio: 0.1
+  critic_learning_rate: 0.0005
+  alpha_learning_rate: 0.0003
+  initial_alpha: 0.1
+  target_entropy: 1.86368
+  tau: 0.005
+  learn_alpha: true
+vec:
+  backend: Multiprocessing
+  num_envs: 20
+  num_workers: auto
+  batch_size: 10
+  zero_copy: true
+  seed: 42
+  overwork: false
+max_runs: 4
+sweep:
+  method: Random
+  metric: score
+  goal: maximize
+  downsample: 5
+  train:
+    gamma:
+      distribution: categorical
+      values:
+      - 0.95
+      - 0.99
+      - 0.999
+    target_entropy:
+      distribution: categorical
+      values:
+      - 0.621227
+      - 1.242453
+      - 1.86368
+    update_epochs:
+      distribution: categorical
+      values:
+      - 3
+      - 15
+      - 50
+      - 100
+    replay_update_ratio:
+      distribution: categorical
+      values:
+      - 0.1
+      - 0.5
+      - 0.75
+controlled_exp:
+  train:
+    learning_rate: null
+    ent_coef: null
+    gamma:
+      values:
+      - 0.95
+      - 0.99
+      - 0.999
+    target_entropy:
+      values:
+      - 0.621227
+      - 1.242453
+      - 1.86368
+    update_epochs:
+      values:
+      - 3
+      - 15
+      - 50
+      - 100
+    replay_update_ratio:
+      values:
+      - 0.1
+      - 0.5
+      - 0.75
+profile:
+  total_timesteps: 20000
+autotune:
+  max_envs: 32
+  model_forward_s: 0.0
+  max_env_ram_gb: 16
+  max_batch_vram_gb: 0.05
+  time_per_test: 2
+env_name: puffer_drive
+package: ocean
+policy_name: DriveSAC
+rnn_name: null
+rnn:
+  input_size: 512
+  hidden_size: 512
+local_rank: 0
+policy:
+  action_type: discrete
+  shared_network: false
+  ego_input_size: 128
+  partner_input_size: 256
+  lane_input_size: 256
+  boundary_input_size: 256
+  traffic_control_input_size: 128
+  context_input_size: 128
+  encoder_activation: relu
+  encoder_layer_norm: true
+  mask_padded_features: false
+  backbone_hidden_size: 1024
+  backbone_num_layers: 3
+  backbone_activation: gelu
+  backbone_layer_norm: false
+  actor_hidden_size: 256
+  actor_num_layers: 1
+  actor_head_layer_norm: false
+  critic_hidden_size: 256
+  critic_num_layers: 1
+  critic_head_layer_norm: false
+env:
+  simulation_mode: gigaflow
+  num_agents: 3200
+  min_agents_per_env: 1
+  max_agents_per_env: 120
+  action_type: continuous
+  dynamics_model: jerk
+  reset_accel_on_stop: false
+  dt: 0.3
+  resample_replay_to_dt: false
+  capture_final_observations: false
+  spawn_initial_speed: 0.0
+  collision_behavior: stop
+  offroad_behavior: stop
+  traffic_light_behavior: stop
+  use_map_cache: 1
+  use_neighbor_cache: 1
+  scenario_length: 2560
+  resample_frequency: 256000
+  termination_mode: 1
+  inactive_agent_threshold: 0.4
+  terminate_on_goal: 0
+  init_step: 0
+  init_step_spread: false
+  init_step_min_horizon: 20
+  control_mode: control_vehicles
+  sdc_controller: policy
+  non_sdc_controller: policy
+  non_vehicle_controller: auto
+  init_mode: create_all_valid
+  compute_eval_metrics: false
+  goal_regen_mode: finite
+  goal_source: map
+  obs_goal_lane_distance: true
+  goal_radius: 2.0
+  goal_speed: 3.0
+  num_goals: 3
+  min_goal_spacing: 20.0
+  max_goal_spacing: 200.0
+  reward_conditioning: true
+  reward_randomization: true
+  reward_log_sampling: false
+  reward_goal: 1.0
+  reward_collision: 1.5
+  reward_offroad: 1.5
+  reward_stop_line: 1.0
+  reward_comfort: 0.05
+  reward_lane_align: 0.025
+  reward_vel_align: 1.0
+  reward_lane_center: 0.001
+  reward_center_bias: 0.0
+  reward_velocity: 0.0025
+  reward_reverse: 0.005
+  reward_timestep: 2.5e-05
+  reward_overspeed: 0.05
+  reward_ade: 0.0
+  map_dir: pufferlib/resources/drive/binaries/carla
+  num_maps: 8
+  obs_slots_lane_n: 70
+  obs_slots_boundary_n: 50
+  obs_slots_partners_n: 16
+  obs_slots_traffic_controls_n: 4
+  obs_dropout_lane: 0.3
+  obs_dropout_boundary: 0.4
+  obs_lane_stride: 2
+  obs_boundary_stride: 1
+  obs_norm_goal_offset_m: 200.0
+  obs_norm_xy_offset_m: 200.0
+  obs_norm_veh_length_m: 10.0
+  obs_norm_veh_width_m: 5.0
+  obs_norm_road_seg_length_m: 10.0
+  obs_norm_road_seg_width_m: 5.0
+  obs_norm_z_m: 10.0
+  eval_perceived_size_margin_m: 0.1
+  obs_range_road_front_m: 200.0
+  obs_range_road_behind_m: 60.0
+  obs_range_road_side_m: 50.0
+  obs_range_partner_m: 200.0
+  obs_range_traffic_control_m: 200.0
+  partner_blindness_prob: 0.02
+  partner_blindness_trigger_prob: 0.03
+  partner_blindness_duration_seconds: 3.0
+  phantom_braking_prob: 0.02
+  phantom_braking_trigger_prob: 0.03
+  phantom_braking_duration_seconds: 3.0
+eval:
+  num_agents: 128
+  max_sdc_replay_workers: 4
+  benchmark_config: project/baseline_run_sync_2026-08-24/override_config/evaluation_benchmarks.yaml
+  benchmarks: null
+  output_name: null
+  output_dir_name: eval
+  render_scenarios: false
+  render_filter: null
+  max_rendered_failures: null
+  failure_replay_csv: null
+  capture_observations: false
+  observation_replay_wave_size: 16
+  observation_replay_writer_count: 4
+  action_selection: mean
+render_mode: auto
+video_path: videos
+num_scenarios: 3
+render: 0
+agent_index: null
+save_frames: 0
+gif_path: eval.gif
+fps: 15
+eval_simulation: null
+max_suggestion_cost: 3600
+behavior_policy:
+  checkpoint: experiments/ppo_sac_seed0_20261019_222638/ppo/best_models/best_trainer_state_000123.pt
+  teacher_config: experiments/ppo_sac_seed0_20261019_222638/ppo/config.yaml
+  ppo_only_steps: 250000000
+  decay_steps: 250000000
+  total_steps: 1000000000
+  seed: 0
+  source: project/soft_actor_critic_tuning/configs/round4_1
+  source_trial: 97
