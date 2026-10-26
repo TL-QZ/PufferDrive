@@ -735,6 +735,9 @@ class PuffeSAC:
         self.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             self.critic_optimizer, T_max=scheduler_steps
         )
+        self.alpha_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            self.alpha_optimizer, T_max=scheduler_steps
+        )
         self.total_epochs = scheduler_steps
         if self.rank != 0:
             logger = None
@@ -832,6 +835,16 @@ class PuffeSAC:
             getattr(self, name).load_state_dict(state[f"{name}_state_dict"])
         self.scheduler.load_state_dict(state["scheduler_state_dict"])
         self.critic_scheduler.load_state_dict(state["critic_scheduler_state_dict"])
+        if "alpha_scheduler_state_dict" in state:
+            self.alpha_scheduler.load_state_dict(state["alpha_scheduler_state_dict"])
+        else:
+            # Legacy checkpoints used constant alpha LR. Start its schedule at
+            # that restored rate rather than retroactively applying past decay.
+            for group in self.alpha_optimizer.param_groups:
+                group["initial_lr"] = group["lr"]
+            self.alpha_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                self.alpha_optimizer, T_max=self.scheduler.T_max
+            )
         self.total_epochs = self.scheduler.T_max
         for name in ("epoch", "valid_inserts", "learner_updates", "sampled_transitions", "best_score"):
             setattr(self, name, state[name])
@@ -1163,6 +1176,9 @@ class PuffeSAC:
                 self.scheduler.step()
             if self.critic_scheduler.last_epoch < self.critic_scheduler.T_max:
                 self.critic_scheduler.step()
+            if (update_policy and self.config["learn_alpha"]
+                    and self.alpha_scheduler.last_epoch < self.alpha_scheduler.T_max):
+                self.alpha_scheduler.step()
         profile.end()
 
         self.losses = losses
@@ -1401,6 +1417,7 @@ class PuffeSAC:
             "uptime": self.uptime,
             "epoch": self.epoch,
             "learning_rate": self.optimizer.param_groups[0]["lr"],
+            "alpha_learning_rate": self.alpha_optimizer.param_groups[0]["lr"],
             "replay/size": len(self.replay),
             "replay/valid_inserts": self.valid_inserts,
             "replay/sampled_transitions": self.sampled_transitions,
@@ -1487,6 +1504,7 @@ class PuffeSAC:
             "alpha_optimizer_state_dict": self.alpha_optimizer.state_dict(),
             "scheduler_state_dict": self.scheduler.state_dict(),
             "critic_scheduler_state_dict": self.critic_scheduler.state_dict(),
+            "alpha_scheduler_state_dict": self.alpha_scheduler.state_dict(),
             "global_step": self.global_step,
             "agent_steps": self.agent_steps,
             "epoch": self.epoch,

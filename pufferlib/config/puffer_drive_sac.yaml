@@ -44,6 +44,7 @@ train:
   learn_alpha: true
   target_entropy: null
   tau: 0.005
+  # Cosine-decay actor, critic, and (when learn_alpha=true) alpha learning rates.
   anneal_lr: false
   checkpoint_interval: 50
   final_model_name: final_model.pt

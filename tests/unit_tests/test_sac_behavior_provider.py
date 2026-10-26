@@ -219,6 +219,7 @@ def test_provider_metrics_are_added_to_native_logger_payload():
     learner.start_time = time.time()
     learner.device = torch.device("cpu")
     learner.optimizer = SimpleNamespace(param_groups=[{"lr": 0.1}])
+    learner.alpha_optimizer = SimpleNamespace(param_groups=[{"lr": 0.002}])
     learner.replay = TensorReplay(2, (2,))
     learner.valid_inserts = 0
     learner.sampled_transitions = 0
@@ -232,6 +233,7 @@ def test_provider_metrics_are_added_to_native_logger_payload():
     learner.behavior_policy = _Provider()
 
     logs = learner.mean_and_log()
+    assert logs["alpha_learning_rate"] == 0.002
 
     assert logs["behavior/provider_calls"] == 0.0
     assert logged[0][0]["behavior/provider_calls"] == 0.0

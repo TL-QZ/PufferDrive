@@ -120,6 +120,9 @@ def _make_update_learner(*, learn_alpha):
     learner.critic_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         learner.critic_optimizer, T_max=5,
     )
+    learner.alpha_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        learner.alpha_optimizer, T_max=5,
+    )
     learner.config = {
         "update_epochs": 1,
         "target_entropy": 0.7,

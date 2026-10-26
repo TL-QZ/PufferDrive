@@ -1,0 +1,40 @@
+# SAC-specific learner and replay configuration
+# Settings specific to this SAC route compared with the PPO route. Replay and
+# target-network controls are also used by other off-policy algorithms.
+# train.batch_size is included because here it means replay capacity, whereas
+# PPO uses that name for its rollout batch. Shared gamma, actor learning_rate,
+# minibatch_size, the base update_epochs and optimizer settings stay in SAC_tunable_config.yaml.
+# Round 5 compares paired original and reduced actor, critic, and temperature rates
+# at both replay refresh ratios. The run config selects the six paired grid IDs.
+# Workflow controls stay tunable.
+# Deep-merge SAC_fixed_config.yaml, SAC_tunable_config.yaml and this file.
+# These are partial configs; the CLI does not automatically load them.
+
+
+train:
+  # Round 2 replay capacity, retained exactly for a controlled learning-rate comparison.
+  batch_size: 512000
+  # Fraction of replay replaced each evaluate cycle after initial fill; (0, 1]. Quota = ceil(batch_size * ratio), with FIFO eviction after a once-shuffled initial eviction order.
+  replay_update_ratio: 0.1
+  # Twin-critic optimizer learning rate; match PPO's non-swept model optimizer LR.
+  critic_learning_rate: 0.0005
+  # Temperature log-alpha Adam learning rate (>0); temperature always uses Adam.
+  alpha_learning_rate: 0.0003
+  # Initial entropy temperature (>0); subsequently learned automatically.
+  initial_alpha: 0.1
+  # null = 0.98 * log(K), in nats, where K is the number of action classes. Explicit value must be in [0, log(K)].
+  target_entropy: 1.863680
+  # Target-critic Polyak coefficient in (0, 1]: target <- (1-tau)*target + tau*online after each learner update.
+  tau: 0.005
+
+controlled_exp:
+  train:
+    # Axis order defines the six paired candidates selected by the round-5 run config.
+    replay_update_ratio:
+      values: [0.1, 0.5]
+    learning_rate:
+      values: [0.0005, 0.0001, 0.00005]
+    critic_learning_rate:
+      values: [0.0005, 0.0001, 0.00005]
+    alpha_learning_rate:
+      values: [0.0003, 0.0001, 0.00003]

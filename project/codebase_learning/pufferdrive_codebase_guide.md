@@ -713,10 +713,191 @@ reward_randomization: true
 This is important. `generate_reward_coefs()` samples selected coefficients from C's `REWARD_BOUNDS` (or
 `REWARD_BOUNDS_LOG` when requested), not from a range implied by each scalar YAML reward value.
 Goal radius/speed and dynamics conditioning are included among the 17 coefficients; not all 17 are additive rewards.
-Velocity and timestep coefficients are fixed in the randomized branch. With randomization off, configured
+Velocity and timestep coefficients are fixed at `0.0025` and `0.000025` in the randomized branch. With randomization off, configured
 scalar values supply the coefficients and dynamics scales are 1. Those coefficients are also
 included in the observation, so the same neural network can learn a family of behaviors/styles. This matches the
 GigaFlow idea of one parameterized policy producing varied behavior.
+
+### Exact Per-Step Reward Definitions
+
+The formulas below describe the contributions added to `env->rewards[i]` by
+[`compute_rewards()`](../../pufferlib/ocean/drive/drive.h#L3557). Inputs such as lane alignment,
+comfort violations, and overspeed are calculated by
+[`compute_metrics()`](../../pufferlib/ocean/drive/drive.h#L3242).
+Both PPO and SAC receive this simulator reward.
+
+| Symbol | Meaning |
+|---|---|
+| `c_x` | This agent's actual coefficient for component `x`, after coefficient generation. |
+| `dt` | Simulation step duration in seconds. |
+| `v`, `v_signed` | Speed magnitude and signed speed in m/s. |
+| `z` | Cosine of the heading difference from the selected lane. |
+| `theta` | `acos(clamp(z, -1, 1))`: absolute heading error in radians. |
+| `d` | Signed lateral distance from lane center in meters: left negative, right positive. |
+| `I(condition)` | 1 when the condition holds, otherwise 0. |
+
+`c_x` maps to `agent->reward_coefs[REWARD_COEF_X]`. Goal reward and ADE instead use
+the environment scalars `env->reward_goal` and `env->reward_ade` directly.
+Check the run's resolved `reward_randomization` setting before interpreting scalar YAML coefficients.
+
+#### Event Rewards: Collision, Offroad, Red Light, Goal
+
+| Component | Contribution when its event fires; zero otherwise |
+|---|---|
+| `collision` | `-(c_collision + 0.1 * v)` |
+| `offroad` | `-c_offroad` |
+| `red_light` | `-c_stop_line` |
+| `goal` | `env.reward_goal`, except zero at the final waypoint when `v > c_goal_speed`. |
+
+Source: [event reward contributions](../../pufferlib/ocean/drive/drive.h#L3562).
+For example, a collision at 10 m/s with `c_collision = 1.5` contributes `-2.5`.
+Collision cost depends on speed magnitude, not relative impact speed.
+
+A goal fires when the planar distance from the goal to the vehicle's movement segment for this step
+is strictly less than `c_goal_radius`, and the vertical distance is strictly less than
+`Z_BUFFER = 4 m`. The swept movement-segment test prevents skipping a goal between steps.
+The goal index advances before the final-waypoint speed check.
+
+Event detection has priority `offroad -> collision -> red_light -> goal`: early returns prevent
+the later events from firing on that step. Dense shaping rewards can still accompany an infraction.
+See [event detection](../../pufferlib/ocean/drive/drive.h#L3490).
+
+#### Lane Alignment
+
+```text
+against_lane = min(z, 0)
+velocity_against_lane = c_vel_align * min(z * v_signed, 0)
+heading_bonus = 0.0025 * (1 - theta / (pi / 2))
+
+r_lane_align = c_lane_align * dt * (against_lane + velocity_against_lane + heading_bonus)
+```
+
+Facing against the lane makes the first term negative. Velocity against the lane direction makes
+the second term negative. The heading term is positive below 90 degrees of error, zero at 90 degrees,
+and negative beyond 90 degrees. Perfect alignment while moving forward leaves only the small
+`0.0025` heading bonus. Source: [lane alignment](../../pufferlib/ocean/drive/drive.h#L3598).
+
+#### Lane Centering
+
+```text
+offset = abs(d - c_center_bias)
+center_bonus = 0.05 * exp(-(offset - 0.5))
+
+r_lane_center = -c_lane_center * dt * (I(z > 0.5) * offset - center_bonus)
+```
+
+The distance penalty applies only when heading error is strictly below 60 degrees.
+The exponentially decaying bonus remains even when that condition is false. At the preferred
+lateral position, this component is slightly positive.
+Source: [lane centering](../../pufferlib/ocean/drive/drive.h#L3612).
+
+If lane selection finds no lane, the metrics use `d = 4 m` and `z = 0`; those values feed both
+lane reward formulas. The selected lane uses a distance/heading score with a lane-switch penalty,
+so it is not necessarily the geometrically nearest lane.
+
+#### Velocity / Forward Progress
+
+```text
+progress = max(z, 0) if v_signed > 2.5 m/s and a lane is assigned else 0
+r_velocity = c_velocity * dt * progress
+```
+
+This reward does not increase with speed above the threshold. With identical alignment,
+3 m/s and 15 m/s earn the same contribution per step. It is not distance travelled.
+Sources: [progress metric](../../pufferlib/ocean/drive/drive.h#L3471),
+[velocity reward](../../pufferlib/ocean/drive/drive.h#L3630).
+
+#### Comfort, Timestep, Reverse, Overspeed
+
+| Component | Exact per-step contribution |
+|---|---|
+| `comfort` | `-c_comfort * violation_count`, defined below. |
+| `timestep` | `-c_timestep * dt` if `v > 0.01 m/s` or acceleration magnitude exceeds `0.01 m/s^2`; otherwise zero. |
+| `reverse` | `-c_reverse * dt` if `v_signed < -0.01 m/s`; otherwise zero. |
+| `overspeed` | `-c_overspeed` if `v > speed_limit + 2 m/s`; otherwise zero. |
+
+```text
+acceleration_magnitude = sqrt(accel_long^2 + accel_lat^2)
+
+violation_count = I(abs(accel_long) > 3 m/s^2)
+                + I(abs(accel_lat) > 3 m/s^2)
+                + I(abs(jerk_long) > 5 m/s^3 OR abs(jerk_lat) > 5 m/s^3)
+```
+
+Comfort therefore counts up to three violations per step. Both jerk axes together count as one
+violation, whereas the two acceleration axes count separately.
+
+The speed limit is the selected lane's positive speed limit. If no lane is selected or its speed
+limit is not positive, the fallback is `15 m/s`, so the penalty starts strictly above `17 m/s`.
+Overspeed is binary: exceeding the limit by 3 m/s and 10 m/s produces the same per-step penalty.
+Sources: [metric thresholds](../../pufferlib/ocean/drive/drive.h#L3459),
+[reward contributions](../../pufferlib/ocean/drive/drive.h#L3624).
+
+#### Average Displacement Error (ADE)
+
+In replay simulation mode, displacement error is the planar Euclidean distance from the recorded
+reference position at the current timestep:
+
+```text
+error_t = sqrt((sim_x - reference_x)^2 + (sim_y - reference_y)^2)
+```
+
+When the reference sample is valid and `error_t > 0`, the simulator adds it to a cumulative sum
+and increments a sample count. The current ADE metric becomes that sum divided by that count.
+Zero errors do not enter either the sum or the count. Metrics reset each step, so a step without
+a positive valid error leaves the current ADE metric at zero, even if earlier samples exist.
+
+```text
+r_ade = env.reward_ade * current_ade
+```
+
+This contribution applies when `current_ade > 0` and `env.reward_ade != 0`.
+It uses the running average error each eligible step, not the instantaneous error or just the final
+episode ADE. A negative coefficient penalizes deviation; a positive coefficient rewards it.
+The base configuration sets `reward_ade: 0.0`, disabling this contribution.
+Sources: [reference displacement](../../pufferlib/ocean/drive/drive.h#L1275),
+[running ADE](../../pufferlib/ocean/drive/drive.h#L3258),
+[ADE reward](../../pufferlib/ocean/drive/drive.h#L3655).
+
+### Time Scaling And Episode Logging
+
+| Explicit `dt` multiplier | Components |
+|---|---|
+| Yes | `lane_align`, `lane_center`, `velocity`, `timestep`, `reverse` |
+| No | `collision`, `offroad`, `red_light`, `goal`, `comfort`, `overspeed`, `ade` |
+
+Comfort, overspeed, and ADE can contribute repeatedly without a `dt` multiplier. Their episode
+totals depend on the number of eligible steps; changing `dt` can change their balance against
+time-scaled rewards, even for comparable physical trajectories.
+
+```text
+step_reward = sum(component_reward for every component)
+episode_return = sum(step_reward over the agent episode)
+episode_component = sum(that component's reward over the agent episode)
+```
+
+Agents already stopped or removed are skipped by the reward loop. A step that causes an infraction
+still receives its reward: the loop checks eligibility before `compute_metrics()` can mark the
+agent stopped or removed, then calls `compute_rewards()`.
+See [reward loop](../../pufferlib/ocean/drive/drive.h#L4578).
+
+`environment/reward_components/*` records signed episode contributions after coefficient application;
+these are not event counts, per-step means, or unweighted physical measurements. For example,
+`reward_components/collision = -0.8` is an average accumulated reward contribution, not an 80%
+collision rate. Up to floating-point rounding, the component metrics sum to `environment/episode_return`.
+Neither includes discounting by `gamma`, SAC entropy bonuses, or learner-side reward transformations.
+
+At scenario completion/reset, `add_log()` aggregates agent episode totals. `vec_log()` divides by
+the number of represented agent episodes. The trainer then averages received report values over
+its logging window; SAC combines report sums/counts across ranks. Reports have equal weight even
+when their episode counts differ, so the dashboard is not necessarily an exact episode-weighted
+global average. These metrics describe newly reported completed episodes, not replay-buffer contents.
+An episode can span collection calls: its report includes rewards accumulated before the latest call.
+Sources: [episode accumulation](../../pufferlib/ocean/drive/drive.h#L2098),
+[report averaging](../../pufferlib/ocean/env_binding.h#L755),
+[SAC metric reduction](../../pufferlib/pufferl_sac.py#L1352).
+
+### Erratic Agents
 
 Erratic-agent features:
 

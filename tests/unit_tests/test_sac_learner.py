@@ -253,6 +253,40 @@ def _make_checkpoint_learner(monkeypatch, tmp_path, replay=None, vecenv=None, **
     )
 
 
+def _make_scheduler_learner(monkeypatch, tmp_path, **config_updates):
+    config = {
+        "batch_size": 7,
+        "minibatch_size": 7,
+        "max_minibatch_size": 7,
+        "total_timesteps": 8,
+        "replay_update_ratio": 0.5,
+        "anneal_lr": True,
+        "checkpoint_interval": None,
+        **config_updates,
+    }
+    learner = _make_checkpoint_learner(
+        monkeypatch, tmp_path, replay=_make_replay(), **config,
+    )
+    learner.agent_steps = 1
+    learner.global_step = 1
+    learner.last_log_time = float("inf")
+    monkeypatch.setattr(pufferl, "dist_sum", lambda *_args: 0)
+    return learner
+
+
+def _stub_train_updates(learner, update_count):
+    def train_transition(*_args, update_policy=True, **_kwargs):
+        if update_count:
+            learner.critic_optimizer.step()
+            if update_policy:
+                learner.optimizer.step()
+                if learner.config["learn_alpha"]:
+                    learner.alpha_optimizer.step()
+        return update_count
+
+    learner._train_sac_transition = train_transition
+
+
 class _CollectVecEnv(_FakeVecEnv):
     def __init__(self):
         super().__init__()
@@ -373,6 +407,116 @@ def test_old_version_five_checkpoint_uses_legacy_optimizer_defaults(monkeypatch,
     assert learner.config["adam_eps"] == 1e-8
     assert learner.config["adam_weight_decay"] == 0.0
     assert learner.config["max_grad_norm"] is None
+
+
+@pytest.mark.parametrize(
+    "anneal_lr, learn_alpha, update_policy, updates, expected_epoch_deltas",
+    [
+        (True, True, True, 4, (1, 1, 1)),
+        (False, True, True, 4, (0, 0, 0)),
+        (True, False, True, 4, (1, 1, 0)),
+        (True, True, False, 4, (0, 1, 0)),
+        (True, True, True, 0, (0, 0, 0)),
+    ],
+)
+def test_train_gates_alpha_cosine_scheduler_with_policy_updates(
+        monkeypatch, tmp_path, anneal_lr, learn_alpha, update_policy, updates, expected_epoch_deltas):
+    learner = _make_scheduler_learner(
+        monkeypatch,
+        tmp_path,
+        anneal_lr=anneal_lr,
+        learn_alpha=learn_alpha,
+        alpha_learning_rate=0.006,
+    )
+    _stub_train_updates(learner, updates)
+    schedulers = (learner.scheduler, learner.critic_scheduler, learner.alpha_scheduler)
+    initial_epochs = tuple(scheduler.last_epoch for scheduler in schedulers)
+
+    assert {scheduler.T_max for scheduler in schedulers} == {2}
+    learner.train(update_policy=update_policy)
+
+    assert tuple(
+        scheduler.last_epoch - initial for scheduler, initial in zip(schedulers, initial_epochs)
+    ) == expected_epoch_deltas
+    if expected_epoch_deltas == (1, 1, 1):
+        assert learner.alpha_optimizer.param_groups[0]["lr"] == pytest.approx(0.003)
+        learner.train()
+        alpha_lr_at_limit = learner.alpha_optimizer.param_groups[0]["lr"]
+        learner.train()
+        assert learner.alpha_scheduler.last_epoch == learner.alpha_scheduler.T_max
+        assert learner.alpha_optimizer.param_groups[0]["lr"] == alpha_lr_at_limit
+
+
+def test_alpha_scheduler_checkpoint_round_trip(monkeypatch, tmp_path):
+    learner = _make_scheduler_learner(monkeypatch, tmp_path)
+    _stub_train_updates(learner, 3)
+    learner.train()
+    expected_scheduler_state = learner.alpha_scheduler.state_dict()
+    expected_alpha_lr = learner.alpha_optimizer.param_groups[0]["lr"]
+
+    learner.save_checkpoint()
+    saved_state = torch.load(tmp_path / "trainer_state.pt", map_location="cpu", weights_only=False)
+    assert saved_state["alpha_scheduler_state_dict"] == expected_scheduler_state
+
+    restored = _make_checkpoint_learner(
+        monkeypatch,
+        tmp_path,
+        replay=TensorReplay(7, (3,)),
+        batch_size=7,
+        minibatch_size=7,
+        max_minibatch_size=7,
+        total_timesteps=8,
+        replay_update_ratio=0.5,
+        anneal_lr=True,
+        checkpoint_interval=None,
+    )
+    restored.load_training_state(tmp_path / "trainer_state.pt")
+
+    assert restored.alpha_scheduler.state_dict() == expected_scheduler_state
+    assert restored.alpha_optimizer.param_groups[0]["lr"] == pytest.approx(expected_alpha_lr)
+
+
+def test_legacy_checkpoint_starts_alpha_schedule_at_restored_rate_and_actor_horizon(
+        monkeypatch, tmp_path):
+    checkpoint_config = {
+        "batch_size": 7,
+        "minibatch_size": 7,
+        "total_timesteps": 16,
+        "replay_update_ratio": 0.5,
+        "anneal_lr": True,
+        "checkpoint_interval": None,
+    }
+    source = _make_checkpoint_learner(monkeypatch, tmp_path, **checkpoint_config)
+    assert source.scheduler.T_max == 4
+    source.alpha_optimizer.param_groups[0]["lr"] = 0.0017
+    legacy_path = tmp_path / "legacy_alpha_schedule.pt"
+    torch.save(_old_version_five_checkpoint(source), legacy_path)
+
+    restored = _make_checkpoint_learner(
+        monkeypatch,
+        tmp_path,
+        replay=TensorReplay(7, (3,)),
+        **{**checkpoint_config, "total_timesteps": 32},
+    )
+    restored.load_training_state(legacy_path)
+
+    assert restored.alpha_scheduler.T_max == restored.scheduler.T_max == 4
+    assert restored.alpha_scheduler.last_epoch == 0
+    assert restored.alpha_optimizer.param_groups[0]["lr"] == pytest.approx(0.0017)
+    assert restored.alpha_scheduler.base_lrs == pytest.approx([0.0017])
+
+    restored.replay.add(*_make_replay().get_batch(torch.arange(7)))
+    restored.agent_steps = 1
+    restored.global_step = 1
+    restored.last_log_time = float("inf")
+    monkeypatch.setattr(pufferl, "dist_sum", lambda *_args: 0)
+    _stub_train_updates(restored, 1)
+    restored.train()
+
+    assert restored.alpha_scheduler.last_epoch == 1
+    assert restored.alpha_optimizer.param_groups[0]["lr"] == pytest.approx(
+        0.0017 * (1 + np.cos(np.pi / 4)) / 2
+    )
 
 
 def test_cpu_bfloat16_autocasts_networks_and_keeps_sac_arithmetic_float32(monkeypatch, tmp_path):

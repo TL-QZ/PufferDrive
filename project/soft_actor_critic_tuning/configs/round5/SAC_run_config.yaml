@@ -1,0 +1,24 @@
+# Native Cartesian grid; select only matching actor/critic/temperature rate pairs.
+launcher:
+  trial_ids: [1, 14, 27, 28, 41, 54]
+  # Evaluate after one nominal replay turnover: 10 cycles at .1, 2 at .5.
+  trial_evaluation_interval_epochs:
+    1: 10
+    14: 10
+    27: 10
+    28: 2
+    41: 2
+    54: 2
+  # No wall-time deadline: each trial trains through its 2B agent-row budget.
+  trial_hours: null
+  grace_seconds: 600
+  smoke_trial_seconds: 60
+  smoke_grace_seconds: 600
+  gpu_pairs:
+    - [0]
+    - [1]
+    - [2]
+    - [3]
+    - [4]
+    - [5]
+  max_concurrent: 6

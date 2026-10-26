@@ -174,6 +174,24 @@ def _validate_launcher(profile, gpu_pairs, max_concurrent, trial_hours):
     return grace_seconds
 
 
+def _validate_trial_total_timesteps(values, trial_count):
+    if not isinstance(values, dict):
+        raise ValueError("launcher.trial_total_timesteps must be a trial-ID mapping")
+    for trial_id, total_timesteps in values.items():
+        if (
+            isinstance(trial_id, bool) or not isinstance(trial_id, int)
+            or not 1 <= trial_id <= trial_count
+            or isinstance(total_timesteps, bool)
+            or not isinstance(total_timesteps, int)
+            or total_timesteps <= 0
+        ):
+            raise ValueError(
+                "launcher.trial_total_timesteps requires valid integer trial IDs "
+                "and positive integer budgets"
+            )
+    return values
+
+
 def _smoke_config(config):
     smoke = deepcopy(config)
     smoke["env"].update(
@@ -619,6 +637,9 @@ def main(argv=None):
                 "launcher.trial_evaluation_interval_epochs requires valid integer trial IDs "
                 "and positive integer intervals"
             )
+    trial_total_timesteps = _validate_trial_total_timesteps(
+        launcher.get("trial_total_timesteps", {}), trial_count,
+    )
 
     configured_gpu_pairs = ";".join(",".join(map(str, pair)) for pair in launcher["gpu_pairs"])
     gpu_pairs = _parse_gpu_pairs(configured_gpu_pairs if args.gpu_pairs is None else args.gpu_pairs)
@@ -677,6 +698,8 @@ def main(argv=None):
                 _set_dotted(resolved, path, value)
             if trial_id in trial_evaluation_intervals:
                 resolved["train"]["evaluation_interval_epochs"] = trial_evaluation_intervals[trial_id]
+            if trial_id in trial_total_timesteps:
+                resolved["train"]["total_timesteps"] = trial_total_timesteps[trial_id]
             if args.smoke:
                 resolved = _smoke_config(resolved)
                 _disable_loggers(resolved)
@@ -696,6 +719,7 @@ def main(argv=None):
                 trial_dir=str(trial_dir.resolve()),
                 _resolved_config=resolved,
                 evaluation_interval_epochs=resolved["train"].get("evaluation_interval_epochs"),
+                total_timesteps=resolved["train"]["total_timesteps"],
                 command=command,
                 log_command=_trial_command_for_log(command, gpu_pair, args.no_wandb or args.smoke),
             )
