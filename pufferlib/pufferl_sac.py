@@ -10,6 +10,8 @@ from collections import defaultdict
 import copy
 from contextlib import nullcontext
 import glob
+import hashlib
+import json
 import math
 import numbers
 import os
@@ -20,6 +22,8 @@ import signal
 import sys
 import time
 import traceback
+from urllib.parse import quote
+import uuid
 import warnings
 from types import SimpleNamespace
 
@@ -243,6 +247,77 @@ def _load_actor_weights(policy, model_path, device, ppo):
     """Load a local actor artifact without restoring any SAC learner state."""
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
     policy.load_state_dict(ppo.clean_policy_state_dict(state_dict))
+
+
+def _evaluation_checkpoint_candidate(result):
+    """Return a finite, non-empty benchmark summary suitable for selection."""
+    if not isinstance(result, dict):
+        return None
+    episodes = result.get("episodes")
+    summary = result.get("summary")
+    if not isinstance(episodes, (list, tuple)) or not episodes or not isinstance(summary, dict):
+        return None
+    episode_count = summary.get("num_episodes", len(episodes))
+    if (not isinstance(episode_count, numbers.Integral) or isinstance(episode_count, bool)
+            or episode_count <= 0):
+        return None
+    metrics_mean = summary.get("metrics_mean")
+    if not isinstance(metrics_mean, dict):
+        return None
+    score = metrics_mean.get("puffer_score")
+    if not isinstance(score, numbers.Real) or isinstance(score, bool):
+        return None
+    score = float(score)
+    if not math.isfinite(score):
+        return None
+
+    scalar_metrics = {
+        metric_name: metric_value if isinstance(metric_value, bool) else float(metric_value)
+        for metric_name, metric_value in metrics_mean.items()
+        if isinstance(metric_name, str)
+        and isinstance(metric_value, numbers.Real)
+        and (isinstance(metric_value, bool) or math.isfinite(float(metric_value)))
+    }
+    summary_snapshot = {
+        "num_episodes": int(episode_count),
+        "metrics_mean": scalar_metrics,
+    }
+    scenario_count = summary.get("num_scenarios")
+    if isinstance(scenario_count, numbers.Integral) and not isinstance(scenario_count, bool):
+        summary_snapshot["num_scenarios"] = int(scenario_count)
+    return {"score": score, "summary": summary_snapshot}
+
+
+def _save_raw_actor_state(actor, actor_path):
+    """Atomically save the raw actor state dict expected by standalone eval."""
+    temporary_path = actor_path.parent / f".{actor_path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        torch.save(actor.state_dict(), temporary_path)
+        os.replace(temporary_path, actor_path)
+    except BaseException:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _atomic_write_json(json_path, value):
+    """Publish a JSON manifest with a same-directory atomic replacement."""
+    temporary_path = json_path.parent / f".{json_path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with temporary_path.open("w", encoding="utf-8") as json_file:
+            json.dump(value, json_file, sort_keys=True, allow_nan=False)
+            json_file.write("\n")
+            json_file.flush()
+            os.fsync(json_file.fileno())
+        os.replace(temporary_path, json_path)
+    except BaseException:
+        try:
+            temporary_path.unlink()
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def _portable_actor_config(source_args):
@@ -1539,6 +1614,105 @@ class PuffeSAC:
             print(f"New best model saved at epoch {self.epoch} with score {self.best_score:.4f}")
         return str(model_path)
 
+    def save_evaluation_checkpoint(self, benchmark_results):
+        """Persist per-benchmark eval winners and the latest learner resume state."""
+        if self.rank != 0:
+            return None
+        if not isinstance(benchmark_results, dict):
+            return None
+
+        candidates = {}
+        for benchmark_name, result in benchmark_results.items():
+            if not isinstance(benchmark_name, str) or not benchmark_name:
+                continue
+            candidate = _evaluation_checkpoint_candidate(result)
+            if candidate is not None:
+                candidates[benchmark_name] = candidate
+
+        if not candidates:
+            return None
+
+        data_dir = Path(self.config["data_dir"])
+        manifest_path = data_dir / "best_evaluation.json"
+        if manifest_path.exists():
+            with manifest_path.open("r", encoding="utf-8") as manifest_file:
+                manifest = json.load(manifest_file)
+            if (not isinstance(manifest, dict) or manifest.get("version") != 1
+                    or not isinstance(manifest.get("benchmarks"), dict)):
+                raise ValueError(f"Unsupported SAC evaluation manifest: {manifest_path}")
+        else:
+            manifest = {"version": 1, "benchmarks": {}}
+
+        manifest_benchmarks = manifest["benchmarks"]
+        improved = {}
+        for benchmark_name, candidate in candidates.items():
+            previous = manifest_benchmarks.get(benchmark_name)
+            if previous is not None:
+                if not isinstance(previous, dict):
+                    raise ValueError(f"Invalid SAC evaluation manifest entry for {benchmark_name!r}")
+                previous_score = previous.get("score")
+                if (not isinstance(previous_score, numbers.Real) or isinstance(previous_score, bool)
+                        or not math.isfinite(float(previous_score))):
+                    raise ValueError(f"Invalid SAC evaluation score for {benchmark_name!r}")
+                if candidate["score"] <= float(previous_score):
+                    continue
+            improved[benchmark_name] = candidate
+
+        old_actor_paths = []
+        if improved:
+            best_models_dir = data_dir / "best_models"
+            best_models_dir.mkdir(parents=True, exist_ok=True)
+            for benchmark_name, candidate in improved.items():
+                previous = manifest_benchmarks.get(benchmark_name)
+                if isinstance(previous, dict) and isinstance(previous.get("checkpoint"), str):
+                    old_actor_paths.append(previous["checkpoint"])
+
+                encoded_name = quote(benchmark_name, safe="")
+                if len(encoded_name) > 80:
+                    encoded_name = f"{encoded_name[:48]}_{hashlib.sha256(benchmark_name.encode('utf-8')).hexdigest()[:16]}"
+                actor_name = f"best_eval_{encoded_name}_epoch_{self.epoch:06d}_{uuid.uuid4().hex}.pt"
+                actor_path = best_models_dir / actor_name
+                _save_raw_actor_state(self.uncompiled_policy, actor_path)
+                relative_actor_path = str(actor_path.relative_to(data_dir).as_posix())
+                manifest_benchmarks[benchmark_name] = {
+                    "checkpoint": relative_actor_path,
+                    "score_metric": "puffer_score",
+                    "score": candidate["score"],
+                    "epoch": int(self.epoch),
+                    "agent_steps": int(self.agent_steps),
+                    "summary": candidate["summary"],
+                }
+
+            _atomic_write_json(manifest_path, manifest)
+            self.save_checkpoint()
+
+            referenced_actor_paths = {
+                entry.get("checkpoint")
+                for entry in manifest_benchmarks.values()
+                if isinstance(entry, dict) and isinstance(entry.get("checkpoint"), str)
+            }
+            for old_actor_path in set(old_actor_paths) - referenced_actor_paths:
+                relative_path = Path(old_actor_path)
+                if (len(relative_path.parts) != 2 or relative_path.parts[0] != "best_models"
+                        or not relative_path.name.startswith("best_eval_")
+                        or relative_path.suffix != ".pt"):
+                    continue
+                try:
+                    (data_dir / relative_path).unlink()
+                except FileNotFoundError:
+                    pass
+
+            for benchmark_name, candidate in improved.items():
+                print(
+                    f"New best evaluation checkpoint for {benchmark_name} saved at epoch {self.epoch} "
+                    f"with puffer_score {candidate['score']:.4f}: "
+                    f"{manifest_benchmarks[benchmark_name]['checkpoint']}"
+                )
+        else:
+            self.save_checkpoint()
+
+        return manifest_path if improved else None
+
     def print_dashboard(self, clear=False):
         return self.helpers.PuffeRL.print_dashboard(self, clear=clear)
 
@@ -1740,7 +1914,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                 and global_rank == 0
             ):
                 last_training_evaluation_epoch = pufferl.epoch
-                ppo.run_training_evaluation(
+                benchmark_results = ppo.run_training_evaluation(
                     env_name=env_name,
                     args=startup_args,
                     policy=pufferl.uncompiled_policy,
@@ -1749,6 +1923,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                     global_step=pufferl.agent_steps,
                     run_dir=config["data_dir"],
                 )
+                pufferl.save_evaluation_checkpoint(benchmark_results)
             rank_zero_early_stop = (
                 pufferl.rank == 0 and logs is not None
                 and early_stop_fn is not None and early_stop_fn(logs)
@@ -1762,7 +1937,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                 break
         if training_evaluation_scheduled and pufferl.epoch > 0:
             if global_rank == 0 and last_training_evaluation_epoch != pufferl.epoch:
-                ppo.run_training_evaluation(
+                benchmark_results = ppo.run_training_evaluation(
                     env_name=env_name,
                     args=startup_args,
                     policy=pufferl.uncompiled_policy,
@@ -1771,6 +1946,7 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                     global_step=pufferl.agent_steps,
                     run_dir=config["data_dir"],
                 )
+                pufferl.save_evaluation_checkpoint(benchmark_results)
             if pufferl.distributed:
                 torch.distributed.barrier()
         model_path = pufferl.close()

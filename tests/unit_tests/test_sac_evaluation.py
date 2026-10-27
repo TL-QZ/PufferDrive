@@ -143,6 +143,13 @@ def test_training_evaluation_runs_on_rank_zero_at_interval_and_final(
     critic = _Policy()
     logger = _Logger()
     captured_evaluations = []
+    sac_instances = []
+    benchmark_results = {
+        "carla_fast": {
+            "episodes": [{"scenario_id": "scenario_1"}],
+            "summary": {"num_episodes": 1, "metrics_mean": {"puffer_score": 0.5}},
+        },
+    }
 
     class _FakeSAC:
         def __init__(self, config, vecenv, policy, critic, replay, logger):
@@ -155,6 +162,8 @@ def test_training_evaluation_runs_on_rank_zero_at_interval_and_final(
             self.distributed = False
             self.logger = logger or _Logger()
             self.closed = False
+            self.evaluation_checkpoints = []
+            sac_instances.append(self)
 
         def evaluate(self):
             pass
@@ -163,6 +172,9 @@ def test_training_evaluation_runs_on_rank_zero_at_interval_and_final(
             self.epoch += 1
             self.agent_steps += 1
             return {"epoch": self.epoch}
+
+        def save_evaluation_checkpoint(self, results):
+            self.evaluation_checkpoints.append((self.epoch, results))
 
         def close(self):
             self.closed = True
@@ -178,7 +190,7 @@ def test_training_evaluation_runs_on_rank_zero_at_interval_and_final(
     monkeypatch.setattr(
         pufferl,
         "run_training_evaluation",
-        lambda **kwargs: captured_evaluations.append(kwargs),
+        lambda **kwargs: (captured_evaluations.append(kwargs), benchmark_results)[1],
     )
 
     pufferl_sac.train(
@@ -192,6 +204,9 @@ def test_training_evaluation_runs_on_rank_zero_at_interval_and_final(
     )
 
     assert [item["epoch"] for item in captured_evaluations] == expected_epochs
+    assert sac_instances[0].evaluation_checkpoints == [
+        (epoch, benchmark_results) for epoch in expected_epochs
+    ]
     assert all(item["policy"] is actor for item in captured_evaluations)
     assert all(item["global_step"] == item["epoch"] for item in captured_evaluations)
     if global_rank == 0:
