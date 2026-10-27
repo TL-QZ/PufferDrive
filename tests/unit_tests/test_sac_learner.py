@@ -84,6 +84,7 @@ def _make_training_learner(replay, actor_state, critic_state, max_minibatch_size
         "target_entropy": 0.7,
         "tau": 0.15,
         "max_grad_norm": max_grad_norm,
+        "critic_entropy_in_target": True,
     }
     learner.batch_size = replay.capacity
     learner.minibatch_size = 4
@@ -191,6 +192,43 @@ def test_partial_replay_does_not_update_before_full_capacity():
     assert learner.learner_updates == 0
     assert learner.sampled_transitions == 0
     assert replay.sampled_indices == []
+
+
+@pytest.mark.parametrize("critic_entropy_in_target", [True, False])
+def test_compute_targets_gates_only_critic_target_entropy(critic_entropy_in_target):
+    def make_learner(alpha):
+        learner = object.__new__(pufferl_sac.PuffeSAC)
+        learner.amp_context = nullcontext()
+        learner.config = {"critic_entropy_in_target": critic_entropy_in_target}
+        learner.log_alpha = nn.Parameter(torch.tensor(float(np.log(alpha))))
+        learner.policy = lambda observations: observations.new_zeros((observations.shape[0], 2))
+        q1 = torch.tensor([[1.0, 3.0], [4.0, -2.0], [-1.0, 5.0]])
+        q2 = q1 + 1
+        learner.target_critic = lambda observations: (
+            q1.to(observations.device).expand(observations.shape[0], -1),
+            q2.to(observations.device).expand(observations.shape[0], -1),
+        )
+        return learner
+
+    rewards = torch.tensor([0.25, -0.5, 1.0])
+    next_observations = torch.zeros((3, 1))
+    discounts = torch.tensor([0.9, 0.0, 0.5])
+    learner = make_learner(alpha=1.0)
+    targets = learner._compute_targets(rewards, next_observations, discounts)
+    if critic_entropy_in_target:
+        expected_targets = torch.tensor([
+            0.25 + 0.9 * (2 + np.log(2)),
+            -0.5,
+            1 + 0.5 * (2 + np.log(2)),
+        ], dtype=torch.float32)
+    else:
+        expected_targets = torch.tensor([2.05, -0.5, 2.0])
+        different_alpha_targets = make_learner(alpha=0.25)._compute_targets(
+            rewards, next_observations, discounts,
+        )
+        torch.testing.assert_close(different_alpha_targets, expected_targets)
+
+    torch.testing.assert_close(targets, expected_targets)
 
 
 @pytest.mark.parametrize(
@@ -369,7 +407,7 @@ def _old_version_five_checkpoint(learner):
     config["learning_starts"] = 2
     for key in (
         "max_minibatch_size", "optimizer", "adam_beta1", "adam_beta2", "adam_eps",
-        "adam_weight_decay", "max_grad_norm",
+        "adam_weight_decay", "max_grad_norm", "critic_entropy_in_target",
     ):
         config.pop(key)
     return {
@@ -407,6 +445,7 @@ def test_old_version_five_checkpoint_uses_legacy_optimizer_defaults(monkeypatch,
     assert learner.config["adam_eps"] == 1e-8
     assert learner.config["adam_weight_decay"] == 0.0
     assert learner.config["max_grad_norm"] is None
+    assert learner.config["critic_entropy_in_target"] is True
 
 
 @pytest.mark.parametrize(
@@ -560,13 +599,15 @@ def test_cpu_bfloat16_autocasts_networks_and_keeps_sac_arithmetic_float32(monkey
     assert torch.isfinite(targets).all() and torch.isfinite(critic_loss) and torch.isfinite(policy_loss)
 
 
+@pytest.mark.parametrize("critic_entropy_in_target", [True, False])
 def test_compiled_cpu_learner_trains_tail_batches_and_round_trips_uncompiled_state(
-        monkeypatch, tmp_path):
+        monkeypatch, tmp_path, critic_entropy_in_target):
     learner_config = {
         "batch_size": 7,
         "minibatch_size": 7,
         "max_minibatch_size": 3,
         "update_epochs": 2,
+        "critic_entropy_in_target": critic_entropy_in_target,
     }
     torch.manual_seed(23)
     learner = _make_checkpoint_learner(
@@ -612,6 +653,7 @@ def test_compiled_cpu_learner_trains_tail_batches_and_round_trips_uncompiled_sta
     trainer_state = torch.load(tmp_path / "trainer_state.pt", map_location="cpu", weights_only=False)
     assert not any("_orig_mod" in key for key in actor_state)
     assert not any("_orig_mod" in key for key in trainer_state["critic_state_dict"])
+    assert trainer_state["config"]["critic_entropy_in_target"] is critic_entropy_in_target
 
     restored = _make_checkpoint_learner(
         monkeypatch,
@@ -621,6 +663,7 @@ def test_compiled_cpu_learner_trains_tail_batches_and_round_trips_uncompiled_sta
         **learner_config,
     )
     restored.load_training_state(tmp_path / "trainer_state.pt")
+    assert restored.config["critic_entropy_in_target"] is critic_entropy_in_target
     for source, loaded in (
         (learner.uncompiled_policy, restored.uncompiled_policy),
         (learner.uncompiled_critic, restored.uncompiled_critic),
@@ -632,9 +675,13 @@ def test_compiled_cpu_learner_trains_tail_batches_and_round_trips_uncompiled_sta
 
 @pytest.mark.parametrize(
     "config_updates, mismatched_key",
-    [({"optimizer": "adamw"}, "optimizer"), ({"adam_eps": 1e-6}, "adam_eps")],
+    [
+        ({"optimizer": "adamw"}, "optimizer"),
+        ({"adam_eps": 1e-6}, "adam_eps"),
+        ({"critic_entropy_in_target": False}, "critic_entropy_in_target"),
+    ],
 )
-def test_old_version_five_checkpoint_rejects_new_optimizer_settings(
+def test_old_version_five_checkpoint_rejects_config_mismatches(
         monkeypatch, tmp_path, config_updates, mismatched_key):
     learner = _make_checkpoint_learner(monkeypatch, tmp_path, **config_updates)
     checkpoint_path = tmp_path / "old_trainer_state.pt"

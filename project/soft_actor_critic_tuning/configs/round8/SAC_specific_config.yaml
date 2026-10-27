@@ -1,0 +1,63 @@
+# SAC-specific learner and replay configuration
+# Settings specific to this SAC route compared with the PPO route. Replay and
+# target-network controls are also used by other off-policy algorithms.
+# train.batch_size is included because here it means replay capacity, whereas
+# PPO uses that name for its rollout batch. Shared gamma, actor learning_rate,
+# minibatch_size, the base update_epochs and optimizer settings stay in SAC_tunable_config.yaml.
+# Round 8 retests selected round-three candidates with fixed alpha and critic
+# targets without entropy. Trial IDs 97 and 98 retain their round-three meanings.
+# The selected trial IDs correspond to replay refresh ratios 0.1 and 0.5.
+# Corresponding sweep/grid entries live here too; workflow controls stay tunable.
+# Deep-merge SAC_fixed_config.yaml, SAC_tunable_config.yaml and this file.
+# These are partial configs; the CLI does not automatically load them.
+
+
+train:
+  # Replay capacity per rank is one quarter of Round 6: 8192000 / 4.
+  batch_size: 2048000
+  # Fraction of replay replaced each evaluate cycle after initial fill; (0, 1]. Quota = ceil(batch_size * ratio), with FIFO eviction after a once-shuffled initial eviction order.
+  replay_update_ratio: 0.1
+  # Twin-critic optimizer learning rate; match PPO's non-swept model optimizer LR.
+  critic_learning_rate: 0.0005
+  # Retain the baseline log-alpha Adam LR; no alpha optimizer step runs with learn_alpha=false.
+  alpha_learning_rate: 0.0003
+  # Fixed entropy temperature; learn_alpha=false keeps this value throughout.
+  initial_alpha: 0.0003
+  learn_alpha: false
+  # Exclude entropy from the critic bootstrap; the actor remains entropy-regularized.
+  critic_entropy_in_target: false
+  # null = 0.98 * log(K), in nats, where K is the number of action classes. Explicit value must be in [0, log(K)].
+  target_entropy: 1.863680
+  # Target-critic Polyak coefficient in (0, 1]: target <- (1-tau)*target + tau*online after each learner update.
+  tau: 0.005
+
+sweep:
+  train:
+    gamma:
+      distribution: categorical
+      values: [0.95, 0.99, 0.999]
+    target_entropy:
+      distribution: categorical
+      values: [0.621227, 1.242453, 1.863680]
+    update_epochs:
+      distribution: categorical
+      values: [3, 15, 50, 100]
+    replay_update_ratio:
+      distribution: categorical
+      values: [0.1, 0.5, 0.75]
+
+controlled_exp:
+  train:
+    # Alpha is the outer axis: preserve IDs 97/98 and add their copies at 205/206.
+    # The 2 * 3 * 3 * 4 * 3 grid has 216 combinations; only four are selected.
+    initial_alpha:
+      values: [0.0003, 0.01]
+    gamma:
+      values: [0.95, 0.99, 0.999]
+    # Retain this historical axis for IDs; fixed alpha makes it inert.
+    target_entropy:
+      values: [0.621227, 1.242453, 1.863680]
+    update_epochs:
+      values: [3, 15, 50, 100]
+    replay_update_ratio:
+      values: [0.1, 0.5, 0.75]

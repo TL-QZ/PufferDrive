@@ -1,0 +1,28 @@
+# Launcher controls only. Learner, environment and vector settings remain in
+# SAC_fixed_config.yaml, SAC_tunable_config.yaml and SAC_specific_config.yaml.
+launcher:
+  # Preserve round-three grid IDs 97 and 98: gamma=.999, entropy=1.863680,
+  # update_epochs=3, and replay refresh ratios .1 and .5 respectively.
+  trial_ids: [97, 98, 205, 206]
+  # Trials 205/206 copy 97/98 with fixed alpha 0.01.
+  # One full replay turnover between steady-state carla_fast evaluations.
+  trial_evaluation_interval_epochs:
+    97: 10
+    98: 2
+    205: 10
+    206: 2
+  # Global received agent-row budgets; trial 97 keeps 2B and trial 98 gets 4B.
+  trial_total_timesteps:
+    97: 2000000000
+    98: 4000000000
+    205: 2000000000
+    206: 4000000000
+  trial_hours: null
+  grace_seconds: 600
+  smoke_trial_seconds: 60
+  # First compiled cycle and its benchmark may exceed the short smoke target.
+  smoke_grace_seconds: 600
+  # Reserve both GPUs for the single selected trial.
+  gpu_pairs:
+    - [0, 1]
+  max_concurrent: 1

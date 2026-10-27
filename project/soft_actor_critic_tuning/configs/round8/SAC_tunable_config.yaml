@@ -1,0 +1,163 @@
+# SAC shared tunable and run configuration
+# Contains the settings from SAC_all_configs.yaml that are in neither
+# SAC_fixed_config.yaml nor SAC_specific_config.yaml.
+# Includes shared learner hyperparameters, logging, paths, vectorization,
+# evaluation cadence and workflow controls. Network architecture remains fixed.
+# Learner execution targets the two-GPU round-8 CARLA experiment. Shared
+# Actor learning rate, optimizer and clipping match PPO; round 8 retests selected candidates.
+# Microbatch size, compilation and worker layout also match PPO.
+# CPU replay and fixed learning rates are explicit SAC experiment choices.
+# train.evaluation_interval_epochs and train.evaluation_benchmarks remain here.
+# The launcher deep-merges tunable, specific, then fixed settings for this experiment.
+# SAC_all_configs.yaml remains a catalog of defaults, not a launch input.
+# These files are not automatically loaded by the existing CLI.
+
+
+# Run identifier used by logging and same-run checkpoint discovery. Use a unique name for each trial.
+run_name: sac
+
+# Actor-only warmstart: local .pt plus source config.yaml. Null starts a fresh actor; does not restore critics/optimizers.
+load_model_path: null
+
+# Remote actor artifact ID (W&B or Neptune); mutually exclusive with load_model_path and learner resume.
+load_id: null
+
+# Export command only: null writes <checkpoint_stem>_portable_actor beside the source. CLI: +export_path=/path.
+export_path: null
+
+# Enable W&B logging; if several logger flags are true, priority is Neptune, W&B, then TensorBoard.
+wandb: true
+
+wandb_project: pufferdrive_vanilla_sac_tuning
+
+wandb_group: vanilla_sac_round8
+
+neptune: false
+
+neptune_name: pufferai
+
+neptune_project: ablations
+
+# Enable local TensorBoard logging. With all logger flags false, the console/dashboard still runs.
+tb: false
+
+# Optional SAC/logger setting: disable remote model uploads, not local checkpoints. CLI: +no_model_upload=true.
+no_model_upload: false
+
+tag: null
+
+# Shared learner settings and run controls. SAC-specific settings live in SAC_specific_config.yaml.
+train:
+  # Hold baseline seed 0 fixed across this grid; torchrun derives per-rank seeds.
+  seed: 0
+  # Filename of the final model copy written into train.data_dir when training ends.
+  final_model_name: final_model.pt
+  # null disables scheduled benchmark evaluation; positive integer runs every N train cycles and at the end if needed.
+  # Trial 97 default; launcher.trial_evaluation_interval_epochs sets trial 98 to 2.
+  evaluation_interval_epochs: 10
+  # Benchmark names in eval.benchmark_config; comma-separated selections are supported.
+  evaluation_benchmarks: carla_fast
+  torch_deterministic: false
+  # true stores replay on CPU (pinned for CUDA transfer); false stores it on the learner device.
+  cpu_offload: true
+  # cpu | cuda | cuda:N. torchrun sets the local CUDA device from LOCAL_RANK.
+  device: cuda
+  # adam | adamw | muon for actor/critics. Muon requires Heavyball; log-alpha stays Adam.
+  optimizer: adamw
+  # Enable cosine schedules for actor and critics once per training cycle with updates.
+  # PuffeSAC steps the alpha schedule only when train.learn_alpha=true; Round 8 fixes alpha.
+  anneal_lr: true
+  # Autocast network forwards when true; SAC targets, probabilities, losses and temperature arithmetic remain FP32.
+  amp: true
+  # float32 (default) | bfloat16. bfloat16 requires amp=true; FP16 is not supported.
+  precision: bfloat16
+  # Global received agent-row budget across ranks; vector batches can overshoot. Not a learner-update count.
+  # Base global received agent-row budget; trial 98 is overridden to 4B in SAC_run_config.yaml.
+  total_timesteps: 2000000000
+  # Actor optimizer learning rate (>0).
+  learning_rate: 0.0005
+  # Bootstrap discount in [0, 1]. Applied during collection; true terminal transitions use zero.
+  gamma: 0.999
+  # Positive integer: shuffled passes over the currently stored replay per train() call.
+  update_epochs: 3
+  # null disables clipping; positive value clips actor/critic gradients once per logical update.
+  max_grad_norm: 0.5
+  # Optimizer moment coefficients in [0, 1); passed to Adam/AdamW and Heavyball Muon.
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_eps: 1.0e-08
+  # Adam/AdamW actor/critic weight decay; not forwarded to Muon or applied to log-alpha.
+  adam_weight_decay: 0.01
+  # The launcher replaces this with a unique per-trial learner directory.
+  data_dir: experiments/pufferdrive_vanilla_sac_tuning
+  # Explicit learner checkpoint: restores networks/optimizers/temperature/counters/RNG. Environment and replay restart; cannot combine with actor warmstart.
+  resume_state_path: null
+  # null disables interval checkpoints; successful scheduled evaluations also save evaluation-selected actors and latest learner state.
+  checkpoint_interval: null
+  # Transitions per logical learner update. Positive integer or auto=min(256, explicit replay capacity), otherwise 256.
+  minibatch_size: 128000
+  # Maximum rows per forward/backward microbatch; gradients accumulate to one logical minibatch update.
+  max_minibatch_size: 32000
+  # Compile actor and online/target critics with torch.compile; false uses eager execution.
+  compile: true
+  # torch.compile mode. This experiment uses default; other modes need separate runtime checks.
+  compile_mode: default
+  compile_fullgraph: false
+  # true disables automatic trainer_state.pt discovery only. Independent trials still need a unique data_dir (and run_name), since outputs are written there.
+  fresh_run: false
+
+# Vector collection
+vec:
+  # Serial | Multiprocessing. Other vector backends exist but are not verified by the SAC integration checks.
+  backend: Multiprocessing
+  # Number of Drive instances per rank; each instance has env.num_agents slots.
+  num_envs: 20
+  # Positive integer or auto (= num_envs). num_envs must be divisible by num_workers.
+  num_workers: auto
+  # Environment instances received together, NOT replay transitions. auto = num_envs // 2 (1 for one env); null = num_envs. Must align with environments per worker.
+  batch_size: 10
+  zero_copy: true
+  # Environment seed; rank-specific seeds are derived under torchrun. Separate from train.seed.
+  seed: 42
+  # vector.make does not forward sync_traj; use Multiprocessing's default ordered receives.
+  # Multiprocessing constructor default; true permits more workers than physical CPU cores. CLI: +vec.overwork=true.
+  overwork: false
+
+# Sweeps, controlled experiments and performance tools
+# Maximum trials for sweep. controlled_exp instead runs the Cartesian product of its values lists.
+max_runs: 4
+
+# Shared sweep controls/search spaces; SAC-specific spaces are in SAC_specific_config.yaml.
+sweep:
+  # Searcher class from pufferlib.sweep: Random | ParetoGenetic | Protein | Carbs. Only Random has a real SAC sweep smoke; others may need dependencies/config.
+  # Numeric spaces: distribution, min, mean, max, scale. scale=auto uses the space default.
+  # Distributions: uniform | int_uniform | uniform_pow2 | log_normal | logit_normal.
+  # Categorical spaces instead use distribution=categorical, values=[...], optional mean/scale.
+  method: Random
+  # Environment metric name (without environment/ prefix); must appear in training logs.
+  metric: score
+  goal: maximize
+  downsample: 5
+
+# Shared grid fields; null entries clear inherited PPO axes. SAC-specific grid entries are in SAC_specific_config.yaml.
+controlled_exp:
+  train:
+    # Clear PPO grid entries inherited from puffer_drive.yaml after recursive merge.
+    learning_rate: null
+    ent_coef: null
+
+# Single-process profiling workflow. Budget must reach replay warmup to include learner work.
+profile:
+  total_timesteps: 20000
+
+# Single-process environment throughput utility; not a hyperparameter optimizer.
+autotune:
+  max_envs: 32
+  # Estimated policy forward time in seconds per batch.
+  model_forward_s: 0.0
+  # Total environment RAM budget in GB; caps environment count using measured RAM per environment.
+  max_env_ram_gb: 16
+  # Observation-batch VRAM budget in GB; compared with estimated observation bytes (not full model/replay usage).
+  max_batch_vram_gb: 0.05
+  # Seconds to sample each candidate.
+  time_per_test: 2

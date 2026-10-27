@@ -48,7 +48,8 @@ DEFAULT_CONFIG = dict(
     optimizer="adam", adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8, adam_weight_decay=0.0,
     max_grad_norm=None, amp=False, precision="float32", compile=False, compile_mode="default",
     compile_fullgraph=False, cpu_offload=True,
-    initial_alpha=0.2, learn_alpha=True, target_entropy=None, tau=0.005, torch_deterministic=False,
+    initial_alpha=0.2, learn_alpha=True, critic_entropy_in_target=True,
+    target_entropy=None, tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
     fresh_run=False,
 )
@@ -654,6 +655,8 @@ class PuffeSAC:
             raise ValueError("Require action_count >= 2")
         if not isinstance(config["learn_alpha"], bool):
             raise ValueError("learn_alpha must be a boolean")
+        if not isinstance(config["critic_entropy_in_target"], bool):
+            raise ValueError("critic_entropy_in_target must be a boolean")
         for key in ("learning_rate", "critic_learning_rate", "alpha_learning_rate",
                     "initial_alpha", "replay_update_ratio", "tau", "adam_eps"):
             if not math.isfinite(config[key]) or config[key] <= 0:
@@ -1290,7 +1293,10 @@ class PuffeSAC:
         probs = logprobs.exp()
         next_q1 = next_q1.float()
         next_q2 = next_q2.float()
-        next_value = (probs * (torch.minimum(next_q1, next_q2) - self.alpha * logprobs)).sum(-1)
+        minimum_next_q = torch.minimum(next_q1, next_q2)
+        if self.config["critic_entropy_in_target"]:
+            minimum_next_q = minimum_next_q - self.alpha * logprobs
+        next_value = (probs * minimum_next_q).sum(-1)
         return mb_rewards + mb_discounts * next_value
 
     def _critic_loss(self, mb_obs, mb_actions, mb_targets):

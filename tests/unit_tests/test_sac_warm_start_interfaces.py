@@ -96,7 +96,7 @@ def _make_initialized_learner(monkeypatch, tmp_path, *, reset_env=True, **config
     return learner, vecenv
 
 
-def _make_update_learner(*, learn_alpha):
+def _make_update_learner(*, learn_alpha, initial_alpha=0.1, critic_entropy_in_target=True):
     learner = object.__new__(pufferl_sac.PuffeSAC)
     learner.device = torch.device("cpu")
     learner.uncompiled_policy = _TinyActor()
@@ -112,7 +112,7 @@ def _make_update_learner(*, learn_alpha):
     learner.uncompiled_target_critic.requires_grad_(False).eval()
     learner.target_critic = learner.uncompiled_target_critic
     learner.amp_context = nullcontext()
-    learner.log_alpha = nn.Parameter(torch.tensor(float(np.log(0.1))))
+    learner.log_alpha = nn.Parameter(torch.tensor(float(np.log(initial_alpha))))
     learner.optimizer = torch.optim.Adam(learner.policy.parameters(), lr=0.003)
     learner.critic_optimizer = torch.optim.Adam(learner.critic.parameters(), lr=0.004)
     learner.alpha_optimizer = torch.optim.Adam([learner.log_alpha], lr=0.002)
@@ -129,6 +129,7 @@ def _make_update_learner(*, learn_alpha):
         "tau": 0.15,
         "max_grad_norm": None,
         "learn_alpha": learn_alpha,
+        "critic_entropy_in_target": critic_entropy_in_target,
         "anneal_lr": True,
         "total_timesteps": 20,
         "checkpoint_interval": None,
@@ -171,6 +172,13 @@ def test_constructor_can_keep_existing_environment_without_reset(monkeypatch, tm
     assert vecenv.reset_calls == 0
     assert not learner.pending.any()
     assert learner.config["learn_alpha"] is True
+    assert learner.config["critic_entropy_in_target"] is True
+
+
+@pytest.mark.parametrize("value", [0, 1, None, "false"])
+def test_constructor_rejects_non_boolean_critic_entropy_setting(monkeypatch, tmp_path, value):
+    with pytest.raises(ValueError, match="critic_entropy_in_target must be a boolean"):
+        _make_initialized_learner(monkeypatch, tmp_path, critic_entropy_in_target=value)
 
 
 def test_old_version_five_checkpoint_without_learn_alpha_uses_learning_default(monkeypatch, tmp_path):
@@ -179,7 +187,10 @@ def test_old_version_five_checkpoint_without_learn_alpha_uses_learning_default(m
         "state_version": 5,
         "algorithm": "sac",
         "scope": "learner_only",
-        "config": {key: value for key, value in learner.config.items() if key != "learn_alpha"},
+        "config": {
+            key: value for key, value in learner.config.items()
+            if key not in {"learn_alpha", "critic_entropy_in_target"}
+        },
         "policy_state_dict": learner.uncompiled_policy.state_dict(),
         "critic_state_dict": learner.uncompiled_critic.state_dict(),
         "target_critic_state_dict": learner.uncompiled_target_critic.state_dict(),
@@ -204,6 +215,7 @@ def test_old_version_five_checkpoint_without_learn_alpha_uses_learning_default(m
     learner.load_training_state(checkpoint_path)
 
     assert learner.config["learn_alpha"] is True
+    assert learner.config["critic_entropy_in_target"] is True
     torch.testing.assert_close(learner.alpha, checkpoint["log_alpha"].exp())
 
 
@@ -345,9 +357,23 @@ def test_critic_only_update_uses_external_target_policy_and_skips_actor_alpha_st
 
 
 def test_fixed_alpha_mode_keeps_actor_updates_and_temperature_constant():
-    learner = _make_update_learner(learn_alpha=False)
+    learner = _make_update_learner(
+        learn_alpha=False, initial_alpha=0.0003, critic_entropy_in_target=False,
+    )
     policy_before = _module_state(learner.policy)
     alpha_before = learner.log_alpha.detach().clone()
+    observations = learner.replay.get_batch(torch.arange(4))[0]
+    with torch.no_grad():
+        logprobs = torch.log_softmax(learner.policy(observations), dim=-1)
+        probabilities = logprobs.exp()
+        q1, q2 = learner.critic(observations)
+        expected_policy_loss = (
+            probabilities * (learner.alpha * logprobs - torch.minimum(q1, q2))
+        ).sum(-1).mean()
+    policy_loss, entropy = learner._policy_loss(observations)
+    torch.testing.assert_close(policy_loss, expected_policy_loss)
+    assert entropy.item() > 0
+    torch.testing.assert_close(learner.alpha, torch.tensor(0.0003))
 
     learner.train()
 
