@@ -403,6 +403,65 @@ def _small_budget_train_worker(rank, init_method, result_dir, data_dir):
             dist.destroy_process_group()
 
 
+def _adaptive_target_entropy_worker(rank, init_method, result_dir, data_dir):
+    _prepare_process(rank, init_method)
+    try:
+        torch.manual_seed(31)
+        observations = torch.tensor(
+            [[0.0, 0.0, 1.0]] if rank == 0 else [[2.0, 0.0, 1.0], [4.0, 0.0, 1.0]],
+            dtype=torch.float32,
+        )
+        local_count = observations.shape[0]
+        replay = TensorReplay(local_count, _OBSERVATION_SHAPE)
+        replay.add(
+            observations,
+            torch.zeros(local_count, dtype=torch.int64),
+            torch.zeros(local_count),
+            observations.clone(),
+            torch.zeros(local_count),
+        )
+        learner = pufferl_sac.PuffeSAC(
+            _config(
+                Path(data_dir) / f"rank-{rank}",
+                batch_size=local_count,
+                minibatch_size=local_count,
+                max_minibatch_size=local_count,
+                target_entropy=0.5,
+                target_entropy_schedule="adaptive",
+                target_entropy_ema_decay=0.5,
+                target_entropy_mean_threshold=1e-12,
+                target_entropy_std_threshold=0.0,
+                target_entropy_decay_factor=0.5,
+                target_entropy_required_count=100,
+                target_entropy_force_decay_steps=100,
+            ),
+            _RankVecEnv(rank),
+            _TinyActor(),
+            _TinyCritic(),
+            replay,
+            _RecordingLogger(),
+        )
+        # Each rank receives the same global count, independent of its local rows.
+        learner.agent_steps = 100
+
+        losses = defaultdict(float)
+        updates = learner._train_sac_transition(losses, lambda *_args, **_kwargs: None, 0)
+        assert updates == 1
+        local_entropy = losses["entropy"]
+        controller_state = learner.target_entropy_controller.state_dict()
+        gathered_states = [None] * WORLD_SIZE
+        dist.all_gather_object(gathered_states, controller_state)
+        assert gathered_states[0] == gathered_states[1]
+        torch.save({
+            "count": local_count,
+            "entropy": local_entropy,
+            "controller_state": controller_state,
+        }, Path(result_dir) / f"adaptive-rank-{rank}.pt")
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
 def _spawn_with_timeout(worker, args, timeout_seconds=60):
     process_context = mp.spawn(worker, args=args, nprocs=WORLD_SIZE, join=False)
     for _ in range(timeout_seconds):
@@ -518,3 +577,39 @@ def test_gloo_small_budget_skips_incomplete_replay_and_broadcasts_outer_early_st
     assert results[0]["early_logger_records"] > 0
     assert results[1]["early_logger_records"] == 0
     assert results[0]["early_env_closed"] and results[1]["early_env_closed"]
+
+
+@pytest.mark.skipif(
+    not dist.is_available() or not getattr(dist, "is_gloo_available", lambda: False)(),
+    reason="PyTorch Gloo distributed support is unavailable",
+)
+def test_gloo_adaptive_target_entropy_uses_weighted_global_entropy(tmp_path):
+    init_path = tmp_path / "adaptive-entropy-gloo-init"
+    result_dir = tmp_path / "adaptive-entropy-results"
+    data_dir = tmp_path / "adaptive-entropy-run"
+    result_dir.mkdir()
+    _spawn_with_timeout(
+        _adaptive_target_entropy_worker,
+        (f"file://{init_path}", str(result_dir), str(data_dir)),
+        timeout_seconds=90,
+    )
+
+    results = [
+        torch.load(result_dir / f"adaptive-rank-{rank}.pt", map_location="cpu", weights_only=False)
+        for rank in range(WORLD_SIZE)
+    ]
+    weighted_entropy = sum(result["entropy"] * result["count"] for result in results) / sum(
+        result["count"] for result in results
+    )
+    unweighted_rank_mean = sum(result["entropy"] for result in results) / WORLD_SIZE
+    assert weighted_entropy != pytest.approx(unweighted_rank_mean, abs=1e-3)
+
+    controller_states = [result["controller_state"] for result in results]
+    assert controller_states[0] == controller_states[1]
+    state = controller_states[0]
+    assert state["mean_entropy"] == pytest.approx(0.5 + 0.5 * (weighted_entropy - 0.5))
+    assert state["variance"] == pytest.approx(0.25 * (weighted_entropy - 0.5) ** 2)
+    assert state["target_entropy"] == pytest.approx(0.25)
+    assert state["decay_count"] == 1
+    assert state["forced_decay_count"] == 1
+    assert state["last_decay_agent_steps"] == 100

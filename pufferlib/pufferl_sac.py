@@ -40,6 +40,199 @@ ACTOR_EXPORT_VERSION = 1
 DEFAULT_ENTROPY_FRACTION = 0.98
 FINAL_OBSERVATIONS_INFO_KEY = "_pufferlib_final_observations"
 DDP = torch.nn.parallel.DistributedDataParallel
+
+
+def _is_finite_real(value):
+    if not isinstance(value, numbers.Real) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+class AdaptiveTargetEntropyController:
+    """Lower the target entropy after accumulated qualifying observations."""
+
+    STATE_VERSION = 2
+
+    def __init__(self, initial_target_entropy, *, ema_decay, mean_threshold, std_threshold,
+                 decay_factor, required_count, force_decay_steps=None):
+        numeric_values = {
+            "initial_target_entropy": initial_target_entropy,
+            "ema_decay": ema_decay,
+            "mean_threshold": mean_threshold,
+            "std_threshold": std_threshold,
+            "decay_factor": decay_factor,
+        }
+        for name, value in numeric_values.items():
+            if not _is_finite_real(value):
+                raise ValueError(f"{name} must be a finite number")
+        if initial_target_entropy < 0:
+            raise ValueError("initial_target_entropy must be nonnegative")
+        if not 0 <= ema_decay < 1:
+            raise ValueError("ema_decay must be in [0, 1)")
+        if mean_threshold <= 0:
+            raise ValueError("mean_threshold must be positive")
+        if std_threshold < 0:
+            raise ValueError("std_threshold must be nonnegative")
+        if not 0 < decay_factor < 1:
+            raise ValueError("decay_factor must be in (0, 1)")
+        if (not isinstance(required_count, int) or isinstance(required_count, bool)
+                or required_count <= 0):
+            raise ValueError("required_count must be a positive integer")
+        if force_decay_steps is not None and (
+                not isinstance(force_decay_steps, int) or isinstance(force_decay_steps, bool)
+                or force_decay_steps <= 0):
+            raise ValueError("force_decay_steps must be a positive integer or None")
+
+        self.initial_target_entropy = float(initial_target_entropy)
+        self.target_entropy = float(initial_target_entropy)
+        self.mean_entropy = self.target_entropy
+        self.variance = 0.0
+        self.ema_decay = float(ema_decay)
+        self.mean_threshold = float(mean_threshold)
+        self.std_threshold = float(std_threshold)
+        self.decay_factor = float(decay_factor)
+        self.required_count = required_count
+        self.force_decay_steps = force_decay_steps
+        self.qualifying_count = 0
+        self.decay_count = 0
+        self.forced_decay_count = 0
+        self.last_decay_agent_steps = 0
+
+    @property
+    def std_entropy(self):
+        return math.sqrt(self.variance)
+
+    def observe(self, entropy, agent_steps=None):
+        if not _is_finite_real(entropy):
+            raise ValueError("entropy observation must be a finite number")
+        if entropy < 0:
+            raise ValueError("entropy observation must be nonnegative")
+        if agent_steps is not None and (
+                not isinstance(agent_steps, int) or isinstance(agent_steps, bool) or agent_steps < 0):
+            raise ValueError("agent_steps must be a nonnegative integer or None")
+        if self.force_decay_steps is not None and agent_steps is None:
+            raise ValueError("agent_steps is required when force decay is enabled")
+        if agent_steps is not None and agent_steps < self.last_decay_agent_steps:
+            raise ValueError("agent_steps cannot precede last_decay_agent_steps")
+
+        delta = float(entropy) - self.mean_entropy
+        updated_mean = self.mean_entropy + (1 - self.ema_decay) * delta
+        updated_variance = self.ema_decay * (
+            self.variance + (1 - self.ema_decay) * delta * delta
+        )
+        if not math.isfinite(updated_mean) or not math.isfinite(updated_variance):
+            raise ValueError("entropy observation produced non-finite controller state")
+        self.mean_entropy = updated_mean
+        self.variance = updated_variance
+
+        normal_decay = False
+        if (abs(self.mean_entropy - self.target_entropy) < self.mean_threshold
+                and self.std_entropy <= self.std_threshold):
+            self.qualifying_count += 1
+            if self.qualifying_count >= self.required_count:
+                self._decay(agent_steps)
+                normal_decay = True
+
+        if (not normal_decay and self.force_decay_steps is not None
+                and agent_steps - self.last_decay_agent_steps >= self.force_decay_steps):
+            self._decay(agent_steps, forced=True)
+        return self.target_entropy
+
+    def _decay(self, agent_steps, *, forced=False):
+        self.target_entropy *= self.decay_factor
+        self.qualifying_count = 0
+        self.decay_count += 1
+        if agent_steps is not None:
+            self.last_decay_agent_steps = agent_steps
+        if forced:
+            self.forced_decay_count += 1
+
+    def state_dict(self):
+        return {
+            "version": self.STATE_VERSION,
+            "initial_target_entropy": self.initial_target_entropy,
+            "target_entropy": self.target_entropy,
+            "mean_entropy": self.mean_entropy,
+            "variance": self.variance,
+            "ema_decay": self.ema_decay,
+            "mean_threshold": self.mean_threshold,
+            "std_threshold": self.std_threshold,
+            "decay_factor": self.decay_factor,
+            "required_count": self.required_count,
+            "force_decay_steps": self.force_decay_steps,
+            "qualifying_count": self.qualifying_count,
+            "decay_count": self.decay_count,
+            "forced_decay_count": self.forced_decay_count,
+            "last_decay_agent_steps": self.last_decay_agent_steps,
+        }
+
+    def load_state_dict(self, state):
+        if (not isinstance(state, dict) or not isinstance(state.get("version"), int)
+                or isinstance(state.get("version"), bool) or state["version"] not in (1, self.STATE_VERSION)):
+            raise ValueError("Invalid adaptive target entropy controller state version")
+        state_version = state["version"]
+        if state_version == 1 and self.force_decay_steps is not None:
+            raise ValueError("Legacy adaptive target entropy state cannot restore enabled force decay")
+        numeric_names = (
+            "initial_target_entropy", "target_entropy", "mean_entropy", "variance",
+            "ema_decay", "mean_threshold", "std_threshold", "decay_factor",
+        )
+        for name in numeric_names:
+            value = state.get(name)
+            if not _is_finite_real(value):
+                raise ValueError(f"Invalid adaptive target entropy controller state: {name}")
+        for name in ("required_count", "qualifying_count", "decay_count"):
+            value = state.get(name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"Invalid adaptive target entropy controller state: {name}")
+        if state_version == self.STATE_VERSION:
+            state_force_decay_steps = state.get("force_decay_steps")
+            if ("force_decay_steps" not in state or (
+                    state_force_decay_steps is not None and (
+                        not isinstance(state_force_decay_steps, int)
+                        or isinstance(state_force_decay_steps, bool)
+                        or state_force_decay_steps <= 0
+                    )
+                ) or state_force_decay_steps != self.force_decay_steps):
+                raise ValueError("Adaptive target entropy force-decay interval does not match configuration")
+            for name in ("forced_decay_count", "last_decay_agent_steps"):
+                value = state.get(name)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    raise ValueError(f"Invalid adaptive target entropy controller state: {name}")
+        if (state["initial_target_entropy"] != self.initial_target_entropy
+                or state["ema_decay"] != self.ema_decay
+                or state["mean_threshold"] != self.mean_threshold
+                or state["std_threshold"] != self.std_threshold
+                or state["decay_factor"] != self.decay_factor
+                or state["required_count"] != self.required_count):
+            raise ValueError("Adaptive target entropy controller state does not match configuration")
+        if (state["target_entropy"] < 0 or state["target_entropy"] > self.initial_target_entropy
+                or state["mean_entropy"] < 0 or state["variance"] < 0
+                or state["qualifying_count"] >= self.required_count):
+            raise ValueError("Invalid adaptive target entropy controller state values")
+        if (state_version == self.STATE_VERSION
+                and (state["forced_decay_count"] > state["decay_count"]
+                     or (self.force_decay_steps is None and state["forced_decay_count"] != 0))):
+            raise ValueError("Invalid adaptive target entropy forced decay count")
+
+        self.target_entropy = float(state["target_entropy"])
+        self.mean_entropy = float(state["mean_entropy"])
+        self.variance = float(state["variance"])
+        self.qualifying_count = state["qualifying_count"]
+        self.decay_count = state["decay_count"]
+        if state_version == self.STATE_VERSION:
+            self.forced_decay_count = state["forced_decay_count"]
+            self.last_decay_agent_steps = state["last_decay_agent_steps"]
+        else:
+            # A v1 controller had no global timer; this fallback is safe only
+            # with force decay disabled, as checked above.
+            self.forced_decay_count = 0
+            self.last_decay_agent_steps = 0
+
+
 DEFAULT_CONFIG = dict(
     env="puffer_drive", device="cpu", seed=0, run_name="sac", batch_size=10_000,
     minibatch_size=256, max_minibatch_size=256, update_epochs=1,
@@ -49,7 +242,11 @@ DEFAULT_CONFIG = dict(
     max_grad_norm=None, amp=False, precision="float32", compile=False, compile_mode="default",
     compile_fullgraph=False, cpu_offload=True,
     initial_alpha=0.2, learn_alpha=True, critic_entropy_in_target=True,
-    target_entropy=None, tau=0.005, torch_deterministic=False,
+    target_entropy=None, target_entropy_schedule="constant", target_entropy_ema_decay=0.999,
+    target_entropy_mean_threshold=0.01, target_entropy_std_threshold=0.05,
+    target_entropy_decay_factor=0.9, target_entropy_required_count=None,
+    target_entropy_force_decay_steps=None,
+    tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
     fresh_run=False,
 )
@@ -657,6 +854,34 @@ class PuffeSAC:
             raise ValueError("learn_alpha must be a boolean")
         if not isinstance(config["critic_entropy_in_target"], bool):
             raise ValueError("critic_entropy_in_target must be a boolean")
+        if config["target_entropy_schedule"] not in ("constant", "adaptive"):
+            raise ValueError("target_entropy_schedule must be 'constant' or 'adaptive'")
+        force_decay_steps = config["target_entropy_force_decay_steps"]
+        if force_decay_steps is not None and (
+                not isinstance(force_decay_steps, int) or isinstance(force_decay_steps, bool)
+                or force_decay_steps <= 0):
+            raise ValueError("target_entropy_force_decay_steps must be a positive integer or None")
+        if force_decay_steps is not None and config["target_entropy_schedule"] != "adaptive":
+            raise ValueError("target_entropy_force_decay_steps requires target_entropy_schedule='adaptive'")
+        if config["target_entropy_schedule"] == "adaptive" and not config["learn_alpha"]:
+            raise ValueError("Adaptive target entropy requires learn_alpha=True")
+        for key in ("target_entropy_ema_decay", "target_entropy_mean_threshold",
+                    "target_entropy_std_threshold", "target_entropy_decay_factor"):
+            value = config[key]
+            if not _is_finite_real(value):
+                raise ValueError(f"{key} must be a finite number")
+        if not 0 <= config["target_entropy_ema_decay"] < 1:
+            raise ValueError("target_entropy_ema_decay must be in [0, 1)")
+        if config["target_entropy_mean_threshold"] <= 0:
+            raise ValueError("target_entropy_mean_threshold must be positive")
+        if config["target_entropy_std_threshold"] < 0:
+            raise ValueError("target_entropy_std_threshold must be nonnegative")
+        if not 0 < config["target_entropy_decay_factor"] < 1:
+            raise ValueError("target_entropy_decay_factor must be in (0, 1)")
+        required_count = config["target_entropy_required_count"]
+        if required_count is not None and (
+                not isinstance(required_count, int) or isinstance(required_count, bool) or required_count <= 0):
+            raise ValueError("target_entropy_required_count must be a positive integer or None")
         for key in ("learning_rate", "critic_learning_rate", "alpha_learning_rate",
                     "initial_alpha", "replay_update_ratio", "tau", "adam_eps"):
             if not math.isfinite(config[key]) or config[key] <= 0:
@@ -683,8 +908,25 @@ class PuffeSAC:
             raise ValueError("Require replay_update_ratio <= 1")
         if config["target_entropy"] is None:
             config["target_entropy"] = DEFAULT_ENTROPY_FRACTION * math.log(config["action_count"])
-        if not 0 <= config["target_entropy"] <= math.log(config["action_count"]):
+        if (not _is_finite_real(config["target_entropy"])
+                or not 0 <= config["target_entropy"] <= math.log(config["action_count"])):
             raise ValueError("target_entropy must be in [0, log(action_count)]")
+        resolved_target_entropy_count = required_count
+        if resolved_target_entropy_count is None:
+            resolved_target_entropy_count = config["update_epochs"] * math.ceil(
+                config["batch_size"] / config["minibatch_size"]
+            )
+        target_entropy_controller = None
+        if config["target_entropy_schedule"] == "adaptive":
+            target_entropy_controller = AdaptiveTargetEntropyController(
+                config["target_entropy"],
+                ema_decay=config["target_entropy_ema_decay"],
+                mean_threshold=config["target_entropy_mean_threshold"],
+                std_threshold=config["target_entropy_std_threshold"],
+                decay_factor=config["target_entropy_decay_factor"],
+                required_count=resolved_target_entropy_count,
+                force_decay_steps=force_decay_steps,
+            )
         if set(policy.parameters()) & set(critic.parameters()):
             raise ValueError("Policy and critic optimizers must own separate parameters")
 
@@ -716,6 +958,7 @@ class PuffeSAC:
         self.helpers = pufferl
         self.pytorch = pytorch
         self.config = config
+        self.target_entropy_controller = target_entropy_controller
         self.device = torch.device(pufferl.torch_device(config["device"]))
         self.vecenv = vecenv
         self.behavior_policy = None
@@ -890,6 +1133,12 @@ class PuffeSAC:
         if (state.get("state_version") != STATE_VERSION or state.get("algorithm") != "sac"
                 or state.get("scope") != "learner_only"):
             raise ValueError("Unsupported SAC checkpoint format; expected learner-only SAC state version 5")
+        target_entropy_controller = getattr(self, "target_entropy_controller", None)
+        controller_state = state.get("target_entropy_controller_state_dict")
+        if target_entropy_controller is not None and not isinstance(controller_state, dict):
+            raise ValueError("Adaptive target entropy checkpoint is missing controller state")
+        if target_entropy_controller is None and controller_state is not None:
+            raise ValueError("Constant target entropy checkpoint contains unexpected controller state")
         operational_config = {
             "device", "total_timesteps", "run_name", "data_dir", "final_model_name",
             "checkpoint_interval", "resume_state_path", "amp", "precision", "compile",
@@ -904,6 +1153,20 @@ class PuffeSAC:
         for key, value in saved_config.items():
             if key not in operational_config and self.config[key] != value:
                 raise ValueError(f"Checkpoint config mismatch: {key}")
+        if target_entropy_controller is not None:
+            restored_agent_steps = state.get("agent_steps", state.get("global_step"))
+            if (not isinstance(restored_agent_steps, int) or isinstance(restored_agent_steps, bool)
+                    or restored_agent_steps < 0):
+                raise ValueError("SAC checkpoint agent_steps must be a nonnegative integer")
+            if controller_state.get("version") == 2:
+                last_decay_agent_steps = controller_state.get("last_decay_agent_steps")
+                if (not isinstance(last_decay_agent_steps, int) or isinstance(last_decay_agent_steps, bool)
+                        or last_decay_agent_steps < 0):
+                    raise ValueError("Invalid adaptive target entropy checkpoint timer")
+                if last_decay_agent_steps > restored_agent_steps:
+                    raise ValueError("Adaptive target entropy checkpoint timer exceeds saved agent_steps")
+        if target_entropy_controller is not None:
+            target_entropy_controller.load_state_dict(controller_state)
         for name in ("policy", "critic", "target_critic"):
             model_state = self.helpers.clean_policy_state_dict(state[f"{name}_state_dict"])
             getattr(self, f"uncompiled_{name}").load_state_dict(model_state)
@@ -1322,6 +1585,23 @@ class PuffeSAC:
         entropy = -(probs * logprobs).sum(-1).mean()
         return loss, entropy.detach()
 
+    def _update_target_entropy(self, entropy_sum, logical_batch_count, agent_steps=None):
+        target_entropy_controller = getattr(self, "target_entropy_controller", None)
+        if target_entropy_controller is None:
+            return
+        entropy_totals = torch.stack((
+            entropy_sum.detach().to(dtype=torch.float64),
+            torch.tensor(logical_batch_count, device=self.device, dtype=torch.float64),
+        ))
+        if self.distributed:
+            torch.distributed.all_reduce(entropy_totals, op=torch.distributed.ReduceOp.SUM)
+        if agent_steps is None:
+            agent_steps = self.agent_steps
+        target_entropy_controller.observe(
+            (entropy_totals[0] / entropy_totals[1]).item(),
+            agent_steps=agent_steps,
+        )
+
     def _train_sac_transition(self, losses, profile, epoch, update_policy=True, target_policy=None):
         replay_size = len(self.replay)
         if replay_size < self.batch_size:
@@ -1414,7 +1694,13 @@ class PuffeSAC:
                 update_losses["policy_loss"] = policy_loss_value
                 update_losses["entropy"] = mean_entropy.item()
                 if self.config.get("learn_alpha", True):
-                    alpha_loss = self.log_alpha * (mean_entropy - self.config["target_entropy"])
+                    target_entropy_controller = getattr(self, "target_entropy_controller", None)
+                    target_entropy = (
+                        target_entropy_controller.target_entropy
+                        if target_entropy_controller is not None
+                        else self.config["target_entropy"]
+                    )
+                    alpha_loss = self.log_alpha * (mean_entropy - target_entropy)
                     self.alpha_optimizer.zero_grad(set_to_none=True)
                     alpha_loss.backward()
                     if self.distributed:
@@ -1422,6 +1708,7 @@ class PuffeSAC:
                         self.log_alpha.grad.div_(self.world_size)
                     self.alpha_optimizer.step()
                     update_losses["alpha_loss"] = alpha_loss.detach().item()
+                    self._update_target_entropy(entropy_sum, logical_batch_count)
             update_losses["alpha"] = self.alpha.item()
 
             profile("train_misc", epoch)
@@ -1507,6 +1794,21 @@ class PuffeSAC:
             **{f"losses/{key}": value for key, value in self.losses.items()},
             **{f"performance/{key}": value for key, value in performance.items()},
         }
+        target_entropy_controller = getattr(self, "target_entropy_controller", None)
+        if target_entropy_controller is not None:
+            logs.update({
+                "losses/target_entropy": target_entropy_controller.target_entropy,
+                "target_entropy/mean": target_entropy_controller.mean_entropy,
+                "target_entropy/std": target_entropy_controller.std_entropy,
+                "target_entropy/qualifying_count": target_entropy_controller.qualifying_count,
+                "target_entropy/decay_count": target_entropy_controller.decay_count,
+                "target_entropy/forced_decay_count": target_entropy_controller.forced_decay_count,
+                "target_entropy/required_count": target_entropy_controller.required_count,
+                "target_entropy/last_decay_agent_steps": target_entropy_controller.last_decay_agent_steps,
+                "target_entropy/steps_since_decay": (
+                    self.agent_steps - target_entropy_controller.last_decay_agent_steps
+                ),
+            })
         behavior_policy = getattr(self, "behavior_policy", None)
         if behavior_policy is not None:
             metrics = getattr(behavior_policy, "metrics", None)
@@ -1571,6 +1873,7 @@ class PuffeSAC:
             os.replace(best_temporary_path, best_state_file)
             self.best_score = current_score
 
+        target_entropy_controller = getattr(self, "target_entropy_controller", None)
         state = {
             "state_version": STATE_VERSION,
             "algorithm": "sac",
@@ -1579,6 +1882,10 @@ class PuffeSAC:
             "policy_state_dict": self.uncompiled_policy.state_dict(),
             "critic_state_dict": self.uncompiled_critic.state_dict(),
             "target_critic_state_dict": self.uncompiled_target_critic.state_dict(),
+            "target_entropy_controller_state_dict": (
+                target_entropy_controller.state_dict()
+                if target_entropy_controller is not None else None
+            ),
             "log_alpha": self.log_alpha.detach().cpu(),
             "optimizer_state_dict": self.optimizer.state_dict(),
             "critic_optimizer_state_dict": self.critic_optimizer.state_dict(),

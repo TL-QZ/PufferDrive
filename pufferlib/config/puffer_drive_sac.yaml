@@ -43,6 +43,15 @@ train:
   # Disable temperature updates to keep initial_alpha fixed.
   learn_alpha: true
   target_entropy: null
+  # Adaptive scheduling is opt-in; null required_count resolves from the rank-local update batch.
+  target_entropy_schedule: constant
+  target_entropy_ema_decay: 0.999
+  target_entropy_mean_threshold: 0.01
+  target_entropy_std_threshold: 0.05
+  target_entropy_decay_factor: 0.9
+  target_entropy_required_count: null
+  # Optional deadline for one forced decay, measured in global received agent rows.
+  target_entropy_force_decay_steps: null
   tau: 0.005
   # Cosine-decay actor, critic, and (when learn_alpha=true) alpha learning rates.
   anneal_lr: false
