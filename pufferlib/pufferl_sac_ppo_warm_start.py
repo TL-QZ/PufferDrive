@@ -58,6 +58,10 @@ def validate_config(config, world_size):
             raise ValueError(f"{phase} actor warm starts are unsupported")
         _positive_integer(train_args.get("total_timesteps"), f"{phase}.train.total_timesteps")
 
+    horizon = sac_args["train"].get("n_steps", 1)
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon != 1:
+        raise ValueError("PPO warm-start collection requires sac.train.n_steps=1")
+
     handoff_steps = warm_args.get("handoff_steps")
     sac_steps = warm_args.get("sac_steps")
     _positive_integer(handoff_steps, "warm_start.handoff_steps")

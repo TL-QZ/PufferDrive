@@ -146,6 +146,23 @@ def test_received_step_schedule_has_teacher_only_decay_and_sac_only_boundaries()
         assert provider.beta == pytest.approx(expected_beta)
 
 
+def test_ppo_only_mode_keeps_teacher_active_past_total_steps():
+    learner = _FakeLearner()
+    settings = {"mode": "ppo_only", "total_steps": 1000, "seed": 31}
+    provider = FrozenPPOBehavior(learner, _TinyTeacher(), settings)
+    observations = torch.zeros(4, 3)
+
+    for agent_steps in (0, 1000, 1001):
+        learner.agent_steps = agent_steps
+        assert provider.begin_collection(learner) == 1000
+        assert provider.beta == 1.0
+        actions, _ = provider.sample_actions(learner, observations)
+        assert actions.tolist() == [0] * len(observations)
+        assert provider.last_sources.tolist() == [True] * len(observations)
+        provider.end_collection(learner)
+        assert provider.metrics()["behavior/stage"] == 0
+
+
 def test_teacher_is_frozen_and_beta_one_samples_teacher_output():
     learner = _FakeLearner()
     teacher = _TinyTeacher(logits=(80.0, -80.0))
@@ -288,6 +305,42 @@ def test_validate_config_accepts_real_round4_1_trial_and_repo_ppo_drive_config(
     assert teacher_config["rnn_name"] is None
     assert teacher_config["policy"]["action_type"] == "discrete"
     assert config["env"]["dt"] == teacher_config["env"]["dt"] == 0.3
+
+
+def test_validate_config_accepts_ppo_only_without_schedule_fields(
+    tmp_path, round4_1_trial_97,
+):
+    config = _valid_config(tmp_path, round4_1_trial_97)
+    config["behavior_policy"]["mode"] = "ppo_only"
+    config["behavior_policy"].pop("ppo_only_steps")
+    config["behavior_policy"].pop("decay_steps")
+
+    teacher_config = validate_config(config)
+
+    assert teacher_config["policy_name"] == "Drive"
+
+
+def test_validate_config_rejects_unknown_behavior_policy_mode(
+    tmp_path, round4_1_trial_97,
+):
+    config = _valid_config(tmp_path, round4_1_trial_97)
+    config["behavior_policy"]["mode"] = "unknown"
+
+    with pytest.raises(ValueError, match="behavior_policy.mode"):
+        validate_config(config)
+
+
+def test_validate_config_requires_ppo_only_total_to_match_training_horizon(
+    tmp_path, round4_1_trial_97,
+):
+    config = _valid_config(tmp_path, round4_1_trial_97)
+    config["behavior_policy"]["mode"] = "ppo_only"
+    config["behavior_policy"].pop("ppo_only_steps")
+    config["behavior_policy"].pop("decay_steps")
+    config["behavior_policy"]["total_steps"] += 1
+
+    with pytest.raises(ValueError, match="total_timesteps must equal behavior_policy.total_steps"):
+        validate_config(config)
 
 
 @pytest.mark.parametrize("missing_key", ["checkpoint", "teacher_config"])

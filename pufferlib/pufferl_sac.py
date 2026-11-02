@@ -51,6 +51,12 @@ def _is_finite_real(value):
         return False
 
 
+def _validate_n_steps(value):
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        raise ValueError("n_steps must be a positive integer")
+    return value
+
+
 class AdaptiveTargetEntropyController:
     """Lower the target entropy after accumulated qualifying observations."""
 
@@ -235,7 +241,7 @@ class AdaptiveTargetEntropyController:
 
 DEFAULT_CONFIG = dict(
     env="puffer_drive", device="cpu", seed=0, run_name="sac", batch_size=10_000,
-    minibatch_size=256, max_minibatch_size=256, update_epochs=1,
+    minibatch_size=256, max_minibatch_size=256, update_epochs=1, n_steps=1,
     total_timesteps=None, gamma=0.99, replay_update_ratio=0.1,
     learning_rate=3e-4, critic_learning_rate=3e-4, alpha_learning_rate=3e-4,
     optimizer="adam", adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8, adam_weight_decay=0.0,
@@ -833,6 +839,7 @@ class PuffeSAC:
             raise ValueError("Supply a SAC training config dictionary")
 
         config = resolve_sac_batch_sizes({**DEFAULT_CONFIG, **config}, vecenv)
+        config["n_steps"] = _validate_n_steps(config["n_steps"])
         if "data_dir" not in config or not config["data_dir"]:
             raise ValueError("SAC requires an explicit data_dir")
         supported_config = DEFAULT_CONFIG.keys() | {
@@ -966,6 +973,8 @@ class PuffeSAC:
         self.refresh_count = math.ceil(self.batch_size * config["replay_update_ratio"])
         if len(replay) > self.batch_size:
             raise ValueError("Initial replay length must not exceed batch_size capacity")
+        if config["n_steps"] > 1 and len(replay):
+            raise ValueError("n_steps > 1 requires an empty initial replay")
         self.env_continuous = isinstance(vecenv.single_action_space, spaces.Box)
         if self.env_continuous:
             if getattr(policy, "is_continuous", None) is not False or not callable(
@@ -1002,6 +1011,22 @@ class PuffeSAC:
         self.replay = replay
         self.replay_eviction_order = None
         self.replay_eviction_cursor = 0
+        self.n_step_accumulator = None
+        if config["n_steps"] > 1:
+            from pufferlib.sac_replay import NStepAccumulator
+
+            self.n_step_accumulator = NStepAccumulator(
+                self.total_agents,
+                vecenv.single_observation_space.shape,
+                config["n_steps"],
+                config["gamma"],
+                device=replay.device,
+                pin_memory=getattr(replay, "pin_memory", False),
+            )
+        self.nstep_logged_horizon_sum = 0
+        self.nstep_logged_insert_count = 0
+        self.nstep_logged_quota_discarded = 0
+        self.nstep_logged_pending_starts = 0
 
         self.uncompiled_policy = policy.to(self.device, dtype=torch.float32)
         self.model_size = sum(
@@ -1195,6 +1220,9 @@ class PuffeSAC:
         self.pending.zero_()
         self.observations.zero_()
         self.actions.zero_()
+        n_step_accumulator = getattr(self, "n_step_accumulator", None)
+        if n_step_accumulator is not None:
+            n_step_accumulator.clear()
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.last_stats_epoch = None
@@ -1327,6 +1355,9 @@ class PuffeSAC:
     def evaluate(self):
         """Collect transitions directly from vecenv, matching PuffeRL.evaluate."""
         behavior_policy = getattr(self, "behavior_policy", None)
+        if self.config.get("n_steps", 1) > 1 and behavior_policy is not None:
+            raise ValueError("n_steps > 1 does not support PPO behavior-policy providers")
+        n_step_accumulator = getattr(self, "n_step_accumulator", None)
         boundary_step = None
         if behavior_policy is not None:
             begin_collection = getattr(behavior_policy, "begin_collection", None)
@@ -1360,6 +1391,9 @@ class PuffeSAC:
             received_budget = min(received_budget, boundary_budget)
         received_count_total = 0
         valid_inserts = 0
+        inserted_horizon_sum = 0
+        inserted_horizon_count = 0
+        quota_discarded = 0
         for _ in range(received_budget):
             profile("env", epoch)
             observations, rewards, terminals, truncations, infos, env_ids, masks = self.vecenv.recv()
@@ -1382,6 +1416,28 @@ class PuffeSAC:
             transitions, infos = self.observe_transition(
                 observations, rewards, terminals, truncations, infos, env_ids, masks,
             )
+            effective_horizons = None
+            if n_step_accumulator is not None:
+                completed = self.pending[env_ids] & masks
+                completed_rows = torch.nonzero(completed, as_tuple=False).squeeze(-1)
+                transition_ids = env_ids[completed_rows]
+                invalid_ids = env_ids[~completed]
+                flushed_transitions, flushed_horizons = n_step_accumulator.flush(invalid_ids)
+                appended_transitions, appended_horizons = n_step_accumulator.append(
+                    transition_ids,
+                    transitions[0],
+                    transitions[1],
+                    transitions[2],
+                    transitions[3],
+                    terminals[completed_rows],
+                    truncations[completed_rows],
+                )
+                transitions = tuple(
+                    torch.cat((flushed, appended), dim=0)
+                    for flushed, appended in zip(flushed_transitions, appended_transitions)
+                )
+                effective_horizons = torch.cat((flushed_horizons, appended_horizons), dim=0)
+            quota_discarded += transitions[0].shape[0]
             self.stats["obs/max"].append(observations.max().item())
             self.stats["obs/min"].append(observations.min().item())
             self.stats["obs/mean"].append(observations.mean().item())
@@ -1409,6 +1465,8 @@ class PuffeSAC:
                     transition_count, device=transitions[0].device
                 )[:remaining_quota]
                 transitions = tuple(transition[selected_rows] for transition in transitions)
+                if effective_horizons is not None:
+                    effective_horizons = effective_horizons[selected_rows]
             if transition_sources is not None and selected_rows is not None:
                 if torch.is_tensor(transition_sources):
                     transition_sources = transition_sources[
@@ -1440,6 +1498,12 @@ class PuffeSAC:
                     if record_replay_sources is not None:
                         record_replay_sources(transition_sources, replay_indices)
                 valid_inserts += transition_count
+                if effective_horizons is None:
+                    inserted_horizon_sum += transition_count
+                else:
+                    inserted_horizon_sum += int(effective_horizons.sum().item())
+                inserted_horizon_count += transition_count
+                quota_discarded -= transition_count
 
             profile("eval_misc", epoch)
             for info in infos:
@@ -1467,6 +1531,7 @@ class PuffeSAC:
             if valid_inserts >= insert_target or received_count_total >= received_budget:
                 break
 
+        local_valid_inserts = valid_inserts
         if self.distributed:
             deltas = torch.tensor(
                 [received_count_total, valid_inserts],
@@ -1476,7 +1541,55 @@ class PuffeSAC:
             torch.distributed.all_reduce(deltas, op=torch.distributed.ReduceOp.SUM)
             received_count_total, valid_inserts = deltas.tolist()
         self.agent_steps += received_count_total
+        if n_step_accumulator is not None and self.agent_steps >= self.config["total_timesteps"]:
+            tail_transitions, tail_horizons = n_step_accumulator.flush()
+            tail_count = tail_transitions[0].shape[0]
+            quota_discarded += tail_count
+            remaining_quota = max(0, insert_target - local_valid_inserts)
+            selected_rows = None
+            if tail_count > remaining_quota:
+                selected_rows = torch.randperm(
+                    tail_count, device=tail_transitions[0].device,
+                )[:remaining_quota]
+                tail_transitions = tuple(field[selected_rows] for field in tail_transitions)
+                tail_horizons = tail_horizons[selected_rows]
+            final_insert_count = tail_transitions[0].shape[0]
+            if final_insert_count:
+                if replay_size < self.batch_size:
+                    self.replay.add(*tail_transitions)
+                else:
+                    replace_indices = refresh_indices[
+                        local_valid_inserts:local_valid_inserts + final_insert_count
+                    ]
+                    self.replay.replace(replace_indices, *tail_transitions)
+                    self.replay_eviction_cursor = (
+                        self.replay_eviction_cursor + final_insert_count
+                    ) % replay_size
+                inserted_horizon_sum += int(tail_horizons.sum().item())
+                inserted_horizon_count += final_insert_count
+                local_valid_inserts += final_insert_count
+                quota_discarded -= final_insert_count
+            additional_insert_count = final_insert_count
+            if self.distributed:
+                additional_count = torch.tensor(
+                    additional_insert_count, device=self.device, dtype=torch.int64,
+                )
+                torch.distributed.all_reduce(additional_count, op=torch.distributed.ReduceOp.SUM)
+                additional_insert_count = int(additional_count.item())
+            valid_inserts += additional_insert_count
         self.valid_inserts += valid_inserts
+        self.nstep_logged_horizon_sum = (
+            getattr(self, "nstep_logged_horizon_sum", 0) + inserted_horizon_sum
+        )
+        self.nstep_logged_insert_count = (
+            getattr(self, "nstep_logged_insert_count", 0) + inserted_horizon_count
+        )
+        self.nstep_logged_quota_discarded = (
+            getattr(self, "nstep_logged_quota_discarded", 0) + quota_discarded
+        )
+        self.nstep_logged_pending_starts = (
+            n_step_accumulator.pending_count if n_step_accumulator is not None else 0
+        )
         if behavior_policy is not None:
             end_collection = getattr(behavior_policy, "end_collection", None)
             if end_collection is not None:
@@ -1779,6 +1892,21 @@ class PuffeSAC:
                 for key, value in sorted(self.losses.items())
             }
         performance = {key: value["elapsed"] for key, value in self.profile}
+        nstep_metrics = torch.tensor(
+            [
+                getattr(self, "nstep_logged_horizon_sum", 0),
+                getattr(self, "nstep_logged_insert_count", 0),
+                getattr(self, "nstep_logged_quota_discarded", 0),
+                getattr(self, "nstep_logged_pending_starts", 0),
+            ],
+            device=self.device,
+            dtype=torch.float64,
+        )
+        if self.distributed:
+            torch.distributed.all_reduce(nstep_metrics, op=torch.distributed.ReduceOp.SUM)
+        inserted_horizon_sum, inserted_horizon_count, quota_discarded, pending_starts = (
+            nstep_metrics.tolist()
+        )
         logs = {
             "SPS": self.helpers.dist_sum(self.sps, self.device),
             "agent_steps": self.agent_steps,
@@ -1789,6 +1917,10 @@ class PuffeSAC:
             "replay/size": len(self.replay),
             "replay/valid_inserts": self.valid_inserts,
             "replay/sampled_transitions": self.sampled_transitions,
+            "replay/mean_effective_horizon": inserted_horizon_sum / max(inserted_horizon_count, 1),
+            "replay/pending_starts": int(pending_starts),
+            "replay/quota_discarded": int(quota_discarded),
+            "sac/n_steps": getattr(self, "config", {}).get("n_steps", 1),
             "sac/learner_updates": self.learner_updates,
             **{f"environment/{key}": value for key, value in self.stats.items()},
             **{f"losses/{key}": value for key, value in self.losses.items()},
@@ -1814,6 +1946,9 @@ class PuffeSAC:
             metrics = getattr(behavior_policy, "metrics", None)
             if metrics is not None:
                 logs.update(metrics())
+        self.nstep_logged_horizon_sum = 0
+        self.nstep_logged_insert_count = 0
+        self.nstep_logged_quota_discarded = 0
         if self.rank != 0:
             return None
         self.logger.log(logs, self.agent_steps)
@@ -1823,6 +1958,9 @@ class PuffeSAC:
         if self.closed:
             return self.final_model_path
         self.closed = True
+        n_step_accumulator = getattr(self, "n_step_accumulator", None)
+        if n_step_accumulator is not None:
+            n_step_accumulator.clear()
         close_error = None
         try:
             self.vecenv.close()
@@ -2065,6 +2203,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             if startup_args["train"].get("evaluation_interval_epochs") is not None:
                 training_evaluation_scheduled = ppo.drive_benchmark.validate_training_evaluation_config(startup_args)
             train_args = startup_args["train"]
+            n_steps = _validate_n_steps(train_args.get("n_steps", 1))
+            if n_steps > 1 and behavior_policy_factory is not None:
+                raise ValueError("n_steps > 1 does not support PPO behavior_policy_factory")
             load_model_path = startup_args.get("load_model_path")
             resume_state_path, auto_resume = _resolve_resume_state_path(
                 train_args, load_model_path, startup_args.get("load_id"),
@@ -2173,6 +2314,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
         else:
             # Keep the original flat config + injected-component API intact.
             config = {**args, "env": env_name}
+            config["n_steps"] = _validate_n_steps(config.get("n_steps", 1))
+            if config["n_steps"] > 1 and behavior_policy_factory is not None:
+                raise ValueError("n_steps > 1 does not support PPO behavior_policy_factory")
             load_model_path = args.get("load_model_path")
             previous_sigint_handler = signal.getsignal(signal.SIGINT)
             try:
@@ -2269,6 +2413,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
     except BaseException:
         if pufferl is not None and not pufferl.closed:
             pufferl.closed = True
+            n_step_accumulator = getattr(pufferl, "n_step_accumulator", None)
+            if n_step_accumulator is not None:
+                n_step_accumulator.clear()
             try:
                 pufferl.vecenv.close()
             except BaseException:

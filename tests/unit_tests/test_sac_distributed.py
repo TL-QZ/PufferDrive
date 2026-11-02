@@ -127,6 +127,28 @@ class _RankVecEnv:
         self.closed = True
 
 
+class _NStepFinalBudgetVecEnv(_RankVecEnv):
+    """Three received rows leave different local n-step tails on each rank."""
+
+    def __init__(self, rank):
+        super().__init__(rank, single_row=True)
+
+    def recv(self):
+        self.receive_count += 1
+        call = self.receive_count
+        terminal = self.rank == 0 and call == 4
+        mask = not (self.rank == 1 and call in (2, 3))
+        return (
+            np.asarray([[float(call), float(self.rank), 0.0]], dtype=np.float32),
+            np.asarray([float(call)], dtype=np.float32),
+            np.asarray([terminal], dtype=np.bool_),
+            np.asarray([terminal], dtype=np.bool_),
+            [],
+            np.asarray([0], dtype=np.int64),
+            np.asarray([mask], dtype=np.bool_),
+        )
+
+
 def _config(data_dir, **overrides):
     config = {
         "env": "puffer_drive",
@@ -462,6 +484,96 @@ def _adaptive_target_entropy_worker(rank, init_method, result_dir, data_dir):
             dist.destroy_process_group()
 
 
+def _nstep_final_budget_worker(rank, init_method, result_dir, data_dir):
+    _prepare_process(rank, init_method)
+    try:
+        vecenv = _NStepFinalBudgetVecEnv(rank)
+        replay = TensorReplay(2, _OBSERVATION_SHAPE)
+        logger = _RecordingLogger()
+        learner = pufferl_sac.PuffeSAC(
+            _config(
+                data_dir,
+                batch_size=2,
+                minibatch_size=2,
+                max_minibatch_size=2,
+                total_timesteps=8,
+                n_steps=4,
+                checkpoint_interval=None,
+            ),
+            vecenv,
+            _TinyActor(),
+            _TinyCritic(),
+            replay,
+            logger,
+        )
+
+        learner.evaluate()
+
+        assert vecenv.receive_count == 4
+        assert learner.global_step == 4
+        assert learner.agent_steps == 8
+        assert learner.valid_inserts == 3
+        assert learner.nstep_logged_pending_starts == 0
+        local_horizon_sum = learner.nstep_logged_horizon_sum
+        local_horizon_count = learner.nstep_logged_insert_count
+        local_quota_discarded = learner.nstep_logged_quota_discarded
+        rows = replay.get_batch(torch.arange(len(replay)))
+        if rank == 0:
+            assert len(replay) == 2
+            assert local_horizon_count == 2
+            assert local_quota_discarded == 1
+            torch.testing.assert_close(rows[4], torch.zeros(2))
+        else:
+            assert len(replay) == 1
+            assert local_horizon_count == 1
+            assert local_horizon_sum == 1
+            assert local_quota_discarded == 0
+            torch.testing.assert_close(rows[0], torch.tensor([[3.0, 1.0, 0.0]]))
+            torch.testing.assert_close(rows[2], torch.tensor([4.0]))
+            torch.testing.assert_close(rows[3], torch.tensor([[4.0, 1.0, 0.0]]))
+            torch.testing.assert_close(rows[4], torch.tensor([0.97]))
+
+        actor_before = _state(learner.uncompiled_policy)
+        critic_before = _state(learner.uncompiled_critic)
+        target_before = _state(learner.uncompiled_target_critic)
+        logs = learner.train()
+        assert learner.learner_updates == 0
+        assert learner.sampled_transitions == 0
+        for module, before in (
+            (learner.uncompiled_policy, actor_before),
+            (learner.uncompiled_critic, critic_before),
+            (learner.uncompiled_target_critic, target_before),
+        ):
+            for key, value in _state(module).items():
+                torch.testing.assert_close(value, before[key], rtol=0, atol=0)
+        if rank == 0:
+            assert logs["replay/mean_effective_horizon"] == pytest.approx(
+                (local_horizon_sum + 1) / 3,
+            )
+            assert logs["replay/quota_discarded"] == 1
+            assert logs["replay/pending_starts"] == 0
+            assert logs["sac/n_steps"] == 4
+        else:
+            assert logs is None
+        torch.save({
+            "receive_count": vecenv.receive_count,
+            "local_replay_count": len(replay),
+            "global_agent_steps": learner.agent_steps,
+            "global_valid_inserts": learner.valid_inserts,
+            "pending_starts": learner.nstep_logged_pending_starts,
+            "local_horizon_sum": local_horizon_sum,
+            "local_horizon_count": local_horizon_count,
+            "local_quota_discarded": local_quota_discarded,
+            "logged_mean_horizon": (
+                logs["replay/mean_effective_horizon"] if logs is not None else None
+            ),
+            "logged_quota_discarded": logs["replay/quota_discarded"] if logs is not None else None,
+        }, Path(result_dir) / f"nstep-rank-{rank}.pt")
+    finally:
+        if dist.is_initialized():
+            dist.destroy_process_group()
+
+
 def _spawn_with_timeout(worker, args, timeout_seconds=60):
     process_context = mp.spawn(worker, args=args, nprocs=WORLD_SIZE, join=False)
     for _ in range(timeout_seconds):
@@ -613,3 +725,32 @@ def test_gloo_adaptive_target_entropy_uses_weighted_global_entropy(tmp_path):
     assert state["decay_count"] == 1
     assert state["forced_decay_count"] == 1
     assert state["last_decay_agent_steps"] == 100
+
+
+@pytest.mark.skipif(
+    not dist.is_available() or not getattr(dist, "is_gloo_available", lambda: False)(),
+    reason="PyTorch Gloo distributed support is unavailable",
+)
+def test_gloo_n_step_final_budget_flushes_rank_local_tails_with_unequal_masks(tmp_path):
+    init_path = tmp_path / "nstep-budget-gloo-init"
+    result_dir = tmp_path / "nstep-budget-results"
+    data_dir = tmp_path / "nstep-budget-run"
+    result_dir.mkdir()
+    _spawn_with_timeout(
+        _nstep_final_budget_worker,
+        (f"file://{init_path}", str(result_dir), str(data_dir)),
+        timeout_seconds=60,
+    )
+
+    results = [
+        torch.load(result_dir / f"nstep-rank-{rank}.pt", map_location="cpu", weights_only=False)
+        for rank in range(WORLD_SIZE)
+    ]
+    assert [result["receive_count"] for result in results] == [4, 4]
+    assert [result["local_replay_count"] for result in results] == [2, 1]
+    assert [result["global_agent_steps"] for result in results] == [8, 8]
+    assert [result["global_valid_inserts"] for result in results] == [3, 3]
+    assert [result["pending_starts"] for result in results] == [0, 0]
+    expected_mean_horizon = sum(result["local_horizon_sum"] for result in results) / 3
+    assert results[0]["logged_mean_horizon"] == pytest.approx(expected_mean_horizon)
+    assert results[0]["logged_quota_discarded"] == 1

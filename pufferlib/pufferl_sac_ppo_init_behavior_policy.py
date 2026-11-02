@@ -13,14 +13,24 @@ import yaml
 
 def validate_config(config):
     """Reject incompatible experiment inputs before creating a simulator."""
+    horizon = config["train"].get("n_steps", 1)
+    if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon != 1:
+        raise ValueError("PPO behavior-policy collection requires train.n_steps=1")
     behavior = config["behavior_policy"]
-    for key in ("ppo_only_steps", "decay_steps", "total_steps"):
-        value = behavior[key]
-        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
-            raise ValueError(f"behavior_policy.{key} must be a positive integer")
-    if behavior["ppo_only_steps"] + behavior["decay_steps"] >= behavior["total_steps"]:
-        raise ValueError("Schedule requires a SAC-only period after decay")
-    if config["train"]["total_timesteps"] != behavior["total_steps"]:
+    mode = behavior.get("mode", "scheduled")
+    if mode not in ("scheduled", "ppo_only"):
+        raise ValueError("behavior_policy.mode must be 'scheduled' or 'ppo_only'")
+    total_steps = behavior["total_steps"]
+    if isinstance(total_steps, bool) or not isinstance(total_steps, int) or total_steps <= 0:
+        raise ValueError("behavior_policy.total_steps must be a positive integer")
+    if mode == "scheduled":
+        for key in ("ppo_only_steps", "decay_steps"):
+            value = behavior[key]
+            if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+                raise ValueError(f"behavior_policy.{key} must be a positive integer")
+        if behavior["ppo_only_steps"] + behavior["decay_steps"] >= total_steps:
+            raise ValueError("Schedule requires a SAC-only period after decay")
+    if config["train"]["total_timesteps"] != total_steps:
         raise ValueError("SAC total_timesteps must equal behavior_policy.total_steps")
     if config.get("load_id") or config.get("load_model_path") or config["train"].get("resume_state_path"):
         raise ValueError("This experiment requires fresh SAC; teacher weights are separate")
@@ -59,9 +69,16 @@ class FrozenPPOBehavior:
         self.learner = learner
         self.teacher = teacher.requires_grad_(False).eval()
         self.settings = deepcopy(settings)
-        self.ppo_only_steps = settings["ppo_only_steps"]
-        self.decay_end = self.ppo_only_steps + settings["decay_steps"]
+        self.mode = settings.get("mode", "scheduled")
+        if self.mode not in ("scheduled", "ppo_only"):
+            raise ValueError("behavior_policy.mode must be 'scheduled' or 'ppo_only'")
         self.total_steps = settings["total_steps"]
+        if self.mode == "scheduled":
+            self.ppo_only_steps = settings["ppo_only_steps"]
+            self.decay_end = self.ppo_only_steps + settings["decay_steps"]
+        else:
+            self.ppo_only_steps = self.total_steps
+            self.decay_end = self.total_steps
         self.generator = torch.Generator(device=learner.device)
         self.generator.manual_seed(settings["seed"] + learner.rank)
         self.pending_sources = torch.zeros(learner.total_agents, device=learner.device, dtype=torch.bool)
@@ -72,7 +89,10 @@ class FrozenPPOBehavior:
 
     def begin_collection(self, learner):
         steps = learner.agent_steps
-        self.beta = max(0.0, min(1.0, (self.decay_end - steps) / self.settings["decay_steps"]))
+        if self.mode == "ppo_only":
+            self.beta = 1.0
+        else:
+            self.beta = max(0.0, min(1.0, (self.decay_end - steps) / self.settings["decay_steps"]))
         self.teacher_actions = 0
         self.all_actions = 0
         self.teacher_inserts = 0
@@ -142,7 +162,7 @@ class FrozenPPOBehavior:
             "behavior/sac_actions": all_actions - teacher_actions,
             "behavior/ppo_replay_transitions": teacher_replay,
             "behavior/collection_start_steps": self.collection_start,
-            "behavior/stage": 0 if self.collection_start < self.ppo_only_steps else
+            "behavior/stage": 0 if self.mode == "ppo_only" or self.collection_start < self.ppo_only_steps else
                 (1 if self.collection_start < self.decay_end else 2),
         }
 
