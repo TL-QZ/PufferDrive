@@ -19,7 +19,9 @@
         "target_entropy/decay_count": 0,
         "target_entropy/forced_decay_count": 0,
         "target_entropy/mean": 1.8913809866623987,
-        "target_entropy/std": 0.12526237816658617
+        "target_entropy/std": 0.12526237816658617,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "latest": {
         "epoch": 1615,
@@ -35,7 +37,9 @@
         "target_entropy/decay_count": 8,
         "target_entropy/forced_decay_count": 7,
         "target_entropy/mean": 0.8819459141201778,
-        "target_entropy/std": 0.0649739692351692
+        "target_entropy/std": 0.0649739692351692,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "minimum_entropy": {
         "epoch": 448,
@@ -51,7 +55,9 @@
         "target_entropy/decay_count": 2,
         "target_entropy/forced_decay_count": 2,
         "target_entropy/mean": 1.4655828365307404,
-        "target_entropy/std": 0.4601731743712317
+        "target_entropy/std": 0.4601731743712317,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "minimum_alpha": {
         "epoch": 1208,
@@ -67,7 +73,9 @@
         "target_entropy/decay_count": 6,
         "target_entropy/forced_decay_count": 6,
         "target_entropy/mean": 1.0922441927110371,
-        "target_entropy/std": 0.076567284581087
+        "target_entropy/std": 0.076567284581087,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_entropy_below_1.0": {
         "epoch": 447,
@@ -83,7 +91,9 @@
         "target_entropy/decay_count": 2,
         "target_entropy/forced_decay_count": 2,
         "target_entropy/mean": 1.5363101279950988,
-        "target_entropy/std": 0.3398285668667177
+        "target_entropy/std": 0.3398285668667177,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_entropy_below_0.1": {
         "epoch": 448,
@@ -99,7 +109,9 @@
         "target_entropy/decay_count": 2,
         "target_entropy/forced_decay_count": 2,
         "target_entropy/mean": 1.4655828365307404,
-        "target_entropy/std": 0.4601731743712317
+        "target_entropy/std": 0.4601731743712317,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_entropy_below_0.001": null,
       "first_exact_zero": null
@@ -217,7 +229,9 @@
         "target_entropy/decay_count": 0,
         "target_entropy/forced_decay_count": 0,
         "target_entropy/mean": 1.8913744012881892,
-        "target_entropy/std": 0.12526339820321897
+        "target_entropy/std": 0.12526339820321897,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       },
       "latest": {
         "epoch": 944,
@@ -233,7 +247,9 @@
         "target_entropy/decay_count": 4,
         "target_entropy/forced_decay_count": 4,
         "target_entropy/mean": 1.4976736445379714e-12,
-        "target_entropy/std": 1.6256501003953624e-06
+        "target_entropy/std": 1.6256501003953624e-06,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       },
       "minimum_entropy": {
         "epoch": 368,
@@ -249,7 +265,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": 1,
         "target_entropy/mean": 1.5445384186540376,
-        "target_entropy/std": 0.5829537970573577
+        "target_entropy/std": 0.5829537970573577,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       },
       "minimum_alpha": {
         "epoch": 364,
@@ -265,7 +283,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": 1,
         "target_entropy/mean": 1.7738967161959882,
-        "target_entropy/std": 0.07261253621427435
+        "target_entropy/std": 0.07261253621427435,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       },
       "first_entropy_below_1.0": {
         "epoch": 366,
@@ -281,7 +301,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": 1,
         "target_entropy/mean": 1.700170462328032,
-        "target_entropy/std": 0.3310745859220918
+        "target_entropy/std": 0.3310745859220918,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       },
       "first_entropy_below_0.1": {
         "epoch": 367,
@@ -297,7 +319,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": 1,
         "target_entropy/mean": 1.620523302912853,
-        "target_entropy/std": 0.4831338663413391
+        "target_entropy/std": 0.4831338663413391,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       },
       "first_entropy_below_0.001": {
         "epoch": 368,
@@ -313,7 +337,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": 1,
         "target_entropy/mean": 1.5445384186540376,
-        "target_entropy/std": 0.5829537970573577
+        "target_entropy/std": 0.5829537970573577,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       },
       "first_exact_zero": {
         "epoch": 368,
@@ -329,7 +355,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": 1,
         "target_entropy/mean": 1.5445384186540376,
-        "target_entropy/std": 0.5829537970573577
+        "target_entropy/std": 0.5829537970573577,
+        "sac/n_steps": 1,
+        "replay/mean_effective_horizon": 1.0
       }
     },
     "peak_evaluation": {
@@ -445,7 +473,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 2.4364458356149115,
-        "target_entropy/std": 0.011929679429803285
+        "target_entropy/std": 0.011929679429803285,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "latest": {
         "epoch": 54,
@@ -461,7 +491,9 @@
         "target_entropy/decay_count": 2,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 2.1256960754324314,
-        "target_entropy/std": 0.01707646118073728
+        "target_entropy/std": 0.01707646118073728,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "minimum_entropy": {
         "epoch": 54,
@@ -477,7 +509,9 @@
         "target_entropy/decay_count": 2,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 2.1256960754324314,
-        "target_entropy/std": 0.01707646118073728
+        "target_entropy/std": 0.01707646118073728,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "minimum_alpha": {
         "epoch": 54,
@@ -493,7 +527,9 @@
         "target_entropy/decay_count": 2,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 2.1256960754324314,
-        "target_entropy/std": 0.01707646118073728
+        "target_entropy/std": 0.01707646118073728,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_entropy_below_1.0": null,
       "first_entropy_below_0.1": null,
@@ -613,7 +649,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 1.964964611824027,
-        "target_entropy/std": 0.22038506281439854
+        "target_entropy/std": 0.22038506281439854,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "latest": {
         "epoch": 190,
@@ -629,7 +667,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 9.69001165176169e-08,
-        "target_entropy/std": 0.00041070324417796024
+        "target_entropy/std": 0.00041070324417796024,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "minimum_entropy": {
         "epoch": 108,
@@ -645,7 +685,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 0.6718582732129487,
-        "target_entropy/std": 0.84742661518573
+        "target_entropy/std": 0.84742661518573,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "minimum_alpha": {
         "epoch": 103,
@@ -661,7 +703,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 1.7422257991271808,
-        "target_entropy/std": 0.07741886048774159
+        "target_entropy/std": 0.07741886048774159,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_entropy_below_1.0": {
         "epoch": 104,
@@ -677,7 +721,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 1.4482577658512346,
-        "target_entropy/std": 0.6514380777919448
+        "target_entropy/std": 0.6514380777919448,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_entropy_below_0.1": {
         "epoch": 104,
@@ -693,7 +739,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 1.4482577658512346,
-        "target_entropy/std": 0.6514380777919448
+        "target_entropy/std": 0.6514380777919448,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_entropy_below_0.001": {
         "epoch": 106,
@@ -709,7 +757,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 0.9865597062192607,
-        "target_entropy/std": 0.8625909748513152
+        "target_entropy/std": 0.8625909748513152,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       },
       "first_exact_zero": {
         "epoch": 108,
@@ -725,7 +775,9 @@
         "target_entropy/decay_count": 1,
         "target_entropy/forced_decay_count": null,
         "target_entropy/mean": 0.6718582732129487,
-        "target_entropy/std": 0.84742661518573
+        "target_entropy/std": 0.84742661518573,
+        "sac/n_steps": null,
+        "replay/mean_effective_horizon": null
       }
     },
     "peak_evaluation": {
@@ -819,6 +871,250 @@
       "agents_per_batch": 2560.0,
       "total_distance_travelled": 155853.5700454712,
       "total_infractions": 11288.000011444092
+    }
+  },
+  {
+    "run": "round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951",
+    "training_rows": 405,
+    "evaluation_rows": 202,
+    "exact_zero_rows": 168,
+    "milestones": {
+      "first": {
+        "epoch": 1,
+        "agent_steps": 5152000,
+        "losses/entropy": 2.450507879257202,
+        "losses/target_entropy": 1.86368,
+        "losses/alpha": 0.09926462918519974,
+        "losses/q1": -0.40913814306259155,
+        "losses/q2": -0.42834076285362244,
+        "losses/critic_loss": 0.6248447299003601,
+        "learning_rate": 0.0004999996768824508,
+        "alpha_learning_rate": 0.0002999998061294705,
+        "target_entropy/decay_count": 0,
+        "target_entropy/forced_decay_count": 0,
+        "target_entropy/mean": 1.891195979402019,
+        "target_entropy/std": 0.12428615846986604,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.926111572265625
+      },
+      "latest": {
+        "epoch": 405,
+        "agent_steps": 1066272000,
+        "losses/entropy": 0.0,
+        "losses/target_entropy": 1.5095808000000002,
+        "losses/alpha": 0.05031060054898262,
+        "losses/q1": -2.7421834468841553,
+        "losses/q2": -2.741912364959717,
+        "losses/critic_loss": 0.0536513552069664,
+        "learning_rate": 0.0004488469879127013,
+        "alpha_learning_rate": 0.0002693081927476208,
+        "target_entropy/decay_count": 2,
+        "target_entropy/forced_decay_count": 2,
+        "target_entropy/mean": 0.0006045395514830807,
+        "target_entropy/std": 0.03483341006639192,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.909494140625
+      },
+      "minimum_entropy": {
+        "epoch": 238,
+        "agent_steps": 643936000,
+        "losses/entropy": 0.0,
+        "losses/target_entropy": 1.6773120000000001,
+        "losses/alpha": 0.004260015208274126,
+        "losses/q1": 2.0237460136413574,
+        "losses/q2": 2.0240542888641357,
+        "losses/critic_loss": 0.6924669742584229,
+        "learning_rate": 0.000481919563720832,
+        "alpha_learning_rate": 0.00028915173823249924,
+        "target_entropy/decay_count": 1,
+        "target_entropy/forced_decay_count": 1,
+        "target_entropy/mean": 1.8385316052300618,
+        "target_entropy/std": 0.5576871477247982,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.92245166015625
+      },
+      "minimum_alpha": {
+        "epoch": 236,
+        "agent_steps": 638592000,
+        "losses/entropy": 1.9146621227264404,
+        "losses/target_entropy": 1.6773120000000001,
+        "losses/alpha": 0.004043808672577143,
+        "losses/q1": 2.522904634475708,
+        "losses/q2": 2.5224051475524902,
+        "losses/critic_loss": 0.03021135926246643,
+        "learning_rate": 0.0004822185202155985,
+        "alpha_learning_rate": 0.0002893311121293591,
+        "target_entropy/decay_count": 1,
+        "target_entropy/forced_decay_count": 1,
+        "target_entropy/mean": 2.007595589781152,
+        "target_entropy/std": 0.04821851110974403,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.99863671875
+      },
+      "first_entropy_below_1.0": {
+        "epoch": 237,
+        "agent_steps": 641312000,
+        "losses/entropy": 0.3376608192920685,
+        "losses/target_entropy": 1.6773120000000001,
+        "losses/alpha": 0.004067630041390657,
+        "losses/q1": 2.457122802734375,
+        "losses/q2": 2.458005905151367,
+        "losses/critic_loss": 0.20563770830631256,
+        "learning_rate": 0.00048206934191092325,
+        "alpha_learning_rate": 0.000289241605146554,
+        "target_entropy/decay_count": 1,
+        "target_entropy/forced_decay_count": 1,
+        "target_entropy/mean": 1.9289797349381723,
+        "target_entropy/std": 0.38967036237420627,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.98174755859375
+      },
+      "first_entropy_below_0.1": {
+        "epoch": 238,
+        "agent_steps": 643936000,
+        "losses/entropy": 0.0,
+        "losses/target_entropy": 1.6773120000000001,
+        "losses/alpha": 0.004260015208274126,
+        "losses/q1": 2.0237460136413574,
+        "losses/q2": 2.0240542888641357,
+        "losses/critic_loss": 0.6924669742584229,
+        "learning_rate": 0.000481919563720832,
+        "alpha_learning_rate": 0.00028915173823249924,
+        "target_entropy/decay_count": 1,
+        "target_entropy/forced_decay_count": 1,
+        "target_entropy/mean": 1.8385316052300618,
+        "target_entropy/std": 0.5576871477247982,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.92245166015625
+      },
+      "first_entropy_below_0.001": {
+        "epoch": 238,
+        "agent_steps": 643936000,
+        "losses/entropy": 0.0,
+        "losses/target_entropy": 1.6773120000000001,
+        "losses/alpha": 0.004260015208274126,
+        "losses/q1": 2.0237460136413574,
+        "losses/q2": 2.0240542888641357,
+        "losses/critic_loss": 0.6924669742584229,
+        "learning_rate": 0.000481919563720832,
+        "alpha_learning_rate": 0.00028915173823249924,
+        "target_entropy/decay_count": 1,
+        "target_entropy/forced_decay_count": 1,
+        "target_entropy/mean": 1.8385316052300618,
+        "target_entropy/std": 0.5576871477247982,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.92245166015625
+      },
+      "first_exact_zero": {
+        "epoch": 238,
+        "agent_steps": 643936000,
+        "losses/entropy": 0.0,
+        "losses/target_entropy": 1.6773120000000001,
+        "losses/alpha": 0.004260015208274126,
+        "losses/q1": 2.0237460136413574,
+        "losses/q2": 2.0240542888641357,
+        "losses/critic_loss": 0.6924669742584229,
+        "learning_rate": 0.000481919563720832,
+        "alpha_learning_rate": 0.00028915173823249924,
+        "target_entropy/decay_count": 1,
+        "target_entropy/forced_decay_count": 1,
+        "target_entropy/mean": 1.8385316052300618,
+        "target_entropy/std": 0.5576871477247982,
+        "sac/n_steps": 2,
+        "replay/mean_effective_horizon": 1.92245166015625
+      }
+    },
+    "peak_evaluation": {
+      "run": "round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951",
+      "epoch": 234,
+      "agent_steps": 633440000,
+      "source": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000234_step_633440000/evaluation_summary.json",
+      "n": 50.0,
+      "offroad_rate": 0.009759999781847,
+      "episode_length": 500.0,
+      "collision_rate": 0.0019999999552965165,
+      "episode_return": 4.596111699104309,
+      "red_light_violation_rate": 0.00039999999105930326,
+      "comfort_violation_count": 6.560000430908986e-06,
+      "velocity_progress_sum": 0.03187782193394378,
+      "num_goals_reached": 4.655199996948242,
+      "lane_center_rate": 0.9825177590847015,
+      "dnf_rate": 0.09127999986708164,
+      "score": 0.7196800000667573,
+      "avg_speed_per_agent": 0.9694588451385499,
+      "avg_distance_per_infraction": 3986.2616705643504,
+      "reward_components/collision": -0.006034241437911987,
+      "reward_components/offroad": -0.029279999524354935,
+      "reward_components/red_light": -0.00039999999105930326,
+      "reward_components/goal": 4.655199996948242,
+      "reward_components/lane_align": -0.00425462372401671,
+      "reward_components/lane_center": -0.012940700098173693,
+      "reward_components/comfort": -0.00016400000778958202,
+      "reward_components/velocity": 0.003984727131202817,
+      "reward_components/timestep": -0.0012447565859183669,
+      "reward_components/reverse": -0.00875460258773819,
+      "reward_components/overspeed": 0.0,
+      "reward_components/ade": 0.0,
+      "at_fault_collision_rate": 0.0006399999856948852,
+      "puffer_score": 0.03442505091428757,
+      "driving_direction_score": 1.0,
+      "speed_limit_compliance": 1.0,
+      "making_progress_rate": 0.04327999942004681,
+      "progress_ratio": 0.09694588427245616,
+      "comfort_score": 1.0,
+      "multi_lane_time": 0.08444009214174003,
+      "multi_lane_score": 0.99564000248909,
+      "active_agent_count": 50.0,
+      "episode_timestep": 500.0,
+      "agents_per_batch": 2560.0,
+      "total_distance_travelled": 605911.7739257812,
+      "total_infractions": 152.0
+    },
+    "latest_evaluation": {
+      "run": "round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951",
+      "epoch": 404,
+      "agent_steps": 1063744000,
+      "source": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000404_step_1063744000/evaluation_summary.json",
+      "n": 50.0,
+      "offroad_rate": 0.6548800022602081,
+      "episode_length": 500.0,
+      "collision_rate": 0.10583999907970429,
+      "episode_return": -9.836139991760254,
+      "red_light_violation_rate": 0.0005599999874830246,
+      "comfort_violation_count": 0.2812403193116188,
+      "velocity_progress_sum": 0.0,
+      "num_goals_reached": 0.0,
+      "lane_center_rate": 0.12437456065416336,
+      "dnf_rate": 0.23872000063955784,
+      "score": 0.0,
+      "avg_speed_per_agent": 0.5659204942286015,
+      "avg_distance_per_infraction": 37.16890506602026,
+      "reward_components/collision": -0.33859054404497146,
+      "reward_components/offroad": -1.9646400001049042,
+      "reward_components/red_light": -0.0005599999874830246,
+      "reward_components/goal": 0.0,
+      "reward_components/lane_align": -0.4101675482988357,
+      "reward_components/lane_center": -0.01699500269535929,
+      "reward_components/comfort": -7.030985865592957,
+      "reward_components/velocity": 0.0,
+      "reward_components/timestep": -0.0003690507427090779,
+      "reward_components/reverse": -0.07380957266315818,
+      "reward_components/overspeed": 0.0,
+      "reward_components/ade": 0.0,
+      "at_fault_collision_rate": 0.04847999942302704,
+      "puffer_score": 0.0,
+      "driving_direction_score": 1.0,
+      "speed_limit_compliance": 1.0,
+      "making_progress_rate": 0.0,
+      "progress_ratio": 0.056591881971806285,
+      "comfort_score": 1.0,
+      "multi_lane_time": 4.729502755641938,
+      "multi_lane_score": 0.7518400021791458,
+      "active_agent_count": 50.0,
+      "episode_timestep": 500.0,
+      "agents_per_batch": 2560.0,
+      "total_distance_travelled": 353699.3017425537,
+      "total_infractions": 9516.000030517578
     }
   }
 ]

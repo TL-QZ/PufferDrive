@@ -33,6 +33,8 @@ import torch
 from omegaconf import OmegaConf
 from torch.nn import functional as F
 
+from pufferlib.sac_diagnostics import SACCollapseDiagnostics
+
 
 STATE_VERSION = 5
 ACTOR_EXPORT_FORMAT = "pufferdrive-sac-actor"
@@ -254,7 +256,7 @@ DEFAULT_CONFIG = dict(
     target_entropy_force_decay_steps=None,
     tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
-    fresh_run=False,
+    fresh_run=False, log_collapse_diagnostics=False,
 )
 
 SAC_TRAIN_KEYS = frozenset(DEFAULT_CONFIG) - {"env"} | {"data_dir"}
@@ -837,6 +839,8 @@ class PuffeSAC:
             )
         if config is None:
             raise ValueError("Supply a SAC training config dictionary")
+        if not isinstance(config.get("log_collapse_diagnostics", False), bool):
+            raise ValueError("log_collapse_diagnostics must be a boolean")
 
         config = resolve_sac_batch_sizes({**DEFAULT_CONFIG, **config}, vecenv)
         config["n_steps"] = _validate_n_steps(config["n_steps"])
@@ -1168,6 +1172,7 @@ class PuffeSAC:
             "device", "total_timesteps", "run_name", "data_dir", "final_model_name",
             "checkpoint_interval", "resume_state_path", "amp", "precision", "compile",
             "compile_mode", "compile_fullgraph", "cpu_offload", "fresh_run",
+            "log_collapse_diagnostics",
         }
         saved_config = {**DEFAULT_CONFIG, **state["config"]}
         saved_config.pop("learning_starts", None)
@@ -1227,6 +1232,9 @@ class PuffeSAC:
         self.last_stats = defaultdict(list)
         self.last_stats_epoch = None
         self.losses = {}
+        collapse_diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
+        if collapse_diagnostics is not None:
+            collapse_diagnostics.reset()
         self.start_time = time.time()
         self.last_log_time = self.start_time
         self.last_log_step = self.global_step
@@ -1683,6 +1691,9 @@ class PuffeSAC:
         q1 = q1.gather(1, mb_actions.unsqueeze(-1)).squeeze(-1)
         q2 = q2.gather(1, mb_actions.unsqueeze(-1)).squeeze(-1)
         loss = F.mse_loss(q1, mb_targets) + F.mse_loss(q2, mb_targets)
+        diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
+        if diagnostics is not None:
+            diagnostics.add_td_errors(q1, q2, mb_targets)
         return loss, q1.detach().mean(), q2.detach().mean()
 
     def _policy_loss(self, mb_obs):
@@ -1694,8 +1705,13 @@ class PuffeSAC:
             q1, q2 = self.critic(mb_obs)
         q1 = q1.float()
         q2 = q2.float()
-        loss = (probs * (self.alpha * logprobs - torch.minimum(q1, q2))).sum(-1).mean()
+        minimum_q = torch.minimum(q1, q2)
+        alpha = self.alpha
+        loss = (probs * (alpha * logprobs - minimum_q)).sum(-1).mean()
         entropy = -(probs * logprobs).sum(-1).mean()
+        diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
+        if diagnostics is not None:
+            diagnostics.add_policy(logits, probs, minimum_q, alpha)
         return loss, entropy.detach()
 
     def _update_target_entropy(self, entropy_sum, logical_batch_count, agent_steps=None):
@@ -1716,6 +1732,14 @@ class PuffeSAC:
         )
 
     def _train_sac_transition(self, losses, profile, epoch, update_policy=True, target_policy=None):
+        if getattr(self, "config", {}).get("log_collapse_diagnostics", False):
+            diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
+            if diagnostics is None:
+                diagnostics = SACCollapseDiagnostics(self.device)
+                self._collapse_diagnostics_tracker = diagnostics
+        else:
+            diagnostics = None
+            self._collapse_diagnostics_tracker = None
         replay_size = len(self.replay)
         if replay_size < self.batch_size:
             return 0
@@ -1767,7 +1791,11 @@ class PuffeSAC:
                 target_value += mb_targets.mean().item() * micro_count / logical_batch_count
 
             if self.config["max_grad_norm"] is not None:
-                torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.config["max_grad_norm"])
+                critic_grad_norm = torch.nn.utils.clip_grad_norm_(
+                    self.critic.parameters(), self.config["max_grad_norm"],
+                )
+                if diagnostics is not None:
+                    diagnostics.add_grad_norm("critic", critic_grad_norm, self.config["max_grad_norm"])
             self.critic_optimizer.step()
 
             update_losses = dict(
@@ -1800,10 +1828,16 @@ class PuffeSAC:
                     entropy_sum += entropy * micro_count
 
                 if self.config["max_grad_norm"] is not None:
-                    torch.nn.utils.clip_grad_norm_(self.policy.parameters(), self.config["max_grad_norm"])
+                    actor_grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.policy.parameters(), self.config["max_grad_norm"],
+                    )
+                    if diagnostics is not None:
+                        diagnostics.add_grad_norm("actor", actor_grad_norm, self.config["max_grad_norm"])
                 self.optimizer.step()
 
                 mean_entropy = entropy_sum / logical_batch_count
+                if diagnostics is not None:
+                    diagnostics.add_entropy_update_mean(mean_entropy)
                 update_losses["policy_loss"] = policy_loss_value
                 update_losses["entropy"] = mean_entropy.item()
                 if self.config.get("learn_alpha", True):
@@ -1946,6 +1980,9 @@ class PuffeSAC:
             metrics = getattr(behavior_policy, "metrics", None)
             if metrics is not None:
                 logs.update(metrics())
+        diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
+        if diagnostics is not None:
+            logs.update(diagnostics.reduce_and_reset(distributed=self.distributed))
         self.nstep_logged_horizon_sum = 0
         self.nstep_logged_insert_count = 0
         self.nstep_logged_quota_discarded = 0
@@ -2200,6 +2237,8 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                     f"Unsupported SAC train settings: {unsupported_names}. "
                     "PPO-only train settings are not used by SAC."
                 )
+            if not isinstance(startup_args["train"].get("log_collapse_diagnostics", False), bool):
+                raise ValueError("log_collapse_diagnostics must be a boolean")
             if startup_args["train"].get("evaluation_interval_epochs") is not None:
                 training_evaluation_scheduled = ppo.drive_benchmark.validate_training_evaluation_config(startup_args)
             train_args = startup_args["train"]

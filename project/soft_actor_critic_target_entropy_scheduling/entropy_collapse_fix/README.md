@@ -1,6 +1,6 @@
 # TES entropy-collapse candidates
 
-Read [DIAGNOSIS.md](DIAGNOSIS.md) for the run-by-run findings and the distinction between Round 2's recovery and Round 3's persistent collapse. The [history plot](evidence/entropy_and_performance.png) and [numerical evidence](evidence/summary.json) come from existing local artifacts.
+Read [DIAGNOSIS.md](DIAGNOSIS.md) for the run-by-run findings, including Round 2's recovery and persistent collapse in both one-step and two-step Round 3 TES. The [history plot](evidence/entropy_and_performance.png) and [numerical evidence](evidence/summary.json) come from existing local artifacts. The candidate configurations below remain one-step controls; they do not add a two-step intervention.
 
 This folder contains four isolated, fresh-run candidates derived from the existing Round 2 and Round 3 TES SAC configs. Both variants hold the selected target entropy at `1.863680` by setting `train.target_entropy_schedule: constant` and clearing `train.target_entropy_force_decay_steps`. The stabilized variant adds only an actor learning-rate reduction. These are runnable candidates; no training has been run here and no improvement is established.
 
@@ -47,4 +47,4 @@ source .venv/bin/activate
 python project/soft_actor_critic_target_entropy_scheduling/entropy_collapse_fix/diagnose.py
 ```
 
-This overwrites only this folder's generated evidence; review the diagnosis against the new snapshot after rerunning. It reads standard TES trial-98 histories and does not evaluate newly trained candidate checkpoints.
+This overwrites only this folder's generated evidence; review the diagnosis against the new snapshot after rerunning. It reads standard TES trial-98 histories plus `round3_nstep2_tes_sac` trial 98 and does not evaluate newly trained candidate checkpoints. Each run's evaluations are bounded by its captured learner step count. If extraction encounters an incomplete JSONL write, retry after the writer finishes.

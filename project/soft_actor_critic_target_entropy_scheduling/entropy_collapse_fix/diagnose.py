@@ -15,6 +15,7 @@ from pathlib import Path
 OUTPUT = Path(__file__).resolve().parent
 RUNS = OUTPUT.parent / "runs"
 REPO = OUTPUT.parents[2]
+NSTEP_RUNS = REPO / "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac"
 os.environ.setdefault("MPLCONFIGDIR", str(OUTPUT / ".mplconfig"))
 
 import matplotlib
@@ -28,6 +29,7 @@ TRAIN_FIELDS = [
     "losses/alpha", "losses/q1", "losses/q2", "losses/critic_loss",
     "learning_rate", "alpha_learning_rate", "target_entropy/decay_count",
     "target_entropy/forced_decay_count", "target_entropy/mean", "target_entropy/std",
+    "sac/n_steps", "replay/mean_effective_horizon",
 ]
 EVAL_FIELDS = [
     "puffer_score", "progress_ratio", "avg_speed_per_agent", "offroad_rate",
@@ -50,13 +52,19 @@ def main():
     training_rows = []
     evaluation_rows = []
     histories = []
-    for metrics_path in sorted(RUNS.glob("*/trial_98/metrics.jsonl")):
+    metrics_paths = sorted(RUNS.glob("*/trial_98/metrics.jsonl"))
+    metrics_paths += sorted(NSTEP_RUNS.glob("*/trial_98/metrics.jsonl"))
+    for metrics_path in metrics_paths:
         raw = metrics_path.read_bytes()
+        if raw and not raw.endswith(b"\n"):
+            raise RuntimeError(f"Incomplete JSONL write; retry extraction: {metrics_path}")
         rows = [json.loads(line) for line in raw.splitlines() if line.strip()]
         rows = [row for row in rows if "losses/entropy" in row]
         if not rows:
             continue
         run = metrics_path.parent.parent.name
+        if metrics_path.is_relative_to(NSTEP_RUNS):
+            run = f"round3_nstep2_tes_sac/{run}"
         provenance.append({"path": str(metrics_path.relative_to(REPO)),
                            "sha256": hashlib.sha256(raw).hexdigest(), "rows": len(rows)})
         training_rows.extend({"run": run, **row} for row in rows)
@@ -66,6 +74,8 @@ def main():
             match = re.fullmatch(r"epoch_(\d+)_step_(\d+)", path.parent.name)
             if match is None:
                 raise ValueError(f"Unexpected evaluation directory: {path}")
+            if int(match[2]) > rows[-1]["agent_steps"]:
+                continue
             eval_raw = path.read_bytes()
             report = json.loads(eval_raw)
             row = {"run": run, "epoch": int(match[1]), "agent_steps": int(match[2]),
@@ -99,14 +109,14 @@ def main():
     (data_dir / "summary.json").write_text(json.dumps(summaries, indent=2) + "\n")
     (data_dir / "provenance.json").write_text(json.dumps({
         "extracted_at_utc": datetime.now(timezone.utc).isoformat(),
-        "scope": "Nonempty standard TES trial_98 histories; excludes PPO behavior variants",
+        "scope": "Standard TES and Round 3 two-step TES trial_98 histories; excludes PPO behavior variants. Evaluations are bounded by each captured learner history's last agent_steps.",
         "sources": provenance,
     }, indent=2) + "\n")
 
     figure, axes = plt.subplots(len(histories), 3, figsize=(15, 3.2 * len(histories)), squeeze=False)
     for index, (run, rows, evals) in enumerate(histories):
         steps = [row["agent_steps"] / 1e9 for row in rows]
-        label = run.split("_2026")[0] + " / " + run.split("_2026")[1][:13]
+        label = run.split("_2026")[0].replace("/sac108_grid", "") + " / " + run.split("_2026")[1][:13]
         axes[index, 0].plot(steps, [row["losses/entropy"] for row in rows], label="Observed H")
         axes[index, 0].plot(steps, [row["losses/target_entropy"] for row in rows], label="Target H")
         axes[index, 0].set_ylabel(label + "\nEntropy (nats)")

@@ -22,6 +22,17 @@ Use `--gpus ID,ID` to select another pair. Add `--dry-run --no-wandb` to preview
 
 ## Reading order
 
+For the TES collapse investigation, [Round 4](configs/round4_nstep2_tes_sac/README.md)
+retains Round 3's two-step adaptive TES configuration, reduces the logical
+minibatch from 128,000 to 64,000 rows per rank, and enables optional collapse
+diagnostics. The 32,000-row microbatch remains unchanged. This doubles logical
+updates per collection cycle from 48 to 96; preparation and dry runs do not
+establish whether it improves stability.
+
+```bash
+bash project/soft_actor_critic_multi_step_return/scripts/launch_round4.sh --trial 98 --dry-run --no-wandb
+```
+
 1. Read the [boundary contract](design.md#boundary-contract), especially terminal versus timeout and invalid masks.
 2. Read the [overlapping-window example](design.md#overlapping-windows) to see exactly what reaches replay.
 3. Read [validation](design.md#validation) before selecting run settings.

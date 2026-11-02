@@ -1,6 +1,6 @@
 {
-  "extracted_at_utc": "2026-11-02T14:34:39.820396+00:00",
-  "scope": "Nonempty standard TES trial_98 histories; excludes PPO behavior variants",
+  "extracted_at_utc": "2026-11-02T18:34:07.804151+00:00",
+  "scope": "Standard TES and Round 3 two-step TES trial_98 histories; excludes PPO behavior variants. Evaluations are bounded by each captured learner history's last agent_steps.",
   "sources": [
     {
       "path": "project/soft_actor_critic_target_entropy_scheduling/runs/round2_tes_sac_20261029T044847.014369240_539543/trial_98/metrics.jsonl",
@@ -5629,6 +5629,819 @@
     {
       "path": "project/soft_actor_critic_target_entropy_scheduling/runs/target_entropy_scheduling_20261028T050127.741263566_3833135/trial_98/learner/eval/training/carla_fast/epoch_000190_step_1907904000/evaluation_summary.json",
       "sha256": "352e205ceaad04e6afaf3e530dcb8fd339ed763ae9629c23012d65f1d769086d"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/metrics.jsonl",
+      "sha256": "009b77707c5262c84318986c84ed0f8b8f27474bdf0fc17f4e250da1e87e2bdc",
+      "rows": 405
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000002_step_7648000/evaluation_summary.json",
+      "sha256": "73be7aef87659f122075df4da3dea92072cdd801e527d6ea2253eef5c9f03b57"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000004_step_12640000/evaluation_summary.json",
+      "sha256": "340faae379fee4b2b7281f2fe62657ee5642400eef086c456d01b784b8c0dee1"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000006_step_17632000/evaluation_summary.json",
+      "sha256": "a5eb5add3da345de2276173d1735c63b8509bf82945b5bbd69fc0142348b3609"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000008_step_22656000/evaluation_summary.json",
+      "sha256": "fd7bd3fb7c1502a258422793a3f02f74661a3088a1b8538d79f417ebf52f31b0"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000010_step_27776000/evaluation_summary.json",
+      "sha256": "7baad2eabc09418c0406183aa2e46dd4ad1d16477d1099f076f56da45c6094b9"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000012_step_32864000/evaluation_summary.json",
+      "sha256": "f782a7f4769fcdad65edfe5e2e06789fa78f5779cf936aedbfa2c941a6fbcad1"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000014_step_37984000/evaluation_summary.json",
+      "sha256": "4e21dec159cf79af031fdb0d7d3fa37f7fcc62bd1cc5bbf4a968a994f28d7edb"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000016_step_43136000/evaluation_summary.json",
+      "sha256": "37597edb4f2e4dc907f01a55895cb52be7ed858de1f9bec0b41684e06bf95246"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000018_step_48384000/evaluation_summary.json",
+      "sha256": "fa1b01566e00cb6e388585caf3c1a168e5a69f5e0daf9ce419288ddbc5e8c89a"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000020_step_53632000/evaluation_summary.json",
+      "sha256": "5e10d0f53431a6c8bc6b30f75ef421314217f0a6a3f053a21f656affa99fcb26"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000022_step_58976000/evaluation_summary.json",
+      "sha256": "d3d930dff25205304f56fa07719a6f766a0e55cb7957bee869edd38a7305870d"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000024_step_64224000/evaluation_summary.json",
+      "sha256": "d565fcf7d2cccca711e34b2011cafa7ec840bf6522cbbd68e8431df47bf4b02b"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000026_step_69600000/evaluation_summary.json",
+      "sha256": "e957faa73392648a3a570bbeb3cddca7b9ed9a8413f6fcb23f86237e9ed54094"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000028_step_75040000/evaluation_summary.json",
+      "sha256": "3e555d73fba7f33ab308265bbf55b0741f980220c3e36cb466328cfcce75dc01"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000030_step_80480000/evaluation_summary.json",
+      "sha256": "5fcd8211a39fe55ccec4b3fcdef3f87488b2fbabbe2f2c9d3a08c118e7117856"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000032_step_85984000/evaluation_summary.json",
+      "sha256": "468820489342dea403387c85b60cd0071f10efb5317b50e8b92d38269dbbb81c"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000034_step_91392000/evaluation_summary.json",
+      "sha256": "f049e2feaa80915c17d2d78bdf4a959ce1be04692139add99f164fe1f3f64c3d"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000036_step_96896000/evaluation_summary.json",
+      "sha256": "e32af028b191ec184f421d2c5ea528a138d0474dc4fb98f17fd1e3f496af438e"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000038_step_102400000/evaluation_summary.json",
+      "sha256": "0f8394b90061ab3f6e51fd6e112c4bafb6e6a5d98a1354e1e711bb12587702b1"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000040_step_107904000/evaluation_summary.json",
+      "sha256": "4732f5bc7235f8a5ba92d5ae95d2dacfcf1cb2bffcd955ac1dc4248a078e9049"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000042_step_113344000/evaluation_summary.json",
+      "sha256": "e40fda4ca6296c72b352565f8330e8fdab7b23596ee1b41f49428bdd675ad87c"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000044_step_118784000/evaluation_summary.json",
+      "sha256": "4c58e183dec285551b6d0b6aa235020a2bedeb493155ec8a3b8314c87aa8f6eb"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000046_step_124288000/evaluation_summary.json",
+      "sha256": "1707ee7ce4afc82082892e24b4f230cc8a9c3b44a2618ffe5a332d06f4e4092d"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000048_step_129792000/evaluation_summary.json",
+      "sha256": "7546ee626902a81003ef9ab055414917e40e510b97974dc95ec78718dc03c988"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000050_step_135296000/evaluation_summary.json",
+      "sha256": "e158aafbbf52c187f1a1be8ae00a62aa51b76d7df65ee5558984f61b610eedb8"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000052_step_140800000/evaluation_summary.json",
+      "sha256": "eb07d43c68161654dcea1715f77ebeeb1bb5326421c9ad600123857d97e8fab0"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000054_step_146368000/evaluation_summary.json",
+      "sha256": "da8ee671c424c76bb4b050ea6cfdde5b860ff22ac88822992b51d5e60b4ccfeb"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000056_step_151904000/evaluation_summary.json",
+      "sha256": "4de67d3769ac1dbeef60c7ab1d27095d820ffc46a9b00596a451a136ede094ac"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000058_step_157472000/evaluation_summary.json",
+      "sha256": "4503c28deb19a27588e4c5a6f9d3c64ea05201ee498977891f5c31a0c26fe784"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000060_step_163040000/evaluation_summary.json",
+      "sha256": "870810572d4b9a907ab1500d513af51f11d020a96f98894a7674ce3367ee7875"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000062_step_168544000/evaluation_summary.json",
+      "sha256": "96bd502695800ac12ea6f2e3b08ef8a3b1982878c5445146e40b806d2c37783c"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000064_step_174048000/evaluation_summary.json",
+      "sha256": "c5e1184df580eb4d833aa35fdc88239da19c1a12d70c6e4670f3216d88510eb6"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000066_step_179552000/evaluation_summary.json",
+      "sha256": "8e69e695edfb6c0f7edf75ea91ae84d85780d472565f921d8d23768cf6658e34"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000068_step_185120000/evaluation_summary.json",
+      "sha256": "fbe22534bdad3f35d162d81fb6c1d6811025f4f3de994155fa6963326bdbf15d"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000070_step_190656000/evaluation_summary.json",
+      "sha256": "0b9927a5122d386ca77ccc283498ae397bc617bca8129f1ee1fee52e1ae88edc"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000072_step_196192000/evaluation_summary.json",
+      "sha256": "6630d8b410f59a502769b2b00ddaaf3cb18b9b88670af28fd2fa2d1fbd804d34"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000074_step_201632000/evaluation_summary.json",
+      "sha256": "c25e1ac1e9446bebc2cd1e1ab96ee9dd6f5203fc69dadcd69f7b44cce40a93ea"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000076_step_207072000/evaluation_summary.json",
+      "sha256": "72d7bf8d3d85ac8e77d0ff531dcc0ddb5e630a5cc600a23916a3d4cb8850d5ef"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000078_step_212576000/evaluation_summary.json",
+      "sha256": "9d907f1b0f4b968e4bf7bec6288f0c3b9e985caa694e314a1f8c1b2f467e2ea7"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000080_step_218080000/evaluation_summary.json",
+      "sha256": "7e1ff0ab8737e30e9e526653cb6200e32eb0f12e843eaf7e6048010a61de8908"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000082_step_223584000/evaluation_summary.json",
+      "sha256": "12ad35512fd9a1611c40021119e07fb1404d3d25c5b7a59fc41f181215dd115e"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000084_step_229088000/evaluation_summary.json",
+      "sha256": "22c85e1b05d9c426743c9d085b2a9a2ce91c5af2cf0448441aa88471ce573e22"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000086_step_234592000/evaluation_summary.json",
+      "sha256": "eca2285a06baa03b940f4ee4f8efb5dfd44ba984dcafa7aa8f1f86b9e166a235"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000088_step_240096000/evaluation_summary.json",
+      "sha256": "c22549731fd47d19a22b1367f32d516fa7500a00cdca5617e82ace8d879e96c5"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000090_step_245600000/evaluation_summary.json",
+      "sha256": "819774f0077634347bf349ea778c7df6a638025f6fca98693e8f9058fd40c2d3"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000092_step_251104000/evaluation_summary.json",
+      "sha256": "308711b72928213ed41643ad437cc343cda48d0f627425c33d41ad3649a03a3b"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000094_step_256608000/evaluation_summary.json",
+      "sha256": "fd752e3f64b1c6560279c292cdd9cd845d31a7a8d0a323b2a62ca0ee358b0dfd"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000096_step_262112000/evaluation_summary.json",
+      "sha256": "07ff1329c1252aa183a5079c8f3df036e633811d3d51079b76a722b446dc8d1b"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000098_step_267616000/evaluation_summary.json",
+      "sha256": "3f4a1784272ab9083363629cca4324862cc5f15fd22612ce52922dc3169485c1"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000100_step_273120000/evaluation_summary.json",
+      "sha256": "637d1655312043b1ca654e6d38907aa6a4e6a28bd1070515cb058ada67e16f7c"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000102_step_278624000/evaluation_summary.json",
+      "sha256": "7c9e714c040f0dfde528ffbb8ac2ceec37a3d7c7eabc6a5423140ac518da95fc"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000104_step_284128000/evaluation_summary.json",
+      "sha256": "8af4f257547a78f3cbe8edfc520b49ebf1141e11006a5f9692ac593958363256"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000106_step_289632000/evaluation_summary.json",
+      "sha256": "66f49fda0b599cc1830dfee4668600578a79ee5db8bc0b3fdfe9da163097f5c7"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000108_step_295136000/evaluation_summary.json",
+      "sha256": "4d615d60677259e8c460b23339ff2e9e112819dfa055a880e7a8dc4ec6e863dd"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000110_step_300640000/evaluation_summary.json",
+      "sha256": "7e0b88e401deb847f5bcd17293dd2900e18caa303c6dd7c0c16cec8c09d73514"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000112_step_306144000/evaluation_summary.json",
+      "sha256": "e4d442db626bce9e7d4a1635066b032802a035d0f036c9b744dd360410f2fa1d"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000114_step_311648000/evaluation_summary.json",
+      "sha256": "d8117f8a6aa4cd627e5121f9e33802ca3d8a7c9c5c9cd1c16c5fb5b4d240333c"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000116_step_317152000/evaluation_summary.json",
+      "sha256": "efc04b9e9adcdacd00ab3d111cc235ddc2635a70941d88069750f5f2b007f4f2"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000118_step_322656000/evaluation_summary.json",
+      "sha256": "1ae9843c5c9a486e2055f3166dc28794986a10317e79bff76df6facb2a56aa48"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000120_step_328160000/evaluation_summary.json",
+      "sha256": "a364900bc6f6824f6b1c0be4769b9eb95e2903fcb0339ec225dbe5ba7a0241ed"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000122_step_333664000/evaluation_summary.json",
+      "sha256": "0ce9aaa4c901466f36566e8358ca0fcfb823c81d59d44e311ab67d98f187dff3"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000124_step_339168000/evaluation_summary.json",
+      "sha256": "51a239ea209686e59dbd7cd2b8279cd396bfde23d2df24a2ae34abea7c39276f"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000126_step_344672000/evaluation_summary.json",
+      "sha256": "5fe74953bd5c47b860d3308ee558272f82536081bd334286acd9347b121e3c67"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000128_step_350176000/evaluation_summary.json",
+      "sha256": "df505e84bff7cb2efeae6b9647238b7fabb78eb72b69704cae78b301e48e4ef8"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000130_step_355680000/evaluation_summary.json",
+      "sha256": "1f343b851d41fe93aee17d445d8f1cc77383679f8d155ffc9494962a7303491f"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000132_step_361184000/evaluation_summary.json",
+      "sha256": "404419727f9780b56d29274146fc12bb6205348d0d173b46d803566e0bcc9a03"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000134_step_366752000/evaluation_summary.json",
+      "sha256": "52b3d6e3e46b0fe4d507a876611d6fcbc4b9114fe1d2a8d7daa0f49a17eab68f"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000136_step_372320000/evaluation_summary.json",
+      "sha256": "a80207fae4f9f6b85ea9483517cd61d2c88fc992f84fc54ede223a5c28e2451b"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000138_step_377888000/evaluation_summary.json",
+      "sha256": "1f4d71a0514f6f4d134563c3ad9b60f6308b7899246186534a36588a965c6b3a"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000140_step_383456000/evaluation_summary.json",
+      "sha256": "dd77e9dcdbdbfabe57da80f6494a234bbe1d0b5d475181c3b395e82dab81399a"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000142_step_389024000/evaluation_summary.json",
+      "sha256": "16ad90a2b18aed3f5dbad65dc2ae6d1a204331cde2463c90ab6f4a5e7951b939"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000144_step_394592000/evaluation_summary.json",
+      "sha256": "6a296391a5441206582c4492d53e2d99f8636acb8252e81bc3ca0a9c58412dc1"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000146_step_400160000/evaluation_summary.json",
+      "sha256": "01dcd78f49b5d01c21a7bb9114e08f8e53d5976dea74c881da19a97154936a5e"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000148_step_405728000/evaluation_summary.json",
+      "sha256": "3c901aac15be73f32c6c68c03d0c7dd409cc82c8b28bef8c1da4b76ef5cb7448"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000150_step_411296000/evaluation_summary.json",
+      "sha256": "2944b8aeffc3a052c79bf36f637e73ba513d5ac01127678033dc193e52ad7b29"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000152_step_416864000/evaluation_summary.json",
+      "sha256": "b88f1e21dc5d79e5a51b315cb0cfde08cf82efa1d848998a8ed21969a37af509"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000154_step_422432000/evaluation_summary.json",
+      "sha256": "e9f13b4e73f52bd38844f7e8399bbb958e7fcd95ace21a77312a2cd22d2ee3f9"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000156_step_428000000/evaluation_summary.json",
+      "sha256": "8cdcd3624bfd291db8ea4542702c8a94f46026ef0dfa63d6ea30ae58dec3a067"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000158_step_433504000/evaluation_summary.json",
+      "sha256": "49ee7263e0872ee4569e93a06d23bf4ee7e64e8e17cc2263746b4b18ba1d1e19"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000160_step_439008000/evaluation_summary.json",
+      "sha256": "411868241999100eabe53a700973f902dbcb3e03fcb989fe4378e6a3aefe56ae"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000162_step_444512000/evaluation_summary.json",
+      "sha256": "a4f3df4a566bf592785f01c2c712fe74503aa05daa1c09f927cf71808cb40d67"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000164_step_450016000/evaluation_summary.json",
+      "sha256": "b6dd00198a91d1a3e465ba353bb2e0076db6bbcf84508449978bebdd10302a0d"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000166_step_455520000/evaluation_summary.json",
+      "sha256": "e3eabc1c2eb2d07813fe5ae7dfac197523c4df4ed85f9e7f565ab5ec0c9097ff"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000168_step_461024000/evaluation_summary.json",
+      "sha256": "46af11c1c92ff0d4b48a709cf4782e9a63106e812e9a36277054cb667c4790fc"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000170_step_466528000/evaluation_summary.json",
+      "sha256": "a4738ebca39075fa151dd1fffc74422576eef7da861d15a8b9252901d9ae4b37"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000172_step_472000000/evaluation_summary.json",
+      "sha256": "eeeb3c841a968100bef394dfb26708700d5542542c83224b94b8bd85ac71727b"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000174_step_477472000/evaluation_summary.json",
+      "sha256": "af1a544b363347715b9f73afba8a542922999d0fd022a7dfa4a19c09dae91a30"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000176_step_482976000/evaluation_summary.json",
+      "sha256": "e4a80f8fec02c9f6d737fc7c700ac60cfcfe6d5ed226880d8704c7960403d1fc"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000178_step_488480000/evaluation_summary.json",
+      "sha256": "316d7672a3ddd97210d6feef1353f4fc85cf3a9dbebb122347e1d11f6ecb1cf7"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000180_step_493984000/evaluation_summary.json",
+      "sha256": "3500d04ee1ff4c8b3cf7dc3a13ddfaf8176bf10ecde8e6ff39022f327dd8d509"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000182_step_499488000/evaluation_summary.json",
+      "sha256": "a216cc9ba99cd657d0140aac08106751648a7829725373caf47a71086152f700"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000184_step_504992000/evaluation_summary.json",
+      "sha256": "bbaeef8f1896d42d0800afbc1a60648900e59292c922024b82741e75a23b8216"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000186_step_510496000/evaluation_summary.json",
+      "sha256": "45f2486eb3c003c6d74929daa7f98c058783eda94d5175e6b83869bddd20d4b2"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000188_step_516000000/evaluation_summary.json",
+      "sha256": "3737f4d01f21bce088ac6920f238440f1a6437179d8f991cd741ee6c5d392f6b"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000190_step_521472000/evaluation_summary.json",
+      "sha256": "696f9c7f9693d75dfbeae78129ebadad2f72d5b06a95493e620befe892125767"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000192_step_526592000/evaluation_summary.json",
+      "sha256": "0aaa50488eedc6c31ca4d76c79e513362be437bf3f51e193ba761b0b0bfb3aa3"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000194_step_531616000/evaluation_summary.json",
+      "sha256": "afc34841b4088005ebc0c30b41755c6f1f440365b53c10c931c65f8ffdcdd381"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000196_step_536608000/evaluation_summary.json",
+      "sha256": "0569e22b3963e8a42137c2d25b61b5ca83069b9a90303cc99c2f6b9415b42140"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000198_step_541600000/evaluation_summary.json",
+      "sha256": "31ec828ad92090d840dbb5243293cb2d5db82cad455c3ae63faafe35a2287d43"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000200_step_546592000/evaluation_summary.json",
+      "sha256": "79b318e08f3aed1c3366b97a38249fb52996ca855ccce9718707bc702436d1bd"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000202_step_551584000/evaluation_summary.json",
+      "sha256": "5e31d64d510a3f64b816e537baffe4f0bee0b5f038f964270cf3202aefc9a8fa"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000204_step_556576000/evaluation_summary.json",
+      "sha256": "a9365813275b59e5aae0bda55b3a98b0325e1ec84c391c27a3bd12033d3c25bf"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000206_step_561568000/evaluation_summary.json",
+      "sha256": "457361f4a51ac188d4cb5c4bd9d109b69e64915a2c190a3d23ff82bbf6b112f4"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000208_step_566688000/evaluation_summary.json",
+      "sha256": "d6be45f7728b8b6393f58b8ff65d089ac20926dc84d7541cb213256a0657d591"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000210_step_571808000/evaluation_summary.json",
+      "sha256": "69e0750c0adbd1da807ed9aeb16fadce393cd09e68b7de02dd438bfd33e6a199"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000212_step_576928000/evaluation_summary.json",
+      "sha256": "b87612f9ed04961272f648b7724403a42f6b98a9de4b2ca380ea130db1f79d15"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000214_step_582048000/evaluation_summary.json",
+      "sha256": "ce301d7093e8b615d74221388efd0bd87969eb70c4db7bd2d34b37965010c259"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000216_step_587232000/evaluation_summary.json",
+      "sha256": "ba1a159a5a55aa7d5ca2c0a6045a64ddec24dd777ffd5b2d9a16835005ed147e"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000218_step_592416000/evaluation_summary.json",
+      "sha256": "2bc17203aac120cb2c73b660da190a76b5e9e3a9a525cf7eba04cb2b222ba7f1"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000220_step_597600000/evaluation_summary.json",
+      "sha256": "cac6ee441747748681e4302aa2c14b4f2cc7f04443dec10518fcba9525375b20"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000222_step_602720000/evaluation_summary.json",
+      "sha256": "0aec3e3eaa79c68b693ae7b611dc29b13668aded80e1ee9906dffc16e3d7c20a"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000224_step_607840000/evaluation_summary.json",
+      "sha256": "8f405a0f3b89e50945b404d356b9eb466fcb3b71561f5fdbaf6c6a2ee94fc4a6"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000226_step_612960000/evaluation_summary.json",
+      "sha256": "de4c92b3dd593acd05960bc255f7d848cb632d8996952124c302031a92d3fc69"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000228_step_618080000/evaluation_summary.json",
+      "sha256": "03cf253651645ece24d106b00f1cf0bf07f05582db2f76a8990e579be20db196"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000230_step_623200000/evaluation_summary.json",
+      "sha256": "70d141a7f4da8a466206f6e696a832304402f003a37ea0164d3824d1c4c803c2"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000232_step_628320000/evaluation_summary.json",
+      "sha256": "d7920d77b6e631d8d226582f6b3e15ab2cdbc66ff79f0976966092bf38d6f06b"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000234_step_633440000/evaluation_summary.json",
+      "sha256": "f257cde99999e3498548f930b82e78eee895bd025f09e69d07677fae5080018f"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000236_step_638592000/evaluation_summary.json",
+      "sha256": "ecfb49d63fb04ef98680d70c8e57a75609fbf16cd42a766639f3585019968c04"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000238_step_643936000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000240_step_648928000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000242_step_653920000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000244_step_658912000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000246_step_663904000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000248_step_668896000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000250_step_673888000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000252_step_678880000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000254_step_683872000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000256_step_688864000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000258_step_693856000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000260_step_698848000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000262_step_703840000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000264_step_708832000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000266_step_713856000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000268_step_718848000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000270_step_723872000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000272_step_728864000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000274_step_733888000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000276_step_738880000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000278_step_743872000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000280_step_748896000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000282_step_753888000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000284_step_758912000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000286_step_763968000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000288_step_768992000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000290_step_774016000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000292_step_779104000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000294_step_784128000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000296_step_789152000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000298_step_794176000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000300_step_799232000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000302_step_804256000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000304_step_809248000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000306_step_814304000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000308_step_819296000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000310_step_824352000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000312_step_829408000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000314_step_834432000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000316_step_839520000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000318_step_844640000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000320_step_849728000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000322_step_854848000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000324_step_859904000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000326_step_865024000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000328_step_870112000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000330_step_875200000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000332_step_880320000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000334_step_885440000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000336_step_890560000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000338_step_895648000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000340_step_900768000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000342_step_905856000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000344_step_910976000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000346_step_916064000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000348_step_921152000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000350_step_926272000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000352_step_931392000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000354_step_936512000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000356_step_941600000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000358_step_946720000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000360_step_951808000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000362_step_956896000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000364_step_962016000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000366_step_967136000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000368_step_972256000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000370_step_977376000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000372_step_982464000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000374_step_987584000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000376_step_992640000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000378_step_997696000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000380_step_1002784000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000382_step_1007840000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000384_step_1012960000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000386_step_1018048000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000388_step_1023136000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000390_step_1028192000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000392_step_1033280000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000394_step_1038368000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000396_step_1043488000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000398_step_1048544000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000400_step_1053632000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000402_step_1058688000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
+    },
+    {
+      "path": "project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/sac108_grid_20261102T020032Z258872951/trial_98/learner/eval/training/carla_fast/epoch_000404_step_1063744000/evaluation_summary.json",
+      "sha256": "9516a74c9fbdddc16b6ededf158f2397c60e3bbc38d0216cba484ea77bebef74"
     }
   ]
 }

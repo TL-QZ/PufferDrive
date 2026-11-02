@@ -1,7 +1,8 @@
 # TES trial 98: entropy and policy collapse
 
-**Finding:** the latest Round 3 and the long original TES trial 98 suffer persistent
-entropy collapse. Round 2 also suffers a severe transient collapse, but recovers.
+**Finding:** the latest Round 3, its two-step TES derivative, and the long original
+TES trial 98 suffer persistent entropy collapse within their observed histories.
+Round 2 also suffers a severe transient collapse, but recovers.
 The strongest explanation is weak entropy regularization followed by an abrupt
 actor/critic instability and policy saturation. The logs establish the failure;
 they do not identify the initiating minibatch or prove a unique numerical cause.
@@ -12,9 +13,9 @@ validated cure. From this folder, preview using `bash scripts/launch.sh --round 
 
 ## Evidence and scope
 
-Snapshot extracted on 2026-11-02 directly from local run artifacts, including
-2,803 learner records and 1,402 saved `carla_fast` evaluations across four
-nonempty standard TES trial-98 runs. This refreshes the older analysis directory;
+Snapshot extracted on 2026-11-02 at 18:34 UTC directly from local run artifacts,
+including 3,208 learner records and 1,604 saved `carla_fast` evaluations across
+four standard TES trial-98 runs and the Round 3 two-step TES run. This refreshes the older analysis directory;
 that directory was not modified. Frozen-PPO collection variants are excluded.
 
 | Run | Observed received rows | Entropy failure | Driving result |
@@ -22,6 +23,7 @@ that directory was not modified. Frozen-PPO collection variants are excluded.
 | Original TES, Oct 28 | 1.908B | H=0 from epoch 108; 83 zero-H records | Peak puffer score .4602; final 0 |
 | Round 2, Oct 29 | 4.000B | Minimum H=.02774; no exact zero | Recovers; later peaks at .5375, ends .4627 |
 | Round 3, Oct 31 | 2.361B | H=0 from epoch 368; 577 zero-H records | Peak .4318; final 0 |
+| Round 3 two-step TES, Nov 2 | 1.066B snapshot | H=0 from epoch 238; 168 zero-H records | Peak .03443; latest evaluation 0 |
 | Short original attempt, Oct 27 | .593B | H ends 2.109; no entropy collapse | Ends with puffer score 0 despite high H |
 
 The Oct 27 attempt is useful counterevidence: high entropy alone does not ensure
@@ -89,6 +91,60 @@ decay is disabled: forced decay cannot be a necessary cause of the failure.
 It also used an 8,192,000-row replay per rank and a qualifying count of 1,
 compared with 2,048,000 rows and a count of 200 in Round 2/3; this is contextual
 evidence of recurrence, not an otherwise identical schedule ablation.
+
+## Additional failure: Round 3 two-step TES
+
+Run: `project/soft_actor_critic_multi_step_return/runs/round3_nstep2_tes_sac/`
+`sac108_grid_20261102T020032Z258872951/trial_98`. The snapshot captures 405 learner
+records through 1,066,272,000 received rows and 202 evaluations through epoch 404
+/ 1,063,744,000 rows. There is no completion summary at inspection time; these
+are snapshot endpoints, not final results.
+
+| Epoch | Received rows | H | Target H | Alpha | Critic loss |
+|---:|---:|---:|---:|---:|---:|
+| 234 | 633.440M | 1.9925 | 1.677312 | .004147 | .009961 |
+| 236 | 638.592M | 1.9147 | 1.677312 | .004044 | .030211 |
+| 237 | 641.312M | .33766 | 1.677312 | .004068 | .205638 |
+| 238 | 643.936M | 0 | 1.677312 | .004260 | .692467 |
+| 405 | 1,066.272M | 0 | 1.509581 | .050311 | .053651 |
+
+The best observed evaluation was already weak: epoch 234 had puffer score
+.03443, speed .96946 m/s, and progress ratio .09695. At epoch 236, puffer score
+already drops to zero while entropy is still 1.9147; speed is .69210 m/s and
+some goal-reaching behavior remains. At epoch 238, entropy is zero, goals are
+zero, and the severe failure vector appears. By the latest evaluation,
+score is zero, speed .56592 m/s, progress .05659, off-road .65488, and collision
+.10584. Unlike one-step Round 3, this run did not first reach a strong driving
+policy; it has both poor pre-collapse learning and subsequent entropy saturation.
+
+The first forced target reduction was at 502.240M rows (epoch 183), and the second
+at 1,002.784M (epoch 380). Neither coincides with the sharp collapse at 643.936M.
+Alpha subsequently increases about 12x, but entropy remains exactly zero in all
+168 captured records from epoch 238 onward. The logged effective return horizon
+is approximately two before collapse and about 1.91 afterward, consistent with
+more boundary-shortened returns; a horizon change alone does not establish a
+collector defect.
+
+This strengthens the diagnosis of a shared actor/critic/temperature instability:
+two-step returns do not prevent it. It also weakens any explanation based only on
+one-step targets or alpha crossing one universal threshold: this run collapses
+around alpha .004 rather than the one-step run's .0015. The relevant quantities
+include action-value gaps relative to alpha, logit saturation, and actor update
+size; raw logit and gap diagnostics remain missing. The earlier collapse is an
+observation from these particular runs, not proof that two-step returns generally
+cause earlier collapse. Changing the horizon changes bootstrapping and introduces
+uncorrected intermediate behavior-policy dependence, so an additional horizon
+effect remains possible.
+
+Saved learner configs match in environment, TES parameters, gamma, tau, learning
+rates, and replay settings; their differences are the return horizon and expected
+run identity/catalog paths. Thus the two-step comparison is more closely matched
+than the older-round comparison, but still lacks replicated runs.
+
+The existing `round3_constant_control` and `round3_stabilized` candidate configs
+are one-step controls. They do not automatically preserve this run's `n_steps=2`;
+an equivalent two-step intervention must explicitly retain that horizon and its
+private benchmark catalog. No new candidate training was launched for this update.
 
 ## Mechanism: what is verified and what is inferred
 
