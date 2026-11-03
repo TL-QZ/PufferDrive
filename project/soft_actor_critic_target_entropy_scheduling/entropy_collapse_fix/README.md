@@ -1,5 +1,7 @@
 # TES entropy-collapse candidates
 
+Latest analysis: [Round 5 two-step TES collapse](ROUND5_DIAGNOSIS.md), including the new reward components, replay-refresh comparison, and missing diagnostic flag. Reproduce with `python project/soft_actor_critic_target_entropy_scheduling/entropy_collapse_fix/diagnose_round5.py` from the activated repository venv.
+
 Read [DIAGNOSIS.md](DIAGNOSIS.md) for the run-by-run findings, including Round 2's recovery and persistent collapse in both one-step and two-step Round 3 TES. The [history plot](evidence/entropy_and_performance.png) and [numerical evidence](evidence/summary.json) come from existing local artifacts. The candidate configurations below remain one-step controls; they do not add a two-step intervention.
 
 This folder contains four isolated, fresh-run candidates derived from the existing Round 2 and Round 3 TES SAC configs. Both variants hold the selected target entropy at `1.863680` by setting `train.target_entropy_schedule: constant` and clearing `train.target_entropy_force_decay_steps`. The stabilized variant adds only an actor learning-rate reduction. These are runnable candidates; no training has been run here and no improvement is established.
