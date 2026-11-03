@@ -1,0 +1,22 @@
+{
+  "main_gpu6": {
+    "status": "passed",
+    "recorded_rows": 955806,
+    "source_hashes_match": true,
+    "return_identities": true,
+    "finite_values": true,
+    "models_frozen": true
+  },
+  "main_gpu7": {
+    "status": "passed",
+    "recorded_rows": 943329,
+    "source_hashes_match": true,
+    "return_identities": true,
+    "finite_values": true,
+    "models_frozen": true
+  },
+  "tests_passed": 13,
+  "report_links": "passed",
+  "checkpoint_era_shared_source_parity": "passed",
+  "review": "collector source and analyzer statistics reviewed; scientific interpretation reviewed"
+}

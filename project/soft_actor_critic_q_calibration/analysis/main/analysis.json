@@ -1,0 +1,339 @@
+{
+  "analysis_version": 1,
+  "bootstrap_samples": 250,
+  "bootstrap_seed": 20261102,
+  "distance_bins_m": [
+    "[0,5)",
+    "[5,10)",
+    "[10,20)",
+    "[20,40)",
+    "[40,80)",
+    "[80,160)",
+    "[160,infinity)"
+  ],
+  "invalid_distance_category": "invalid_or_unreachable",
+  "optional_columns_present": [
+    "bootstrap_tail",
+    "collision_coeff",
+    "comfort_coeff",
+    "goal_hit_next",
+    "goal_radius_m",
+    "goal_speed_mps",
+    "graph_status",
+    "offroad_coeff",
+    "truncation_endpoint"
+  ],
+  "outputs": [
+    "distance_summary.csv",
+    "residual_summary.csv",
+    "coverage.csv",
+    "reliability.csv",
+    "confounder_summary.csv",
+    "censoring_summary.csv",
+    "horizon_sensitivity.csv",
+    "distance_calibration.png",
+    "residuals_by_distance.png",
+    "value_reliability.png",
+    "behavior_confounders.png",
+    "tail_sensitivity.png"
+  ],
+  "overall": {
+    "behavior_fields_available": [
+      "goal_hit_next"
+    ],
+    "behavior_fields_missing": [
+      "waypoint_success",
+      "collision",
+      "offroad",
+      "reward_goal_component"
+    ],
+    "censored_rows": 1886080,
+    "censored_rows_with_bootstrap_estimate": 1886080,
+    "coefficient_summary": {
+      "collision_coeff": {
+        "maximum": 2.999946117401123,
+        "minimum": 0.0001251697540283203,
+        "stratified": true,
+        "unique_sampled_values": 6125
+      },
+      "comfort_coeff": {
+        "maximum": 0.09999216347932816,
+        "minimum": 1.76429750808893e-06,
+        "stratified": true,
+        "unique_sampled_values": 6126
+      },
+      "goal_radius_m": {
+        "maximum": 11.998342514038086,
+        "minimum": 2.001248836517334,
+        "stratified": true,
+        "unique_sampled_values": 6125
+      },
+      "goal_reward_coeff": {
+        "maximum": 1.0,
+        "minimum": 1.0,
+        "stratified": false,
+        "unique_sampled_values": 1
+      },
+      "goal_speed_mps": {
+        "maximum": 19.998014450073242,
+        "minimum": 0.003912448883056641,
+        "stratified": true,
+        "unique_sampled_values": 6125
+      },
+      "offroad_coeff": {
+        "maximum": 2.9985127449035645,
+        "minimum": 0.0003401041030883789,
+        "stratified": true,
+        "unique_sampled_values": 6124
+      }
+    },
+    "complete_cluster_count": 79,
+    "complete_g_soft_mean": -0.8773234486579895,
+    "complete_g_soft_standard_deviation_across_realized_rows": 0.6479946600611562,
+    "complete_g_soft_variance_across_realized_rows": 0.41989707946777344,
+    "complete_true_terminal_target_rows": 13055,
+    "graph_distance_coverage": [
+      {
+        "complete_clusters": 5,
+        "complete_rows": 58,
+        "distance_bin": "[0,5)",
+        "support_status": "sparse_under_30_clusters"
+      },
+      {
+        "complete_clusters": 0,
+        "complete_rows": 0,
+        "distance_bin": "[5,10)",
+        "support_status": "sparse_under_30_clusters"
+      },
+      {
+        "complete_clusters": 0,
+        "complete_rows": 0,
+        "distance_bin": "[10,20)",
+        "support_status": "sparse_under_30_clusters"
+      },
+      {
+        "complete_clusters": 3,
+        "complete_rows": 5,
+        "distance_bin": "[20,40)",
+        "support_status": "sparse_under_30_clusters"
+      },
+      {
+        "complete_clusters": 2,
+        "complete_rows": 58,
+        "distance_bin": "[40,80)",
+        "support_status": "sparse_under_30_clusters"
+      },
+      {
+        "complete_clusters": 8,
+        "complete_rows": 233,
+        "distance_bin": "[80,160)",
+        "support_status": "sparse_under_30_clusters"
+      },
+      {
+        "complete_clusters": 73,
+        "complete_rows": 8907,
+        "distance_bin": "[160,infinity)",
+        "support_status": "at_least_30_clusters"
+      }
+    ],
+    "graph_distance_status_counts": {
+      "missing_current_or_goal_lane": 28,
+      "no_active_goal": 3840,
+      "reachable": 1575353,
+      "unreachable_or_invalid_graph_entry": 319914
+    },
+    "independent_cluster_definition": "run_id + scene_id + episode_id; all agents, sampled steps, and shared rollout rows remain together",
+    "interpretation": {
+      "bootstrap_tail": "g_soft_bootstrap is a separate critic-dependent estimate and is never included as Monte Carlo ground truth.",
+      "censored_rows": "g_soft is an observed partial return and is not treated as zero-tail truth or a general lower bound.",
+      "complete_target": "Rows with censored=false and finite g_soft; this suffix reaches a true terminal even when the selected row itself is not terminal.",
+      "distance": "graph_distance_m is a raw lane-graph proxy, not exact route length; Euclidean distance is reported in parallel.",
+      "flat_q": "Flat Q by distance alone is not evidence of miscalibration; assess Q against returns within distance and confounder strata.",
+      "realized_return_noise": "One realized return is a noisy sample of conditional Q; reported RMSE contains policy and environment return variance."
+    },
+    "min_q_mismatch_sensitivity": [
+      {
+        "cluster_count": 79,
+        "mean_min_q_residual": 1.96430242061615,
+        "min_q_mae": 1.9680346250534058,
+        "min_q_rmse": 2.079814910888672,
+        "row_count": 13055,
+        "subset": "all_rows"
+      },
+      {
+        "cluster_count": 79,
+        "mean_min_q_residual": 1.9643148183822632,
+        "min_q_mae": 1.9680473804473877,
+        "min_q_rmse": 2.079834461212158,
+        "row_count": 13054,
+        "subset": "exclude_goal_mismatch"
+      }
+    ],
+    "minimum_interpretable_clusters_per_distance_bin": 30,
+    "row_count": 1899135
+  },
+  "pooling_contracts": [
+    {
+      "action_selection": "sample",
+      "alpha": 0.0005304708029143512,
+      "checkpoint_sha256": "62c813b78aa7856ea7d858fde397d3f5095fa6ca5d09a81c8f7ffd287ec820ea",
+      "gamma": 0.999,
+      "num_agents": 3200,
+      "source_config_sha256": "7a9dd17ff06276aa2391ea0716acf0c6d03ca39b19f6c1c6566879aac731c493"
+    },
+    {
+      "action_selection": "sample",
+      "alpha": 0.0005304708029143512,
+      "checkpoint_sha256": "62c813b78aa7856ea7d858fde397d3f5095fa6ca5d09a81c8f7ffd287ec820ea",
+      "gamma": 0.999,
+      "num_agents": 3200,
+      "source_config_sha256": "7a9dd17ff06276aa2391ea0716acf0c6d03ca39b19f6c1c6566879aac731c493"
+    }
+  ],
+  "row_count": 1899135,
+  "run_count": 2,
+  "runs": [
+    {
+      "metadata": {
+        "action_seed": 71011,
+        "action_selection": "sample",
+        "alpha": 0.0005304708029143512,
+        "checkpoint_sha256": "62c813b78aa7856ea7d858fde397d3f5095fa6ca5d09a81c8f7ffd287ec820ea",
+        "distance_definition": "raw current-lane to active-goal-lane precomputed graph metric; no within-lane correction",
+        "env_seed": 61011,
+        "gamma": 0.999,
+        "map_ids": [
+          5,
+          7,
+          1,
+          1,
+          3,
+          3,
+          3,
+          4,
+          6,
+          7,
+          3,
+          3,
+          5,
+          4,
+          0,
+          5,
+          0,
+          6,
+          5,
+          1,
+          3,
+          3,
+          5,
+          4,
+          4,
+          7,
+          7,
+          0,
+          5,
+          3,
+          6,
+          7,
+          5,
+          2,
+          5,
+          6,
+          2,
+          2,
+          6,
+          1,
+          3,
+          3,
+          2,
+          1,
+          6
+        ],
+        "source_config_sha256": "7a9dd17ff06276aa2391ea0716acf0c6d03ca39b19f6c1c6566879aac731c493",
+        "training_git_commit": "72954b69217f3e3dbd2c38101233d05b5942a4fd"
+      },
+      "num_agents": 3200,
+      "row_count": 955806,
+      "run_directory": "/common/users/ql236/auto_driving/PufferDrive/project/soft_actor_critic_q_calibration/runs/main_gpu6",
+      "run_id": "main_gpu6"
+    },
+    {
+      "metadata": {
+        "action_seed": 71012,
+        "action_selection": "sample",
+        "alpha": 0.0005304708029143512,
+        "checkpoint_sha256": "62c813b78aa7856ea7d858fde397d3f5095fa6ca5d09a81c8f7ffd287ec820ea",
+        "distance_definition": "raw current-lane to active-goal-lane precomputed graph metric; no within-lane correction",
+        "env_seed": 61012,
+        "gamma": 0.999,
+        "map_ids": [
+          3,
+          7,
+          6,
+          6,
+          5,
+          7,
+          5,
+          0,
+          5,
+          3,
+          2,
+          1,
+          1,
+          6,
+          5,
+          6,
+          2,
+          3,
+          5,
+          6,
+          4,
+          1,
+          6,
+          1,
+          7,
+          3,
+          2,
+          1,
+          1,
+          4,
+          2,
+          2,
+          7,
+          4,
+          1,
+          0,
+          2,
+          5,
+          3,
+          0,
+          0,
+          2,
+          0,
+          1,
+          4,
+          2,
+          1,
+          2,
+          4,
+          1,
+          4,
+          4,
+          0,
+          0,
+          3,
+          0,
+          3,
+          6,
+          2
+        ],
+        "source_config_sha256": "7a9dd17ff06276aa2391ea0716acf0c6d03ca39b19f6c1c6566879aac731c493",
+        "training_git_commit": "72954b69217f3e3dbd2c38101233d05b5942a4fd"
+      },
+      "num_agents": 3200,
+      "row_count": 943329,
+      "run_directory": "/common/users/ql236/auto_driving/PufferDrive/project/soft_actor_critic_q_calibration/runs/main_gpu7",
+      "run_id": "main_gpu7"
+    }
+  ]
+}

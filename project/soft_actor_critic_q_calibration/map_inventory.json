@@ -1,0 +1,53 @@
+{
+  "ordering": "Drive.map_files sorted .bin paths; run map_ids index this list",
+  "maps": [
+    {
+      "map_id": 0,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town01.bin",
+      "bytes": 110684,
+      "sha256": "f9588f53e99992079b410e9698aa134f5e76ced2571e5258491dcdcb991b5d0b"
+    },
+    {
+      "map_id": 1,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town02.bin",
+      "bytes": 58488,
+      "sha256": "344e7403a7640f295a7699a7079be5fdf021e598a7717b158fbff356afe7f21c"
+    },
+    {
+      "map_id": 2,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town03.bin",
+      "bytes": 835196,
+      "sha256": "a3c7236c33a73ea56790eef78446f464f5446e12727268f1901200ba5b10e983"
+    },
+    {
+      "map_id": 3,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town04.bin",
+      "bytes": 1094692,
+      "sha256": "542335b3a50397ad2fa768802305d653b35a44213d20d886aac9ab7ec9d6c660"
+    },
+    {
+      "map_id": 4,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town05.bin",
+      "bytes": 1141488,
+      "sha256": "a374442906513ea0f4b3375e5dc27319a316d6920eae22073cc3eda037188024"
+    },
+    {
+      "map_id": 5,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town06.bin",
+      "bytes": 1056392,
+      "sha256": "e8543ba8ef3a20421a4dace873053c091366d5673829602c04d4a0950c7a5221"
+    },
+    {
+      "map_id": 6,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town07.bin",
+      "bytes": 402560,
+      "sha256": "1b849de376ef5b427ed8723003d14daa30e48a37ab88293a66f3878152799c32"
+    },
+    {
+      "map_id": 7,
+      "path": "pufferlib/resources/drive/binaries/carla/opendrive__Town10HD.bin",
+      "bytes": 169676,
+      "sha256": "ed7a0660c297d12abe65eae3a38c6f46ca1020528d240243599ca36969374d5c"
+    }
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "rows": 1899135,
+  "complete_rows": 13055,
+  "complete_fraction": 0.0068741821934722915,
+  "mean_min_q": 1.4588563442230225,
+  "complete_mean_min_q": 1.0869789123535156,
+  "complete_mean_soft_return": -0.8773234897325001,
+  "complete_mean_reward_return": -1.0208004344430954,
+  "complete_mean_entropy_return": 0.1434769447105955,
+  "mean_twin_disagreement": 0.010400621220469475,
+  "censored_mean_min_q": 1.4614304304122925,
+  "censored_mean_partial_soft_return": -0.1999205479647439,
+  "censored_mean_bootstrapped_soft_return": 0.3081322324492013,
+  "censored_mean_bootstrap_tail": 0.5080527804139452,
+  "censored_mean_retained_discount": 0.35884628335482327,
+  "censored_mean_q_minus_bootstrapped": 1.1532982523859547,
+  "speed_median_mps": 0.1741713583469391,
+  "speed_below_1mps_fraction": 0.8828598282902479,
+  "sampled_goal_hit_events": 67,
+  "goal_mismatch_count": 3860,
+  "censored_timeout_fraction": 1.0,
+  "initial_step": {
+    "rows": 6127,
+    "mean_min_q": 0.9968569874763489,
+    "mean_soft_partial": -0.34926622804161467,
+    "mean_soft_bootstrap": -0.24411545020814873,
+    "median_speed_mps": 0.0
+  },
+  "late_steps": {
+    "rows": 377655,
+    "mean_min_q": 1.493058443069458,
+    "mean_soft_partial": -0.0661666411318665,
+    "mean_soft_bootstrap": 1.0360300107664147,
+    "median_speed_mps": 0.16284704208374023
+  }
+}

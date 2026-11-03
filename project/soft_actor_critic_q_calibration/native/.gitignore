@@ -1,0 +1,6 @@
+/build/
+/diagnostic_binding.c
+/diagnostic_binding*.so
+/diagnostic_env_binding.h
+/.diagnostic_binding.sha256
+/__pycache__/
