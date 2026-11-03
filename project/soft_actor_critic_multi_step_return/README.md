@@ -33,6 +33,11 @@ establish whether it improves stability.
 bash project/soft_actor_critic_multi_step_return/scripts/launch_round4.sh --trial 98 --dry-run --no-wandb
 ```
 
+[Round 4.1](configs/round4_1_nstep2_tes_sac/README.md) retains Round 4 and lowers
+the initial actor and critic learning rates to `1e-4`, and the initial alpha
+learning rate to `7e-5`. Cosine annealing remains enabled. Preview it with
+`bash project/soft_actor_critic_multi_step_return/scripts/launch_round4_1.sh --trial 98 --dry-run --no-wandb`.
+
 1. Read the [boundary contract](design.md#boundary-contract), especially terminal versus timeout and invalid masks.
 2. Read the [overlapping-window example](design.md#overlapping-windows) to see exactly what reaches replay.
 3. Read [validation](design.md#validation) before selecting run settings.
