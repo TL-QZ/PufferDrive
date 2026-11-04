@@ -2,6 +2,7 @@ import random
 from types import SimpleNamespace
 
 import numpy as np
+import pytest
 import torch
 from torch import nn
 
@@ -10,8 +11,21 @@ from pufferlib.pufferl_sac_ppo_warm_start import (
     IsolatedRNG,
     ReplayRefresh,
     WarmStartCoordinator,
+    validate_config,
 )
 from pufferlib.sac_replay import TensorReplay
+
+
+def test_validate_config_rejects_pql_before_warm_start_resources():
+    config = {
+        "ppo": {"train": {"total_timesteps": 1}},
+        "sac": {"train": {"total_timesteps": 1, "return_estimator": "pql"}},
+        "warm_start": {},
+        "provenance": {"expected_world_size": 1},
+    }
+
+    with pytest.raises(ValueError, match="does not support return_estimator='pql'"):
+        validate_config(config, world_size=1)
 
 
 class _ActorBackbone(nn.Module):

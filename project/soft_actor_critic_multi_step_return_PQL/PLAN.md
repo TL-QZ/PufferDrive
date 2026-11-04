@@ -1,18 +1,30 @@
 # PQL as an alternative to fixed n-step SAC
 
-Status: design only. No learner, replay, configuration, launcher, or training
-changes are authorized by this document. The requested deliverable is this plan.
+Status: implemented; final validation is recorded in
+[`reports/implementation_validation.md`](reports/implementation_validation.md).
+The follow-up request authorizes the learner,
+sequence replay, tests, and two config/launcher sets based on `round4_1` and
+`round2_enhance`. Official training runs are reserved for the user. The numerical
+contract below is retained; the source-trial anchor is historical context.
 
-The proposed option is a Peng-style lambda mixture of the existing SAC n-step
+The implemented option is a Peng-style lambda mixture of the existing SAC n-step
 targets. It preserves reward-only accumulation and soft endpoint bootstraps.
 It is an alternative learner mode alongside the existing fixed n-step mode,
 not a replacement for that mode or a request for another standalone algorithm.
 
 ## 1. Target definition and experimental anchor
 
-Use this exact saved trial as the configuration anchor:
+The original planning anchor was this saved trial:
 
 `../soft_actor_critic_multi_step_return/runs/round4_nstep2_tes_sac/sac108_grid_20261102T202418Z560107829/configs/trial_98.yaml`
+
+The implementation request supersedes that single-trial packaging choice:
+derive `configs/round4_1_pql` from the current
+`../soft_actor_critic_multi_step_return/configs/round4_1_nstep2_tes_sac` (trials
+97 and 98), and `configs/round2_enhance_pql` from `configs/round2_enhance` in that
+same source project (trial 01). Preserve each source's learner/environment
+settings independently, including their different budgets and refresh ratios;
+change only the return estimator controls, identities and catalog paths.
 
 The first PQL candidate uses maximum sequence length H=128 and lambda=0.95.
 128 denotes transitions in a segment, not an episode length, recurrent BPTT,
@@ -33,7 +45,7 @@ replay-residency, and segment boundaries can shorten the available sequence.
 | Hardware topology | Two ranks; 20 environments x 3,200 agent slots per rank; CPU-offloaded replay |
 
 Keep critic-target entropy enabled. The previously prepared no-critic-entropy
-experiment is separate. Clone the benchmark catalog into the future PQL config
+experiment is separate. Clone the benchmark catalog into the isolated PQL config
 directory and change only its path; preserve its contents. Do not reuse a
 checkpoint from the source run: initial experiments start fresh.
 
@@ -127,10 +139,12 @@ overlapping context/lookahead and extra target-forward work; it is not the
 initial design selected here.
 
 Preserve exactly 64,000 loss rows per full logical update and at most 32,000
-per microbatch. Split segments at packing boundaries if necessary and mark
-these as artificial bootstrap cuts. Never duplicate/drop rows to fill a batch,
+per microbatch. Split segments at logical-batch packing boundaries if necessary
+and mark these as artificial bootstrap cuts. Never duplicate/drop rows to fill a batch,
 and never treat padding as a transition or a loss row. Prefer flat packed rows
 with explicit segment boundaries. Actor updates use the same valid rows.
+Microbatch boundaries do not cut targets: compute the logical batch's detached
+scalar targets before slicing it into gradient microbatches (Section 4.3).
 
 Compute endpoint values and backward targets per segment using a fixed actor,
 alpha, and target-critic snapshot for that logical update. Batch network
@@ -198,7 +212,7 @@ gate before any long run.
 
 ## 4. Future implementation stages and validation
 
-Suggested public controls, not implemented keys:
+Public estimator controls:
 
 ```yaml
 train:
@@ -233,7 +247,7 @@ checkpointing must not imply replay/trajectory restoration.
    quotas, budgets, diagnostics, and checkpoint validation. Keep old-mode RNG
    behavior unchanged. CPU synthetic gradient and two-rank tests precede CUDA.
 4. **Prepare isolated trial configs and resource checks.** Extend SAC defaults
-   and startup validation only as required; add future config/launcher/docs in
+   and startup validation only as required; add isolated config/launcher/docs in
    this PQL project. Extend the sweep preflight for sequence storage and peak
    memory. Compare generated configs to the exact source trial; allow only
    return-estimator controls and run identity/catalog paths. Validate benchmark
@@ -248,11 +262,199 @@ No C changes are planned. Tests should exercise boundary behavior and numerical
 oracles, not merely restate the implementation. Padded diagnostic values, if
 any, must never affect TES, loss means, or collective reductions.
 
+### 4.1. GAE reuse decision, grounded in current source
+
+Reuse the backward-return mathematics and existing SAC training machinery.
+Do not call PPO's `_compute_advantages()` or modify the PPO kernel for the
+first implementation. The small new return scan is not the main engineering
+cost; preserving temporal replay links and training accounting is.
+
+Current source locations:
+
+| Component | Existing behavior | PQL decision |
+|---|---|---|
+| `pufferlib/pufferl.py::_compute_advantages` | Uses PPO rollout values/masks, calls advantage kernel, returns `advantages + values` | Mathematical comparison only; no PPO-buffer dependency |
+| `pufferlib/pufferl.py::compute_puff_advantage` | Dispatches to compiled kernel; can transfer tensors to CPU and back when CUDA extension is unavailable | Use as a small CPU test oracle, not the production PQL path |
+| `pufferlib/extensions/pufferlib.cpp::puff_advantage_row` and `extensions/cuda/pufferlib.cu::puff_advantage_row_cuda` | Dense float32 `[segments, horizon]`, backward loop from `horizon-2`, rewards/dones indexed at `t+1`, one mask gates bootstrap and trace | Leave unchanged; PQL needs transition-aligned inputs and separate boundary decisions |
+| `pufferlib/pufferl_sac.py::_compute_targets` | Discrete expectation over current actor and minimum target critics, optionally including entropy | Extract the shared soft-bootstrap computation; preserve fixed-n output and call contract |
+| SAC `_critic_loss`, `_policy_loss`, optimizer/TES/target updates | Selected-action twin-Q regression and discrete SAC policy optimization | Reuse directly |
+
+For an isolated segment of h transitions, an adapter to the GAE kernel is
+mathematically possible: allocate h+1 state slots, put r_t and terminal_t in
+slot t+1, use all-one ratios and clips, and set values to Vbar(s_0)...Vbar(s_h).
+Then `advantages[:, :h] + values[:, :h]` equals our PQL targets. At a true
+terminal the final value can be zero; at a timeout/cut it must be the true
+successor's soft value. Each cut must end a separate kernel row, since setting
+its done flag would incorrectly remove a nonterminal bootstrap. Variable
+lengths require length grouping or additional masked scratch storage.
+The test adapter must supply contiguous float32 2D inputs explicitly: the
+existing CPU/CUDA validation code discards the return value of `.contiguous()`
+and therefore does not repair strided inputs. Record this adjacent issue without
+changing the PPO extensions in this work. The legacy `tests/test_c_advantage.cu`
+targets a different kernel and is not a substitute for testing the registered op.
+
+That adapter introduces shifted arrays, an extra state slot, baseline values
+that cancel algebraically, ratio buffers, and grouping/packing work. It also
+couples SAC to PPO extension availability. It is useful for equivalence tests,
+but is not selected for production merely to avoid a short backward scan.
+Do not import PPO advantage normalization, priority filtering, value clipping,
+or V-trace importance ratios into the SAC objectives.
+
+Planning validation (2026-11-03): an ad hoc CPU check passed 72 combinations
+of segment length {1,3,7}, gamma {0,0.9,0.999}, lambda {0,0.5,0.95,1} and
+terminal/nonterminal tails. For every suffix, the explicit mixture, direct
+backward recursion and existing compiled CPU GAE kernel through the shifted
+adapter agreed within float32 tolerance. This verifies the algebra/adapter,
+not an implemented PQL learner, replay integration or CUDA performance.
+
+### 4.2. File ownership and implemented interfaces
+
+The interfaces below are now implemented. Keep new estimator
+and sequence-storage concepts in dedicated modules; avoid duplicating the SAC
+optimizer loop or creating a general-purpose return-estimator framework.
+
+| File | Planned change |
+|---|---|
+| New `pufferlib/sac_returns.py` | Pure detached `compute_pql_targets(rewards, discounts, next_values, segment_offsets, trace_lambda)` returning float32 `[B]` |
+| New `pufferlib/sac_sequence_replay.py` | `SequenceReplay` composing `TensorReplay` for the five existing payload fields; owns FIFO insertion, generations, temporal links, per-agent tail state, and epoch segment planning |
+| `pufferlib/pufferl_sac.py` | Config validation and replay construction, collector metadata routing, shared bootstrap-value helper, PQL batch preparation, checkpoint metadata and diagnostics |
+| `tests/unit_tests/test_sac_pql_returns.py`, `test_sac_sequence_replay.py`, `test_sac_pql_collection.py`, `test_sac_pql_learner.py` | New numerical, topology, collector and learner acceptance tests; extend existing distributed/startup/resume suites where relevant |
+| This project's configs/scripts plus existing sweep preflight | Isolated source-trial-derived launch setup; estimator-aware memory estimates and config parity checks |
+
+Reuse `TensorReplay` allocation, copied storage and `get_batch()` transfers by
+composition. The sequence wrapper controls its writes so payload replacement
+cannot bypass generation/link maintenance. Existing fixed-n users continue to
+use `TensorReplay` and `NStepAccumulator` unchanged. Do not add a second copy of
+observation storage in the wrapper.
+
+Sequence metadata uses flat integer arrays: predecessor/successor row indices
+and expected generations, generation per occupied row, stable agent identity,
+episode/boundary metadata, insertion age, and per-agent last row/generation.
+On overwrite, invalidate reciprocal links only when their generations match;
+sampling also verifies generations. Enumerate resident chain heads in stable
+order, visit each row exactly once, split at H, then shuffle segments using the
+seeded training RNG. Bound traversal by resident row count and segment scans
+by H; duplicate visits, cycles, or cross-agent links are errors. Expected stale
+links caused by eviction are cuts, not malformed new transitions.
+
+The collector reuses `observe_transition()`, `_consume_final_observation_infos()`
+and `record_actions()`. Carry compacted stable IDs and terminal/truncation flags
+alongside raw payloads. Process invalid IDs and quota-discarded IDs before
+linking the next retained transition. Terminal and truncation rows may link
+from their predecessors, but cannot link forward across reset. A collection
+pause alone does not clear a valid per-agent tail.
+
+Validate PQL settings before both environment and replay construction, including
+the public `train()` startup path and direct `PuffeSAC` construction. PQL rejects
+`n_steps != 1`, nonempty injected replay, PPO behavior providers/factories and
+PPO warm-start workflows. Persist mode, H, lambda and an explicit entropy
+convention identifier such as `soft_each_return_endpoint` in checkpoint config.
+Legacy missing mode resolves to fixed-n; mismatched estimator settings reject
+resume. Reuse current learner-only checkpoint machinery: replay, links and
+pending actions restart empty, and no exact trajectory resume is promised.
+
+### 4.3. One logical learner update, with microbatch-invariant targets
+
+The epoch plan is flat replay indices `[B]` in segment order plus integer
+`segment_offsets[S+1]`; adjacent offsets delimit S nonempty segments. There
+are no padding transitions. B counts loss rows, not sequences or context rows.
+Only logical-batch packing can introduce an additional cut; changing
+`max_minibatch_size` must not change G for a fixed logical batch plan.
+Check this within floating-point tolerance. Batch-size-dependent or stochastic
+model layers would need an explicit target-forward policy to preserve this
+contract; verify the selected actor/critic architecture before integration.
+
+1. **Prepare scalar bootstrap inputs.** Fetch raw rewards/discounts and forward
+   real nonterminal successor observations in chunks no larger than the
+   microbatch limit. Actor logits and twin-Q outputs are `[chunk_rows, A]`;
+   reduce over A to `next_values[chunk_rows]`. Terminal rows require no network
+   evaluation of placeholder successors; set their unused scalar value to
+   zero. Hold the actor, alpha and target critic fixed throughout this logical
+   target pass by performing no optimizer or target updates. All arithmetic
+   feeding the scan is detached float32.
+2. **Scan all segments backward.** Start each segment tail with `r+d*Vnext`;
+   for internal rows use `r+d*((1-lambda)*Vnext+lambda*Gnext)`. Build flat index
+   groups by distance from segment end on CPU when constructing the batch
+   plan. At depth zero compute all tails together; at each subsequent depth
+   gather the already computed successors and scatter current targets. This
+   uses at most H batched tensor iterations and O(B) scalar/index storage,
+   without a Python loop per transition or padded observations. Never gather
+   an absent successor and mask it afterward.
+3. **Reuse critic gradient accumulation.** Fetch current observations/actions
+   in existing microbatches, slice the precomputed G vector, call `_critic_loss`
+   and weight each backward by `micro_count / logical_batch_count`. Preserve
+   DDP `no_sync`, clipping after accumulation and one critic optimizer step.
+4. **Reuse the actor and temperature updates.** Train the actor on exactly the
+   same valid loss rows after the critic step. Keep entropy aggregation, alpha
+   optimization and TES cadence unchanged. PQL does not supply an advantage
+   tensor to the actor.
+5. **Reuse final update bookkeeping.** Polyak-update target parameters/buffers
+   once, increment existing row/update counters, and log sequence telemetry.
+   Discard scalar targets after the logical update; recompute for the next
+   update with the new actor/alpha/target critics.
+
+Keep a single shared optimizer/update loop. The mode branch selects the epoch
+index plan and target preparation; fixed-n retains its current random-row plan
+and per-microbatch `_compute_targets()` calls. Do not create extra random draws
+or target forwards in the default mode. The PQL prepass stores only scalar
+targets/inputs and indices for a logical batch, not B observation activations.
+
+The bounded PyTorch scan is the initial correctness implementation. Profile
+network forward, CPU planning, transfers and scan separately on realistic
+segment distributions. Verify eager/compiled network modes; do not assume the
+ragged scan supports full-graph capture or hide CPU transfers behind the PPO
+fallback. A specialized compiled scan is a later optimization only if profiling
+shows a material bottleneck. No CPU/CUDA extension edits are required initially.
+
+### 4.4. Delivery order and acceptance gates
+
+Each stage is reviewable before starting its dependent stage. The follow-up
+implementation request authorizes stages 1-4. Runtime evidence and unavailable
+hardware checks must be reported separately; no official runs are launched.
+
+1. **Numerical core and shared bootstrap extraction.** Compare the new scan to
+   an independent explicit n-step-mixture oracle for every suffix, and to the
+   existing CPU GAE kernel through the h+1 adapter on small contiguous examples.
+   Cover unequal segment lengths, h=1, lambda=0/1, gamma=0, terminal/timeout
+   tails, negative rewards, changing alpha between updates, and no target
+   gradients. Construct twin critics whose ordering swaps across states to
+   verify minimum-before-mixture semantics. Preserve fixed-n target tests.
+2. **Sequence storage and collection.** Test interleaved stable IDs, shared
+   observation-buffer reuse, FIFO wraparound, generation mismatches, invalid
+   gaps, quota discards, true terminal versus simultaneous truncation,
+   pre-reset final observations, and continuation across collection calls.
+   Every resident valid row must appear exactly once in the epoch loss plan.
+   Reuse scenarios from `test_sac_nstep_collection.py` and
+   `test_sac_final_observations.py`, with raw-row/link expectations.
+3. **Learner integration and distributed accounting.** Extend the tiny-network
+   fixtures in `test_sac_learner.py` and CPU/Gloo harness in
+   `test_sac_distributed.py`. Compare full versus microbatched updates for the
+   same segments, including a sequence crossing a microbatch boundary. Compare
+   lambda=0 to one-step SAC using identical ordered loss rows (different replay
+   samplers need not produce identical full training runs). Verify different
+   segment shapes across ranks still give equal logical update counts, correct
+   gradient/entropy weighting, once-only row coverage and unchanged TES/target
+   cadence. Extend startup and checkpoint compatibility checks.
+4. **Experiment packaging and regression.** Prepare the two requested isolated
+   config/launcher sets from `round4_1_nstep2_tes_sac` and `round2_enhance` with
+   their original trial selectors (97/98 and 01). Reuse the launcher's CLI conventions and
+   `project/soft_actor_critic_tuning/scripts/run_sac16_grid.py::_memory_preflight`
+   with explicit sequence metadata/scalar scratch estimates. Run the new tests
+   and existing SAC learner, replay, n-step, final-observation, entropy,
+   diagnostics, startup, loading and distributed suites. Verify config diff,
+   benchmark byte parity, dry-run output and unchanged legacy-mode RNG behavior.
+5. **Runtime feasibility gate.** After separately authorizing a bounded pilot,
+   verify CUDA, CPU-offloaded/pinned replay and configured compilation mode.
+   Record actual RAM/VRAM, throughput, chain versus suffix length distributions,
+   cuts by cause, replay age and nonfinite values. Keep the existing 32-row/slot
+   nominal-capacity limitation explicit. No long training until this gate is
+   resolved and the user requests it.
+
 ## 5. Experiment interpretation, artifacts, and references
 
-The main proposed experiment is trial 98 with PQL H=128/lambda=.95. Preserve
-trial 98's historical meaning; do not add a new controlled grid axis that
-renumbers it. Trial 97 is not a required initial run.
+The prepared experiments use PQL H=128/lambda=.95 in both requested source
+families. Preserve trial IDs and source meaning; do not add a controlled grid
+axis that renumbers them. Trial selection and official launch belong to the user.
 
 For causal interpretation, a future control using the SAME sequence replay,
 eviction, and loss-row sampler but the existing two-step target would separate
@@ -268,10 +470,10 @@ target-horizon, cut-cause, replay-age, and loss-row/sample-count telemetry.
 Compare actual update counts and collection freshness; nominal resource parity
 does not make historical aggregated replay identical to raw sequence replay.
 
-Future artifacts should stay under this project's own `configs/`, `scripts/`,
-`runs/`, and `reports/` directories. Only this PLAN.md exists as a deliverable
-of the current request. No runnable configs, tests, launchers, or learner changes
-are made now.
+Artifacts stay under this project's own `configs/`, `scripts/`, `runs/`, and
+`reports/` directories. The implementation also adds shared learner modules and
+focused tests under `pufferlib/` and `tests/unit_tests/`. Dry-run manifests are
+configuration evidence, not evidence of completed training or GPU feasibility.
 
 Primary reading:
 

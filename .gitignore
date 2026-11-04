@@ -202,8 +202,10 @@ pufferlib/resources/drive/output_agent.gif pufferlib/resources/drive/output.gif 
 artifacts/
 # Local SAC analysis workspace; keep it out of commits for now.
 /project/soft_actor_critic_auto_analysis_by_agent/
-# Generated frozen-PPO behavior-policy SAC runs
-/project/soft_actor_critic_PPO_init_behavior_policy/runs/
+# Generated experiment runs, including checkpoints and evaluation outputs
+/project/*/runs/
+# Local plotting caches
+.matplotlib-cache/
 # Generated training and evaluation logs
 *.csv
 *.html

@@ -59,6 +59,8 @@ def validate_config(config, world_size):
         _positive_integer(train_args.get("total_timesteps"), f"{phase}.train.total_timesteps")
 
     horizon = sac_args["train"].get("n_steps", 1)
+    if sac_args["train"].get("return_estimator", "n_step") == "pql":
+        raise ValueError("PPO warm-start collection does not support return_estimator='pql'")
     if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon != 1:
         raise ValueError("PPO warm-start collection requires sac.train.n_steps=1")
 

@@ -2,6 +2,7 @@ from contextlib import redirect_stdout
 import io
 import itertools
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -490,11 +491,49 @@ class RunSAC16GridTests(unittest.TestCase):
             2 * single["required_host_memory_bytes"],
             delta=1,
         )
+        legacy_replay_bytes = 100 * (923 * 8 + 16)
+        self.assertEqual(single["preflight_bytes_per_rank"], legacy_replay_bytes)
+        self.assertEqual(single["required_host_memory_bytes"], math.ceil(legacy_replay_bytes * 1.10))
+        self.assertEqual(single["sequence_metadata_bytes_per_rank"], 0)
+        self.assertEqual(single["pql_epoch_index_plan_bytes_per_rank"], 0)
+        self.assertEqual(single["pql_planner_scratch_bytes_per_rank"], 0)
+        self.assertEqual(single["pql_scalar_scratch_bytes_per_rank"], 0)
         self.assertEqual(single["rank_counts_by_trial"], [1])
         self.assertEqual(pair["ranks_per_trial"], 2)
         self.assertEqual(mixed["total_ranks"], 3)
         self.assertEqual(mixed["rank_counts_by_trial"], [1, 2])
         self.assertIsNone(mixed["ranks_per_trial"])
+
+    def test_memory_preflight_adds_pql_sequence_metadata_and_scalar_scratch(self):
+        config = {
+            "train": {"batch_size": 100, "minibatch_size": 8, "return_estimator": "pql"},
+            "env": {"num_agents": 4},
+            "vec": {"num_envs": 2},
+        }
+        with (
+            patch.object(run_sac16_grid, "_estimate_observation_size", return_value=923),
+            patch.object(run_sac16_grid, "_available_memory_bytes", return_value=10**15),
+        ):
+            result = run_sac16_grid._memory_preflight(config, [(0,)], 1)
+
+        replay_bytes = 100 * (923 * 8 + 16)
+        sequence_metadata_bytes = 100 * (7 * 8 + 3) + 8 * (2 * 8)
+        epoch_index_plan_bytes = 100 * 8 + (100 + 13 + 1) * 8
+        planner_scratch_bytes = 100 * (24 * 8 + 6) + (8 + 1) * 8
+        scalar_scratch_bytes = 8 * (4 * 4 + 3 * 8)
+        expected_per_rank = (
+            replay_bytes + sequence_metadata_bytes + epoch_index_plan_bytes
+            + planner_scratch_bytes + scalar_scratch_bytes
+        )
+        self.assertEqual(result["return_estimator"], "pql")
+        self.assertEqual(result["replay_bytes_per_rank"], replay_bytes)
+        self.assertEqual(result["sequence_metadata_bytes_per_rank"], sequence_metadata_bytes)
+        self.assertEqual(result["pql_epoch_index_plan_bytes_per_rank"], epoch_index_plan_bytes)
+        self.assertEqual(result["pql_planner_scratch_bytes_per_rank"], planner_scratch_bytes)
+        self.assertEqual(result["pql_scalar_scratch_bytes_per_rank"], scalar_scratch_bytes)
+        self.assertEqual(result["preflight_bytes_per_rank"], expected_per_rank)
+        self.assertEqual(result["required_host_memory_bytes"], math.ceil(expected_per_rank * 1.10))
+        self.assertIn("ignores cpu_offload", result["memory_preflight_scope"])
 
 
 if __name__ == "__main__":

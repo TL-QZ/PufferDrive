@@ -35,6 +35,14 @@ METRICS_FILENAME = "metrics.jsonl"
 SUMMARY_FILENAME = "summary.json"
 RUNTIME_FILENAME_TEMPLATE = "rank_{rank}_runtime.json"
 REPLAY_MEMORY_HEADROOM = 1.10
+PQL_SEQUENCE_METADATA_BYTES_PER_ROW = 7 * 8 + 3
+PQL_AGENT_METADATA_BYTES_PER_SLOT = 2 * 8
+PQL_EPOCH_INDEX_BYTES_PER_ROW = 8
+PQL_EPOCH_OFFSET_BYTES_PER_ROW = 8
+PQL_PLANNER_INT64_ARRAYS_PER_ROW = 24
+PQL_PLANNER_BOOL_ARRAYS_PER_ROW = 6
+PQL_TARGET_FLOAT32_ARRAYS_PER_ROW = 4
+PQL_TARGET_INT64_ARRAYS_PER_ROW = 3
 TERMINATION_WAIT_SECONDS = 15
 KILL_WAIT_SECONDS = 10
 POLL_INTERVAL_SECONDS = 0.25
@@ -265,6 +273,9 @@ def _memory_preflight(config, gpu_groups, max_concurrent_trials):
     replay_capacity = config["train"]["batch_size"]
     if not isinstance(replay_capacity, int) or isinstance(replay_capacity, bool) or replay_capacity <= 0:
         raise ValueError("train.batch_size must be a positive integer for replay memory preflight")
+    return_estimator = config["train"].get("return_estimator", "n_step")
+    if return_estimator not in ("n_step", "pql"):
+        raise ValueError("train.return_estimator must be 'n_step' or 'pql' for replay memory preflight")
     active_groups = gpu_groups[:max_concurrent_trials]
     if len(active_groups) != max_concurrent_trials:
         raise ValueError("Replay RAM preflight requires one configured GPU group per concurrent trial")
@@ -274,7 +285,65 @@ def _memory_preflight(config, gpu_groups, max_concurrent_trials):
     # TensorReplay allocates two float32 observations plus int64 action, float32
     # reward and float32 discount for each transition on every rank.
     bytes_per_transition = observation_size * 8 + 16
-    bytes_per_rank = replay_capacity * bytes_per_transition
+    replay_bytes_per_rank = replay_capacity * bytes_per_transition
+    sequence_metadata_bytes_per_rank = 0
+    pql_epoch_index_plan_bytes_per_rank = 0
+    pql_planner_scratch_bytes_per_rank = 0
+    pql_scalar_scratch_bytes_per_rank = 0
+    if return_estimator == "pql":
+        environment_agent_count = config["env"].get("num_agents")
+        environment_count = config.get("vec", {}).get("num_envs")
+        for value, name in (
+            (environment_agent_count, "env.num_agents"),
+            (environment_count, "vec.num_envs"),
+        ):
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"{name} must be a positive integer for PQL memory preflight")
+        minibatch_size = config["train"].get("minibatch_size")
+        if not isinstance(minibatch_size, int) or isinstance(minibatch_size, bool) or minibatch_size <= 0:
+            raise ValueError("train.minibatch_size must be a positive integer for PQL memory preflight")
+        horizon = config["train"].get("pql_horizon", 128)
+        if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon <= 0:
+            raise ValueError("train.pql_horizon must be a positive integer for PQL memory preflight")
+
+        agent_slot_count = environment_agent_count * environment_count
+        sequence_metadata_bytes_per_rank = (
+            replay_capacity * PQL_SEQUENCE_METADATA_BYTES_PER_ROW
+            + agent_slot_count * PQL_AGENT_METADATA_BYTES_PER_SLOT
+        )
+        logical_batch_count = math.ceil(replay_capacity / minibatch_size)
+        # Returned batches contain each resident index once. There can be at
+        # most one segment per row, plus one final offset per logical batch.
+        pql_epoch_index_plan_bytes_per_rank = (
+            replay_capacity * PQL_EPOCH_INDEX_BYTES_PER_ROW
+            + (replay_capacity + logical_batch_count + 1) * PQL_EPOCH_OFFSET_BYTES_PER_ROW
+        )
+        # The planner holds overlapping capacity-sized CPU tensors while it
+        # validates links, orders chains, segments/shuffles rows, and builds
+        # the returned plans. This conservative peak covers those temporaries;
+        # the suffix histogram is bounded by min(H, logical batch size) + 1.
+        pql_planner_scratch_bytes_per_rank = (
+            replay_capacity * (
+                PQL_PLANNER_INT64_ARRAYS_PER_ROW * 8 + PQL_PLANNER_BOOL_ARRAYS_PER_ROW
+            )
+            + (min(horizon, minibatch_size) + 1) * 8
+        )
+        # Target preparation keeps four float32 scalar vectors and up to three
+        # int64 scan/index vectors per logical loss row. Segment offsets are
+        # already counted in the returned epoch plan above.
+        pql_scalar_scratch_bytes_per_rank = (
+            minibatch_size * (
+                PQL_TARGET_FLOAT32_ARRAYS_PER_ROW * 4
+                + PQL_TARGET_INT64_ARRAYS_PER_ROW * 8
+            )
+        )
+    bytes_per_rank = (
+        replay_bytes_per_rank
+        + sequence_metadata_bytes_per_rank
+        + pql_epoch_index_plan_bytes_per_rank
+        + pql_planner_scratch_bytes_per_rank
+        + pql_scalar_scratch_bytes_per_rank
+    )
     required_bytes = math.ceil(
         bytes_per_rank * total_ranks * REPLAY_MEMORY_HEADROOM
     )
@@ -282,7 +351,18 @@ def _memory_preflight(config, gpu_groups, max_concurrent_trials):
     result = {
         "observation_size": observation_size,
         "replay_capacity_per_rank": replay_capacity,
-        "replay_bytes_per_rank": bytes_per_rank,
+        "replay_bytes_per_rank": replay_bytes_per_rank,
+        "sequence_metadata_bytes_per_rank": sequence_metadata_bytes_per_rank,
+        "pql_epoch_index_plan_bytes_per_rank": pql_epoch_index_plan_bytes_per_rank,
+        "pql_planner_scratch_bytes_per_rank": pql_planner_scratch_bytes_per_rank,
+        "pql_scalar_scratch_bytes_per_rank": pql_scalar_scratch_bytes_per_rank,
+        "return_estimator": return_estimator,
+        "preflight_bytes_per_rank": bytes_per_rank,
+        "memory_preflight_scope": (
+            "host RAM only; PQL sequence metadata and epoch plans are CPU resident; "
+            "target scalar scratch is counted without device split; legacy replay "
+            "estimate ignores cpu_offload; GPU activations are excluded"
+        ),
         "concurrent_trials": len(active_groups),
         "total_ranks": total_ranks,
         "rank_counts_by_trial": ranks_per_trial,

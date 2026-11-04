@@ -59,6 +59,32 @@ def _validate_n_steps(value):
     return value
 
 
+def _validate_return_estimator(config, replay=None):
+    """Validate return contracts before allocating environment or replay state."""
+    estimator = config.get("return_estimator", "n_step")
+    if estimator not in ("n_step", "pql"):
+        raise ValueError("return_estimator must be 'n_step' or 'pql'")
+    n_steps = _validate_n_steps(config.get("n_steps", 1))
+    horizon = config.get("pql_horizon", 128)
+    if not isinstance(horizon, int) or isinstance(horizon, bool) or horizon <= 0:
+        raise ValueError("pql_horizon must be a positive integer")
+    trace_lambda = config.get("pql_lambda", 0.95)
+    if not _is_finite_real(trace_lambda) or not 0 <= trace_lambda <= 1:
+        raise ValueError("pql_lambda must be finite and in [0, 1]")
+    if config.get("pql_entropy_convention", "soft_each_return_endpoint") != "soft_each_return_endpoint":
+        raise ValueError("pql_entropy_convention must be 'soft_each_return_endpoint'")
+    if estimator == "pql" and n_steps != 1:
+        raise ValueError("PQL requires n_steps=1 for raw transition insertion")
+    if estimator == "pql" and replay is not None:
+        from pufferlib.sac_sequence_replay import SequenceReplay
+
+        if not isinstance(replay, SequenceReplay):
+            raise ValueError("PQL requires SequenceReplay")
+        if len(replay):
+            raise ValueError("PQL requires an empty initial replay")
+    return estimator
+
+
 class AdaptiveTargetEntropyController:
     """Lower the target entropy after accumulated qualifying observations."""
 
@@ -244,6 +270,8 @@ class AdaptiveTargetEntropyController:
 DEFAULT_CONFIG = dict(
     env="puffer_drive", device="cpu", seed=0, run_name="sac", batch_size=10_000,
     minibatch_size=256, max_minibatch_size=256, update_epochs=1, n_steps=1,
+    return_estimator="n_step", pql_horizon=128, pql_lambda=0.95,
+    pql_entropy_convention="soft_each_return_endpoint",
     total_timesteps=None, gamma=0.99, replay_update_ratio=0.1,
     learning_rate=3e-4, critic_learning_rate=3e-4, alpha_learning_rate=3e-4,
     optimizer="adam", adam_beta1=0.9, adam_beta2=0.999, adam_eps=1e-8, adam_weight_decay=0.0,
@@ -844,6 +872,11 @@ class PuffeSAC:
 
         config = resolve_sac_batch_sizes({**DEFAULT_CONFIG, **config}, vecenv)
         config["n_steps"] = _validate_n_steps(config["n_steps"])
+        _validate_return_estimator(config, replay)
+        if config["return_estimator"] == "pql":
+            if (replay.capacity != config["batch_size"] or replay.num_agents != vecenv.num_agents
+                    or replay.observation_shape != tuple(vecenv.single_observation_space.shape)):
+                raise ValueError("PQL replay capacity, observation shape and agent count must match configuration")
         if "data_dir" not in config or not config["data_dir"]:
             raise ValueError("SAC requires an explicit data_dir")
         supported_config = DEFAULT_CONFIG.keys() | {
@@ -1228,6 +1261,8 @@ class PuffeSAC:
         n_step_accumulator = getattr(self, "n_step_accumulator", None)
         if n_step_accumulator is not None:
             n_step_accumulator.clear()
+        if self.config.get("return_estimator") == "pql":
+            self.replay.clear_links()
         self.stats = defaultdict(list)
         self.last_stats = defaultdict(list)
         self.last_stats_epoch = None
@@ -1363,6 +1398,9 @@ class PuffeSAC:
     def evaluate(self):
         """Collect transitions directly from vecenv, matching PuffeRL.evaluate."""
         behavior_policy = getattr(self, "behavior_policy", None)
+        pql_enabled = self.config.get("return_estimator") == "pql"
+        if pql_enabled and behavior_policy is not None:
+            raise ValueError("PQL does not support PPO behavior-policy providers")
         if self.config.get("n_steps", 1) > 1 and behavior_policy is not None:
             raise ValueError("n_steps > 1 does not support PPO behavior-policy providers")
         n_step_accumulator = getattr(self, "n_step_accumulator", None)
@@ -1383,12 +1421,13 @@ class PuffeSAC:
             insert_target = self.batch_size - replay_size
         else:
             insert_target = self.refresh_count
-            if self.replay_eviction_order is None:
+            if not pql_enabled and self.replay_eviction_order is None:
                 self.replay_eviction_order = torch.randperm(replay_size, device="cpu")
-            refresh_positions = (
-                torch.arange(insert_target, device="cpu") + self.replay_eviction_cursor
-            ) % replay_size
-            refresh_indices = self.replay_eviction_order[refresh_positions]
+            if not pql_enabled:
+                refresh_positions = (
+                    torch.arange(insert_target, device="cpu") + self.replay_eviction_cursor
+                ) % replay_size
+                refresh_indices = self.replay_eviction_order[refresh_positions]
         received_budget = max(
             0, math.ceil((self.config["total_timesteps"] - self.agent_steps) / self.world_size)
         )
@@ -1424,6 +1463,12 @@ class PuffeSAC:
             transitions, infos = self.observe_transition(
                 observations, rewards, terminals, truncations, infos, env_ids, masks,
             )
+            if pql_enabled:
+                completed = self.pending[env_ids] & masks
+                self.replay.break_chains(env_ids[~completed])
+                transition_ids = env_ids[completed]
+                transition_terminals = terminals[completed]
+                transition_truncations = truncations[completed]
             effective_horizons = None
             if n_step_accumulator is not None:
                 completed = self.pending[env_ids] & masks
@@ -1473,6 +1518,13 @@ class PuffeSAC:
                     transition_count, device=transitions[0].device
                 )[:remaining_quota]
                 transitions = tuple(transition[selected_rows] for transition in transitions)
+                if pql_enabled:
+                    retained = torch.zeros(transition_count, dtype=torch.bool, device=transition_ids.device)
+                    retained[selected_rows] = True
+                    self.replay.break_chains(transition_ids[~retained])
+                    transition_ids = transition_ids[selected_rows]
+                    transition_terminals = transition_terminals[selected_rows]
+                    transition_truncations = transition_truncations[selected_rows]
                 if effective_horizons is not None:
                     effective_horizons = effective_horizons[selected_rows]
             if transition_sources is not None and selected_rows is not None:
@@ -1487,7 +1539,11 @@ class PuffeSAC:
             transition_count = transitions[0].shape[0]
             if transition_count:
                 profile("eval_copy", epoch)
-                if replay_size < self.batch_size:
+                if pql_enabled:
+                    self.replay.add_sequence(
+                        transition_ids, *transitions, transition_terminals, transition_truncations,
+                    )
+                elif replay_size < self.batch_size:
                     insertion_start = len(self.replay)
                     replay_indices = torch.arange(
                         insertion_start, insertion_start + transition_count,
@@ -1667,6 +1723,12 @@ class PuffeSAC:
 
     @torch.no_grad()
     def _compute_targets(self, mb_rewards, mb_next_obs, mb_discounts, target_policy=None):
+        next_value = self._compute_next_values(mb_next_obs, target_policy=target_policy)
+        return mb_rewards + mb_discounts * next_value
+
+    @torch.no_grad()
+    def _compute_next_values(self, mb_next_obs, target_policy=None):
+        """Discrete soft bootstrap shared by fixed-n and Peng lambda returns."""
         with self.amp_context:
             if target_policy is None:
                 logits = self.policy(mb_next_obs)
@@ -1680,8 +1742,30 @@ class PuffeSAC:
         minimum_next_q = torch.minimum(next_q1, next_q2)
         if self.config["critic_entropy_in_target"]:
             minimum_next_q = minimum_next_q - self.alpha * logprobs
-        next_value = (probs * minimum_next_q).sum(-1)
-        return mb_rewards + mb_discounts * next_value
+        return (probs * minimum_next_q).sum(-1)
+
+    @torch.no_grad()
+    def _prepare_pql_targets(self, replay_indices, segment_offsets):
+        """Freeze scalar returns for a logical batch before gradient microbatches."""
+        from pufferlib.sac_returns import compute_pql_targets
+
+        row_count = replay_indices.numel()
+        rewards = torch.empty(row_count, device=self.device, dtype=torch.float32)
+        discounts = torch.empty_like(rewards)
+        next_values = torch.zeros_like(rewards)
+        for start in range(0, row_count, self.max_minibatch_size):
+            end = min(start + self.max_minibatch_size, row_count)
+            _, _, chunk_rewards, next_obs, chunk_discounts = self.replay.get_batch(replay_indices[start:end])
+            rewards[start:end] = chunk_rewards.to(self.device, non_blocking=True)
+            discounts[start:end] = chunk_discounts.to(self.device, non_blocking=True)
+            bootstrap_rows = chunk_discounts != 0
+            if bootstrap_rows.any():
+                bootstrap_obs = next_obs[bootstrap_rows].to(self.device, non_blocking=True)
+                values = self._compute_next_values(bootstrap_obs)
+                next_values[start:end][bootstrap_rows.to(self.device)] = values
+        return compute_pql_targets(
+            rewards, discounts, next_values, segment_offsets, self.config["pql_lambda"],
+        )
 
     def _critic_loss(self, mb_obs, mb_actions, mb_targets):
         with self.amp_context:
@@ -1732,6 +1816,9 @@ class PuffeSAC:
         )
 
     def _train_sac_transition(self, losses, profile, epoch, update_policy=True, target_policy=None):
+        pql_enabled = self.config.get("return_estimator") == "pql"
+        if pql_enabled and target_policy is not None:
+            raise ValueError("PQL requires the current SAC actor for bootstrap values")
         if getattr(self, "config", {}).get("log_collapse_diagnostics", False):
             diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
             if diagnostics is None:
@@ -1747,12 +1834,22 @@ class PuffeSAC:
         total_minibatches = self.config["update_epochs"] * minibatches_per_epoch
         total_sampled_transitions = replay_size * self.config["update_epochs"]
         replay_indices = None
+        sequence_batches = None
         for logical_update_idx in range(total_minibatches):
             minibatch_idx = logical_update_idx % minibatches_per_epoch
             if minibatch_idx == 0:
-                replay_indices = torch.randperm(replay_size, device="cpu")
+                if pql_enabled:
+                    sequence_batches = self.replay.build_epoch_batches(
+                        self.config["pql_horizon"], self.minibatch_size,
+                    )
+                else:
+                    replay_indices = torch.randperm(replay_size, device="cpu")
             start_idx = minibatch_idx * self.minibatch_size
-            mb_indices = replay_indices[start_idx:start_idx + self.minibatch_size]
+            if pql_enabled:
+                mb_indices, segment_offsets = sequence_batches[minibatch_idx]
+                pql_targets = self._prepare_pql_targets(mb_indices, segment_offsets)
+            else:
+                mb_indices = replay_indices[start_idx:start_idx + self.minibatch_size]
             logical_batch_count = mb_indices.numel()
 
             self.critic_optimizer.zero_grad(set_to_none=True)
@@ -1776,7 +1873,9 @@ class PuffeSAC:
                     else nullcontext()
                 )
                 with sync_context:
-                    if target_policy is None:
+                    if pql_enabled:
+                        mb_targets = pql_targets[micro_start:micro_start + micro_count]
+                    elif target_policy is None:
                         mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
                     else:
                         mb_targets = self._compute_targets(
@@ -1960,6 +2059,22 @@ class PuffeSAC:
             **{f"losses/{key}": value for key, value in self.losses.items()},
             **{f"performance/{key}": value for key, value in performance.items()},
         }
+        if getattr(self, "config", {}).get("return_estimator") == "pql":
+            # Distribution summaries are explicitly rank-local, not averaged quantiles.
+            logs.update({
+                "sac/pql_horizon": self.config["pql_horizon"],
+                "sac/pql_lambda": self.config["pql_lambda"],
+                **{f"replay/pql_rank0/{key}": value
+                   for key, value in self.replay.last_plan_metrics.items()},
+            })
+            suffix_counts = self.replay.last_suffix_length_counts[1:].to(torch.float64)
+            if suffix_counts.sum() > 0:
+                tail_weights = self.config["pql_lambda"] ** torch.arange(
+                    suffix_counts.numel(), dtype=torch.float64,
+                )
+                logs["replay/pql_rank0/mean_retained_tail_weight"] = (
+                    (tail_weights * suffix_counts).sum() / suffix_counts.sum()
+                ).item()
         target_entropy_controller = getattr(self, "target_entropy_controller", None)
         if target_entropy_controller is not None:
             logs.update({
@@ -1986,6 +2101,8 @@ class PuffeSAC:
         self.nstep_logged_horizon_sum = 0
         self.nstep_logged_insert_count = 0
         self.nstep_logged_quota_discarded = 0
+        if getattr(self, "config", {}).get("return_estimator") == "pql":
+            self.replay.reset_collection_metrics()
         if self.rank != 0:
             return None
         self.logger.log(logs, self.agent_steps)
@@ -2242,7 +2359,10 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             if startup_args["train"].get("evaluation_interval_epochs") is not None:
                 training_evaluation_scheduled = ppo.drive_benchmark.validate_training_evaluation_config(startup_args)
             train_args = startup_args["train"]
+            estimator = _validate_return_estimator(train_args, replay)
             n_steps = _validate_n_steps(train_args.get("n_steps", 1))
+            if estimator == "pql" and behavior_policy_factory is not None:
+                raise ValueError("PQL does not support PPO behavior_policy_factory")
             if n_steps > 1 and behavior_policy_factory is not None:
                 raise ValueError("n_steps > 1 does not support PPO behavior_policy_factory")
             load_model_path = startup_args.get("load_model_path")
@@ -2327,10 +2447,18 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             if replay is None:
                 from pufferlib.sac_replay import TensorReplay
                 replay_device = "cpu" if config["cpu_offload"] else learner_device
-                replay = TensorReplay(
+                replay_class = TensorReplay
+                replay_kwargs = {}
+                if config.get("return_estimator") == "pql":
+                    from pufferlib.sac_sequence_replay import SequenceReplay
+
+                    replay_class = SequenceReplay
+                    replay_kwargs["num_agents"] = vecenv.num_agents
+                replay = replay_class(
                     config["batch_size"], vecenv.single_observation_space.shape,
                     device=replay_device,
                     pin_memory=config["cpu_offload"] and learner_device.type == "cuda",
+                    **replay_kwargs,
                 )
             config["action_count"] = policy.action_count
 
@@ -2353,6 +2481,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
         else:
             # Keep the original flat config + injected-component API intact.
             config = {**args, "env": env_name}
+            estimator = _validate_return_estimator(config, replay)
+            if estimator == "pql" and behavior_policy_factory is not None:
+                raise ValueError("PQL does not support PPO behavior_policy_factory")
             config["n_steps"] = _validate_n_steps(config.get("n_steps", 1))
             if config["n_steps"] > 1 and behavior_policy_factory is not None:
                 raise ValueError("n_steps > 1 does not support PPO behavior_policy_factory")

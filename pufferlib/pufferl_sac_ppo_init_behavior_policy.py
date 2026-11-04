@@ -13,6 +13,8 @@ import yaml
 
 def validate_config(config):
     """Reject incompatible experiment inputs before creating a simulator."""
+    if config["train"].get("return_estimator", "n_step") == "pql":
+        raise ValueError("PPO behavior-policy collection does not support return_estimator='pql'")
     horizon = config["train"].get("n_steps", 1)
     if isinstance(horizon, bool) or not isinstance(horizon, int) or horizon != 1:
         raise ValueError("PPO behavior-policy collection requires train.n_steps=1")

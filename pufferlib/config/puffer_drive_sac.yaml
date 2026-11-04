@@ -24,6 +24,11 @@ train:
   total_timesteps: 1000000
   gamma: 0.99
   n_steps: 1
+  # PQL stores raw transitions and mixes returns over contiguous replay segments.
+  return_estimator: n_step
+  pql_horizon: 128
+  pql_lambda: 0.95
+  pql_entropy_convention: soft_each_return_endpoint
   # Set batch_size=auto to use max(vecenv.agents_per_batch, minibatch_size).
   batch_size: 10000
   # Set minibatch_size=auto to use min(256, explicit capacity), or 256 when both sizes are auto.

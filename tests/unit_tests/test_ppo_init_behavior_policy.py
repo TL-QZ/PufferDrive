@@ -307,6 +307,17 @@ def test_validate_config_accepts_real_round4_1_trial_and_repo_ppo_drive_config(
     assert config["env"]["dt"] == teacher_config["env"]["dt"] == 0.3
 
 
+def test_validate_config_rejects_pql_before_teacher_resource_checks(
+    tmp_path, round4_1_trial_97,
+):
+    config = _valid_config(tmp_path, round4_1_trial_97)
+    config["train"]["return_estimator"] = "pql"
+    config["behavior_policy"]["checkpoint"] = str(tmp_path / "missing-teacher.pt")
+
+    with pytest.raises(ValueError, match="does not support return_estimator='pql'"):
+        validate_config(config)
+
+
 def test_validate_config_accepts_ppo_only_without_schedule_fields(
     tmp_path, round4_1_trial_97,
 ):
