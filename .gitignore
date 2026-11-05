@@ -202,6 +202,12 @@ pufferlib/resources/drive/output_agent.gif pufferlib/resources/drive/output.gif 
 artifacts/
 # Local SAC analysis workspace; keep it out of commits for now.
 /project/soft_actor_critic_auto_analysis_by_agent/
+# Local checkpoint snapshots, evaluation reports, and rendered failure replays
+/project/soft_actor_critic_important_run_evals/
+# Host-specific recovery workspaces and resumed training outputs
+/project/run_recovery/
+# Local upstream reference implementation
+/project/soft_actor_critic_target_entropy_scheduling/reference_implementation/
 # Generated experiment runs, including checkpoints and evaluation outputs
 /project/*/runs/
 # Local plotting caches

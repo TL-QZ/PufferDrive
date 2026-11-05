@@ -1,0 +1,20 @@
+# Launcher controls only. Learner, environment and vector settings remain in
+# SAC_fixed_config.yaml, SAC_tunable_config.yaml and SAC_specific_config.yaml.
+launcher:
+  # Singleton grid: trial 01 uses gamma=.999, entropy=1.863680,
+  # update_epochs=3 and a 25% replay replacement rate.
+  trial_ids: [1]
+  trial_evaluation_interval_epochs:
+    1: 2
+  # Global received agent-row budget for this run.
+  trial_total_timesteps:
+    1: 4000000000
+  trial_hours: null
+  grace_seconds: 600
+  smoke_trial_seconds: 60
+  # First compiled cycle and its benchmark may exceed the short smoke target.
+  smoke_grace_seconds: 600
+  # Reserve both GPUs for the single selected trial.
+  gpu_pairs:
+    - [0, 1]
+  max_concurrent: 1

@@ -1,0 +1,68 @@
+# SAC-specific learner and replay configuration
+# Settings specific to this SAC route compared with the PPO route. Replay and
+# target-network controls are also used by other off-policy algorithms.
+# train.batch_size is included because here it means replay capacity, whereas
+# PPO uses that name for its rollout batch. Shared gamma, actor learning_rate,
+# minibatch_size, the base update_epochs and optimizer settings stay in SAC_tunable_config.yaml.
+# The n-step experiment retains Round 7's selected candidates and PPO-scale replay
+# capacity on two GPUs. Trial 01 uses the enhanced recipe with replay refresh 0.25.
+# Corresponding sweep/grid entries live here too; workflow controls stay tunable.
+# Deep-merge SAC_fixed_config.yaml, SAC_tunable_config.yaml and this file.
+# These are partial configs; the CLI does not automatically load them.
+
+
+train:
+  # Maximum observed-reward horizon; 4 Drive steps are 1.2 simulation seconds at dt=0.3s before an episode boundary.
+  n_steps: 4
+  # Replay capacity per rank is one quarter of Round 6: 8192000 / 4.
+  batch_size: 2048000
+  # Fraction of replay replaced each evaluate cycle after initial fill; (0, 1]. Quota = ceil(batch_size * ratio), with FIFO eviction after a once-shuffled initial eviction order.
+  replay_update_ratio: 0.25
+  # Twin-critic optimizer learning rate; matches the actor learning rate.
+  critic_learning_rate: 0.0001
+  # Temperature log-alpha Adam learning rate (>0); temperature always uses Adam.
+  alpha_learning_rate: 0.00007
+  # Initial entropy temperature (>0); subsequently learned automatically.
+  initial_alpha: 0.1
+  # Learn alpha while the target entropy is scheduled from 75% of maximum.
+  learn_alpha: true
+  # Initial target: 0.75 * log(12) nats, rounded to six decimal places.
+  target_entropy: 1.863680
+  target_entropy_schedule: adaptive
+  target_entropy_ema_decay: 0.999
+  target_entropy_mean_threshold: 0.01
+  target_entropy_std_threshold: 0.025
+  target_entropy_decay_factor: 0.9
+  # Count qualifying updates cumulatively across training cycles.
+  target_entropy_required_count: 2000
+  # Force a reduction after 500M global received agent rows without any reduction.
+  target_entropy_force_decay_steps: 500000000
+  # Target-critic Polyak coefficient in (0, 1]: target <- (1-tau)*target + tau*online after each learner update.
+  tau: 0.005
+
+sweep:
+  train:
+    gamma:
+      distribution: categorical
+      values: [0.999]
+    target_entropy:
+      distribution: categorical
+      values: [1.863680]
+    update_epochs:
+      distribution: categorical
+      values: [3]
+    replay_update_ratio:
+      distribution: categorical
+      values: [0.25]
+
+controlled_exp:
+  train:
+    # Singleton axes make this recipe trial 01 in the shared scheduler.
+    gamma:
+      values: [0.999]
+    target_entropy:
+      values: [1.863680]
+    update_epochs:
+      values: [3]
+    replay_update_ratio:
+      values: [0.25]
