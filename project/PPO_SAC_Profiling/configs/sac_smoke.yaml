@@ -1,0 +1,14 @@
+algorithm: sac
+device: cpu
+cycles: 1
+warmup: 0
+num_envs: 2
+agents: 32
+replay_capacity: 2048
+logical_batch: 1024
+microbatch: 256
+update_epochs: 1
+compile: "off"
+threads: 1
+replay_location: cpu
+stock_profiler: "off"

@@ -1,0 +1,9 @@
+__pycache__/
+.pytest_cache/
+*.pt
+*.trace.json
+trace_cycle_*_rank[0-9][0-9].json
+compile_cache/
+
+# Generated benchmark outputs; keep local results out of commits.
+/results/

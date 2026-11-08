@@ -1,0 +1,13 @@
+algorithm: ppo
+device: cpu
+cycles: 1
+warmup: 0
+num_envs: 2
+agents: 32
+horizon: 32
+logical_batch: 1024
+microbatch: 256
+update_epochs: 1
+compile: "off"
+threads: 1
+stock_profiler: "off"

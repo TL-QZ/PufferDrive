@@ -1,0 +1,15 @@
+algorithm: sac
+device: cuda
+cycles: 3
+warmup: 1
+num_envs: 4
+agents: 800
+replay_capacity: 128000
+logical_batch: 32768
+microbatch: 8192
+update_epochs: 3
+compile: "off"
+threads: 1
+replay_location: cpu
+variant: stock
+stock_profiler: "off"

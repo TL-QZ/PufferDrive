@@ -1,0 +1,14 @@
+algorithm: ppo
+device: cuda
+cycles: 3
+warmup: 1
+num_envs: 4
+agents: 800
+horizon: 128
+logical_batch: 32768
+microbatch: 8192
+update_epochs: 3
+compile: "off"
+threads: 1
+ppo_filter: "on"
+stock_profiler: "off"
