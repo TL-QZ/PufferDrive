@@ -1,0 +1,32 @@
+# Local evaluation data and large render/checkpoint artifacts.
+/checkpoints/
+/results/
+/failure_renders/
+/failure_render_diagnostic/
+/curves/
+/historical_common30m/
+
+# Runtime state, logs, caches, and verification outputs.
+/logs/
+/mplconfig/
+/__pycache__/
+/.case_locks/
+/*.lock
+/*.log
+/*.status.json
+/*verification.json
+/resource_summary.json
+/resource_usage.jsonl
+/shutdown_cleanup.json
+
+# Generated tables, plots, and execution reports. Keep source scripts,
+# benchmark catalogs, manifests, and technique documentation versionable.
+/*.csv
+/*.png
+/*.pdf
+/RESULTS.md
+/full_carla_report.md
+/learning_curve_report.md
+/failure_render_report.md
+/render_execution_notes.md
+/setup_inventory.md
