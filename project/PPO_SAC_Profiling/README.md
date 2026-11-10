@@ -11,6 +11,12 @@ the fresh-target update sequence; these variants are opt-in algorithmic experime
 The [actor-Q follow-up](FIXED_ACTOR_Q_REPORT.md) also freezes cycle-start online
 Q scores for actor training, with current actor probabilities and alpha.
 
+The [PQL/filtering extension](PQL_FILTER_REPORT.md) adds ordered PQL target
+caching and opt-in advantage-based row selection for throughput experiments.
+Its [implementation contract](PQL_FILTER_PLAN.md) separates target correctness
+from the deliberate changes to training workload. Raw `results/` outputs are
+local and ignored by Git; tracked reports summarize completed measurements.
+
 ## Reproduce a bounded run
 
 Activate the repository environment, select idle GPU(s), and use a new output
@@ -81,8 +87,15 @@ python -m pytest -q project/PPO_SAC_Profiling
 Use `SAC_PROFILE_CUDA_TEST=1 CUDA_VISIBLE_DEVICES=4` with pytest to include the
 small pinned-memory CUDA parity checks. Run those separately from timed GPU
 benchmarks. The benchmark candidate implementations live in `sac_variants.py`;
-they preserve n-step SAC sampling and optimizer order and explicitly reject PQL.
-They are experimental copies of the update loop, not production defaults.
+the fixed-target variants support both n-step SAC and PQL. The gather-only
+`obs_only` and `cached` variants still reject PQL. These are experimental copies
+of the update loop, not production defaults.
+
+For PPO-style adaptive filtering with GPU replay, use
+`--profile-config project/PPO_SAC_Profiling/configs/pql_ewma_gpu.yaml`.
+It keeps scores at or above 1% of the moving maximum, with EWMA beta 0.25;
+see [the filtering report](PQL_FILTER_REPORT.md) for score definitions and
+zero-survivor behavior.
 
 Select `--cases sac_cached sac_fixed_cached` to compare CPU replay with and
 without fixed-cycle targets, or `--cases sac_obs_only_gpu sac_fixed_gpu` for GPU

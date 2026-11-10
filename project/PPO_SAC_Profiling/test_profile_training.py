@@ -175,6 +175,7 @@ def test_fixed_target_audit_reuses_precompute_chunk_context_and_tail_indices():
 
     trainer = SimpleNamespace(
         replay=replay,
+        config={"return_estimator": "n_step"},
         fixed_cycle_targets=fixed_cycle_targets,
         max_minibatch_size=precompute_batch_size,
         device=torch.device("cpu"),

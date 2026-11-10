@@ -26,6 +26,12 @@ CASES = {
     "sac_fixed_cached": ["--algorithm", "sac", "--variant", "fixed_targets_cached", "--target-audit-rows", "512"],
     "sac_fixed_gpu": ["--algorithm", "sac", "--variant", "fixed_targets", "--replay-location", "gpu", "--target-audit-rows", "512"],
     "sac_fixed_both_gpu": ["--algorithm", "sac", "--variant", "fixed_targets_actor_q", "--replay-location", "gpu", "--target-audit-rows", "512"],
+    "pql_stock_gpu": ["--algorithm", "sac", "--return-estimator", "pql", "--pql-horizon", "128", "--pql-lambda", "0.95", "--replay-location", "gpu"],
+    "pql_optimized_gpu": ["--algorithm", "sac", "--return-estimator", "pql", "--pql-horizon", "128", "--pql-lambda", "0.95", "--variant", "fixed_targets_actor_q", "--replay-location", "gpu"],
+    "pql_optimized_scored_all_gpu": ["--algorithm", "sac", "--return-estimator", "pql", "--pql-horizon", "128", "--pql-lambda", "0.95", "--variant", "fixed_targets_actor_q", "--replay-location", "gpu", "--sac-filter-score", "target_advantage", "--sac-keep-fraction", "1.0"],
+    "pql_target_advantage_50_gpu": ["--algorithm", "sac", "--return-estimator", "pql", "--pql-horizon", "128", "--pql-lambda", "0.95", "--variant", "fixed_targets_actor_q", "--replay-location", "gpu", "--sac-filter-score", "target_advantage", "--sac-keep-fraction", "0.5"],
+    "pql_target_advantage_25_gpu": ["--algorithm", "sac", "--return-estimator", "pql", "--pql-horizon", "128", "--pql-lambda", "0.95", "--variant", "fixed_targets_actor_q", "--replay-location", "gpu", "--sac-filter-score", "target_advantage", "--sac-keep-fraction", "0.25"],
+    "pql_target_advantage_ewma_gpu": ["--algorithm", "sac", "--return-estimator", "pql", "--pql-horizon", "128", "--pql-lambda", "0.95", "--variant", "fixed_targets_actor_q", "--replay-location", "gpu", "--sac-filter-score", "target_advantage", "--sac-keep-fraction", "1.0", "--sac-filter-mode", "ewma_threshold", "--sac-filter-ewma-beta", "0.25", "--sac-filter-threshold-scale", "0.01"],
 }
 
 
@@ -52,15 +58,29 @@ def interrupt_matrix(_signum, _frame):
     raise KeyboardInterrupt("matrix interrupted")
 
 
+def positive_int(value):
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("must be a positive integer")
+    return parsed
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--cases", nargs="+", choices=CASES,
-                        default=[case for case in CASES if not case.startswith("sac_fixed")])
+                        default=[case for case in CASES
+                                 if not case.startswith(("sac_fixed", "pql_"))])
     parser.add_argument("--timeout-seconds", type=int, default=1800)
     parser.add_argument("--production", action="store_true")
     parser.add_argument("--replay-capacity", type=int,
                         help="Override SAC replay rows without changing simulator geometry")
+    parser.add_argument("--num-envs", type=positive_int,
+                        help="Override environment count (defaults to 4 smoke or 20 production)")
+    parser.add_argument("--agents", type=positive_int,
+                        help="Override agents per environment (defaults to 1000 smoke or 3200 production)")
+    parser.add_argument("--logical-batch", type=positive_int, default=128000)
+    parser.add_argument("--microbatch", type=positive_int, default=32000)
     parser.add_argument("--ranks", type=int, choices=(1, 2), default=1)
     parser.add_argument("--compile", choices=("on", "off"), default="on")
     parser.add_argument("--warmup", type=int, default=2)
@@ -77,10 +97,10 @@ def main():
     replay_capacity = options.replay_capacity
     if replay_capacity is None:
         replay_capacity = 2048000 if options.production else 512000
-    common = ["--num-envs", "20" if options.production else "4",
-              "--agents", "3200" if options.production else "1000",
+    common = ["--num-envs", str(options.num_envs or (20 if options.production else 4)),
+              "--agents", str(options.agents or (3200 if options.production else 1000)),
               "--horizon", "128", "--replay-capacity", str(replay_capacity),
-              "--logical-batch", "128000", "--microbatch", "32000",
+              "--logical-batch", str(options.logical_batch), "--microbatch", str(options.microbatch),
               "--update-epochs", "3", "--threads", "1", "--compile", options.compile,
               "--warmup", str(options.warmup), "--cycles", str(options.cycles)]
     if options.trace_cycle is not None:

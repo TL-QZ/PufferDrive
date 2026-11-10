@@ -1,0 +1,20 @@
+# Matched GPU preset using the trial-98 PQL horizon, lambda, and raw one-step rows.
+# Run with: python project/PPO_SAC_Profiling/profile_training.py --profile-config project/PPO_SAC_Profiling/configs/pql_gpu.yaml --output-dir /tmp/pql-gpu
+algorithm: sac
+device: cuda
+replay_location: gpu
+compile: "on"
+variant: stock
+return_estimator: pql
+pql_horizon: 128
+pql_lambda: 0.95
+sac_filter_score: none
+sac_keep_fraction: 1.0
+num_envs: 4
+agents: 1000
+replay_capacity: 512000
+logical_batch: 128000
+microbatch: 32000
+update_epochs: 3
+warmup: 2
+cycles: 3

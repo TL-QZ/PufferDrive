@@ -1,0 +1,25 @@
+# Fresh PQL targets and actor-Q; GPU replay, one epoch, one-third refresh.
+source_config: project/PPO_SAC_Profiling/one_epoch_fresh_1b/source_sac.yaml
+algorithm: sac
+device: cuda
+num_envs: 20
+agents: 3200
+replay_capacity: 2048000
+logical_batch: 128000
+microbatch: 32000
+update_epochs: 1
+compile: 'on'
+return_estimator: pql
+pql_horizon: 128
+pql_lambda: 0.95
+variant: stock
+replay_location: gpu
+sac_filter_score: none
+sac_filter_mode: fraction
+sac_keep_fraction: 1.0
+total_agent_steps: 1000000000
+cycles: 10000
+warmup: 1
+seed: 0
+save_learner_state: 'on'
+snapshot_interval_cycles: 25

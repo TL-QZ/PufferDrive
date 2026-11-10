@@ -1,0 +1,24 @@
+# Same model, environment, PQL, optimizer geometry, seed, and 1B LR schedule.
+# Four cycles total: one warmup plus three measured. Original CPU replay.
+source_config: project/PPO_SAC_Profiling/large_run_1b/source_sac.yaml
+algorithm: sac
+device: cuda
+num_envs: 20
+agents: 3200
+replay_capacity: 2048000
+logical_batch: 128000
+microbatch: 32000
+update_epochs: 3
+compile: "on"
+return_estimator: pql
+pql_horizon: 128
+pql_lambda: 0.95
+variant: stock
+replay_location: cpu
+sac_filter_score: none
+total_agent_steps: 1000000000
+cycles: 3
+warmup: 1
+seed: 0
+save_learner_state: "on"
+snapshot_interval_cycles: 25

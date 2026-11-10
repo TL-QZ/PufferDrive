@@ -1,0 +1,22 @@
+# Opt-in GPU preset using PQL target-advantage EWMA threshold filtering.
+algorithm: sac
+device: cuda
+replay_location: gpu
+compile: "on"
+variant: fixed_targets_actor_q
+return_estimator: pql
+pql_horizon: 128
+pql_lambda: 0.95
+sac_filter_score: target_advantage
+sac_keep_fraction: 1.0
+sac_filter_mode: ewma_threshold
+sac_filter_ewma_beta: 0.25
+sac_filter_threshold_scale: 0.01
+num_envs: 4
+agents: 1000
+replay_capacity: 512000
+logical_batch: 128000
+microbatch: 32000
+update_epochs: 3
+warmup: 2
+cycles: 3

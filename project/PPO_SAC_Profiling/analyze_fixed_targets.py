@@ -31,7 +31,10 @@ def main():
             for cycle in cycles for rank in cycle["ranks"])
         row["actor_training_rows"] = sum(
             rank["policy_loss_rows_local"] for cycle in cycles for rank in cycle["ranks"])
-        row["target_rows_per_learner_sample"] = row["target_forward_rows"] / row["sampled_transitions"]
+        row["target_rows_per_learner_sample"] = (
+            row["target_forward_rows"] / row["sampled_transitions"]
+            if row["sampled_transitions"] else None
+        )
         row["final_states"] = summary["final_model_states"]
         row["all_parameters_finite"] = summary["all_parameters_finite"]
         row["rank_hashes_match"] = len({state["sha256"] for state in row["final_states"]}) == 1
@@ -47,9 +50,13 @@ def main():
     for row in records:
         worst_rms = max((audit["root_mean_square_difference"] for audit in row["target_audits"]), default=None)
         rms_text = "—" if worst_rms is None else f"{worst_rms:.6g}"
+        learner_us = row["learner_microseconds_per_sample"]
+        learner_us_text = "—" if learner_us is None else f"{learner_us:.3f}"
+        target_rows = row["target_rows_per_learner_sample"]
+        target_rows_text = "—" if target_rows is None else f"{target_rows:.3f}"
         lines.append(f"| {row['run']} | {row['world_size']} | {row['mean_training_seconds']:.3f} | "
-                     f"{row['mean_collection_seconds']:.3f} | {row['learner_microseconds_per_sample']:.3f} | "
-                     f"{row['received_rows_per_second']:.0f} | {row['target_rows_per_learner_sample']:.3f} | {rms_text} |")
+                     f"{row['mean_collection_seconds']:.3f} | {learner_us_text} | "
+                     f"{row['received_rows_per_second']:.0f} | {target_rows_text} | {rms_text} |")
     args.output.with_suffix(".md").write_text("\n".join(lines) + "\n")
     print("\n".join(lines))
 

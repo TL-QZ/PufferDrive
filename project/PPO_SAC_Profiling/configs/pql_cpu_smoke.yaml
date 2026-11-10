@@ -1,0 +1,20 @@
+# Small CPU preset for checking PQL target preparation and filtering on real Drive.
+# Run with: python project/PPO_SAC_Profiling/profile_training.py --profile-config project/PPO_SAC_Profiling/configs/pql_cpu_smoke.yaml --output-dir /tmp/pql-cpu-smoke
+algorithm: sac
+device: cpu
+replay_location: cpu
+compile: "off"
+variant: fixed_targets_actor_q
+return_estimator: pql
+pql_horizon: 16
+pql_lambda: 0.95
+sac_filter_score: target_advantage
+sac_keep_fraction: 0.5
+num_envs: 2
+agents: 64
+replay_capacity: 512
+logical_batch: 128
+microbatch: 32
+update_epochs: 1
+warmup: 0
+cycles: 1
