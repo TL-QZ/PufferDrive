@@ -85,6 +85,17 @@ def _validate_return_estimator(config, replay=None):
     return estimator
 
 
+def _normalize_experience_filter_config(value):
+    """Load opt-in filter validation only when the experiment package is used."""
+    if value is None:
+        return None
+    from project.soft_actor_critic_experience_filtering.filtering import (
+        normalize_experience_filter_config,
+    )
+
+    return normalize_experience_filter_config(value)
+
+
 class AdaptiveTargetEntropyController:
     """Lower the target entropy after accumulated qualifying observations."""
 
@@ -285,6 +296,7 @@ DEFAULT_CONFIG = dict(
     tau=0.005, torch_deterministic=False,
     anneal_lr=False, checkpoint_interval=50, final_model_name="final_model.pt", resume_state_path=None,
     fresh_run=False, log_collapse_diagnostics=False,
+    experience_filter=None,
 )
 
 SAC_TRAIN_KEYS = frozenset(DEFAULT_CONFIG) - {"env"} | {"data_dir"}
@@ -870,7 +882,17 @@ class PuffeSAC:
         if not isinstance(config.get("log_collapse_diagnostics", False), bool):
             raise ValueError("log_collapse_diagnostics must be a boolean")
 
-        config = resolve_sac_batch_sizes({**DEFAULT_CONFIG, **config}, vecenv)
+        config = {**DEFAULT_CONFIG, **config}
+        config["experience_filter"] = _normalize_experience_filter_config(
+            config.get("experience_filter")
+        )
+        if config["experience_filter"] is not None:
+            from project.soft_actor_critic_experience_filtering.filtering import (
+                validate_critic_filter_forward,
+            )
+
+            validate_critic_filter_forward(critic)
+        config = resolve_sac_batch_sizes(config, vecenv)
         config["n_steps"] = _validate_n_steps(config["n_steps"])
         _validate_return_estimator(config, replay)
         if config["return_estimator"] == "pql":
@@ -1004,6 +1026,15 @@ class PuffeSAC:
         self.config = config
         self.target_entropy_controller = target_entropy_controller
         self.device = torch.device(pufferl.torch_device(config["device"]))
+        if config["experience_filter"] is None:
+            self.experience_filter = None
+        else:
+            from project.soft_actor_critic_experience_filtering.filtering import ExperienceFilter
+
+            self.experience_filter = ExperienceFilter(config["experience_filter"], self.device)
+            self._filtered_critic_metric_sums = torch.zeros(
+                5, device=self.device, dtype=torch.float64,
+            )
         self.vecenv = vecenv
         self.behavior_policy = None
         self.batch_size = config["batch_size"]
@@ -1201,6 +1232,19 @@ class PuffeSAC:
             raise ValueError("Adaptive target entropy checkpoint is missing controller state")
         if target_entropy_controller is None and controller_state is not None:
             raise ValueError("Constant target entropy checkpoint contains unexpected controller state")
+        experience_filter = getattr(self, "experience_filter", None)
+        experience_filter_state = state.get("experience_filter_state_dict")
+        validated_experience_filter_state = None
+        if experience_filter is not None:
+            if experience_filter_state is None:
+                raise ValueError("Enabled SAC experience-filter checkpoint is missing its filter state")
+            validated_experience_filter_state = experience_filter.validate_state_dict(
+                experience_filter_state
+            )
+        elif experience_filter_state is not None:
+            raise ValueError(
+                "SAC checkpoint has enabled experience-filter state but filtering is disabled"
+            )
         operational_config = {
             "device", "total_timesteps", "run_name", "data_dir", "final_model_name",
             "checkpoint_interval", "resume_state_path", "amp", "precision", "compile",
@@ -1230,6 +1274,8 @@ class PuffeSAC:
                     raise ValueError("Adaptive target entropy checkpoint timer exceeds saved agent_steps")
         if target_entropy_controller is not None:
             target_entropy_controller.load_state_dict(controller_state)
+        if experience_filter is not None:
+            experience_filter.load_state_dict(validated_experience_filter_state)
         for name in ("policy", "critic", "target_critic"):
             model_state = self.helpers.clean_policy_state_dict(state[f"{name}_state_dict"])
             getattr(self, f"uncompiled_{name}").load_state_dict(model_state)
@@ -1663,6 +1709,11 @@ class PuffeSAC:
 
     def train(self, update_policy=True, target_policy=None):
         """Optimize from replay after evaluate(); one call increments epoch once."""
+        experience_filter = getattr(self, "experience_filter", None)
+        if experience_filter is not None:
+            experience_filter.begin_cycle()
+            self._filtered_critic_metric_sums.zero_()
+            self._filter_target_updates_at_cycle_start = self.learner_updates
         if self.device.type == "cuda":
             torch.compiler.cudagraph_mark_step_begin()
         profile = self.profile
@@ -1767,6 +1818,144 @@ class PuffeSAC:
             rewards, discounts, next_values, segment_offsets, self.config["pql_lambda"],
         )
 
+    @torch.no_grad()
+    def _prepare_n_step_targets(self, replay_indices, target_policy=None):
+        """Cache the existing n-step targets for one original logical batch."""
+        target_values = torch.empty(replay_indices.numel(), device=self.device, dtype=torch.float32)
+        for micro_start in range(0, replay_indices.numel(), self.max_minibatch_size):
+            micro_indices = replay_indices[micro_start:micro_start + self.max_minibatch_size]
+            _, _, mb_rewards, mb_next_obs, mb_discounts = self.replay.get_batch(micro_indices)
+            mb_rewards = mb_rewards.to(self.device, non_blocking=True)
+            mb_next_obs = mb_next_obs.to(self.device, non_blocking=True)
+            mb_discounts = mb_discounts.to(self.device, non_blocking=True)
+            if target_policy is None:
+                mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
+            else:
+                mb_targets = self._compute_targets(
+                    mb_rewards, mb_next_obs, mb_discounts, target_policy=target_policy,
+                )
+            target_values[micro_start:micro_start + micro_indices.numel()] = mb_targets.float()
+        return target_values
+
+    @torch.no_grad()
+    def _score_experience_filter_candidates(self, replay_indices, targets):
+        """Score every original candidate once with the current online twin critics."""
+        scores = torch.empty(replay_indices.numel(), device=self.device, dtype=torch.float32)
+        for micro_start in range(0, replay_indices.numel(), self.max_minibatch_size):
+            micro_indices = replay_indices[micro_start:micro_start + self.max_minibatch_size]
+            mb_obs, mb_actions, _, _, _ = (
+                tensor.to(self.device, non_blocking=True)
+                for tensor in self.replay.get_batch(micro_indices)
+            )
+            with self.amp_context:
+                q1, q2 = self.critic(mb_obs)
+            action_indices = mb_actions.unsqueeze(-1)
+            q1_recorded = q1.float().gather(1, action_indices).squeeze(-1)
+            q2_recorded = q2.float().gather(1, action_indices).squeeze(-1)
+            target_chunk = targets[micro_start:micro_start + micro_indices.numel()]
+            scores[micro_start:micro_start + micro_indices.numel()] = torch.maximum(
+                (target_chunk - q1_recorded).abs(),
+                (target_chunk - q2_recorded).abs(),
+            )
+        return scores
+
+    def _critic_loss_sum(self, mb_obs, mb_actions, mb_targets):
+        """Return per-row critic loss and metric sums for filtered updates."""
+        with self.amp_context:
+            q1, q2 = self.critic_train(mb_obs)
+        q1 = q1.float().gather(1, mb_actions.unsqueeze(-1)).squeeze(-1)
+        q2 = q2.float().gather(1, mb_actions.unsqueeze(-1)).squeeze(-1)
+        mb_targets = mb_targets.float()
+        loss_rows = (q1 - mb_targets).square() + (q2 - mb_targets).square()
+        diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
+        if diagnostics is not None:
+            diagnostics.add_td_errors(q1, q2, mb_targets)
+        return loss_rows.sum(), q1.detach().sum(), q2.detach().sum(), mb_targets.detach().sum()
+
+    def _train_filtered_critic(
+        self, replay_indices, targets, keep_mask, global_retained_count, profile, epoch, diagnostics,
+    ):
+        """Fit retained rows with synchronized DDP rounds, including empty ranks."""
+        if global_retained_count == 0:
+            return
+
+        retained_positions = torch.nonzero(keep_mask, as_tuple=False).flatten()
+        retained_positions_cpu = retained_positions.to(device="cpu")
+        local_retained_count = retained_positions_cpu.numel()
+        local_round_count = math.ceil(local_retained_count / self.max_minibatch_size)
+        round_count = torch.tensor(local_round_count, device=self.device, dtype=torch.int64)
+        if self.distributed:
+            torch.distributed.all_reduce(round_count, op=torch.distributed.ReduceOp.MAX)
+        global_round_count = int(round_count.item())
+        if global_round_count <= 0:
+            raise RuntimeError("Nonempty global SAC critic selection has no synchronized rounds")
+
+        self.critic_optimizer.zero_grad(set_to_none=True)
+        local_metric_sums = torch.zeros(5, device=self.device, dtype=torch.float64)
+        for round_idx in range(global_round_count):
+            micro_start = round_idx * self.max_minibatch_size
+            micro_end = min(micro_start + self.max_minibatch_size, local_retained_count)
+            has_local_rows = micro_start < micro_end
+            if has_local_rows:
+                candidate_positions_cpu = retained_positions_cpu[micro_start:micro_end]
+                candidate_positions = candidate_positions_cpu.to(self.device, non_blocking=True)
+                micro_indices = replay_indices[candidate_positions_cpu]
+                profile("train_copy", epoch)
+                mb_obs, mb_actions, _, _, _ = (
+                    tensor.to(self.device, non_blocking=True)
+                    for tensor in self.replay.get_batch(micro_indices)
+                )
+                mb_targets = targets[candidate_positions]
+            else:
+                candidate_positions = None
+                micro_indices = replay_indices[:1]
+                profile("train_copy", epoch)
+                mb_obs = self.replay.get_batch(micro_indices)[0].to(
+                    self.device, non_blocking=True,
+                )
+                mb_actions = None
+                mb_targets = None
+            profile("train_forward", epoch)
+            last_global_round = round_idx + 1 == global_round_count
+            sync_context = (
+                self.ddp_critic.no_sync()
+                if self.distributed and not last_global_round
+                else nullcontext()
+            )
+            with sync_context:
+                if has_local_rows:
+                    loss_sum, q1_sum, q2_sum, target_sum = self._critic_loss_sum(
+                        mb_obs, mb_actions, mb_targets,
+                    )
+                    gradient_loss = loss_sum * (self.world_size / global_retained_count)
+                    local_metric_sums += torch.stack((
+                        loss_sum.detach().to(torch.float64),
+                        q1_sum.to(torch.float64),
+                        q2_sum.to(torch.float64),
+                        target_sum.to(torch.float64),
+                        torch.tensor(micro_end - micro_start, device=self.device, dtype=torch.float64),
+                    ))
+                else:
+                    with self.amp_context:
+                        q1, q2 = self.critic_train(mb_obs)
+                    gradient_loss = (q1.float().sum() + q2.float().sum()) * 0.0
+                profile("learn", epoch)
+                gradient_loss.backward()
+
+        global_metric_sums = local_metric_sums.clone()
+        if self.distributed:
+            torch.distributed.all_reduce(global_metric_sums, op=torch.distributed.ReduceOp.SUM)
+        self._filtered_critic_metric_sums += global_metric_sums
+
+        if self.config["max_grad_norm"] is not None:
+            critic_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.critic.parameters(), self.config["max_grad_norm"],
+            )
+            if diagnostics is not None:
+                diagnostics.add_grad_norm("critic", critic_grad_norm, self.config["max_grad_norm"])
+        self.critic_optimizer.step()
+        self.experience_filter.mark_critic_step()
+
     def _critic_loss(self, mb_obs, mb_actions, mb_targets):
         with self.amp_context:
             q1, q2 = self.critic_train(mb_obs)
@@ -1816,6 +2005,7 @@ class PuffeSAC:
         )
 
     def _train_sac_transition(self, losses, profile, epoch, update_policy=True, target_policy=None):
+        experience_filter = getattr(self, "experience_filter", None)
         pql_enabled = self.config.get("return_estimator") == "pql"
         if pql_enabled and target_policy is not None:
             raise ValueError("PQL requires the current SAC actor for bootstrap values")
@@ -1833,6 +2023,21 @@ class PuffeSAC:
         minibatches_per_epoch = math.ceil(replay_size / self.minibatch_size)
         total_minibatches = self.config["update_epochs"] * minibatches_per_epoch
         total_sampled_transitions = replay_size * self.config["update_epochs"]
+        if experience_filter is not None and self.distributed:
+            update_schedule = torch.tensor(
+                [replay_size, self.minibatch_size, self.config["update_epochs"], total_minibatches],
+                device=self.device,
+                dtype=torch.int64,
+            )
+            minimum_schedule = update_schedule.clone()
+            maximum_schedule = update_schedule.clone()
+            torch.distributed.all_reduce(minimum_schedule, op=torch.distributed.ReduceOp.MIN)
+            torch.distributed.all_reduce(maximum_schedule, op=torch.distributed.ReduceOp.MAX)
+            if not torch.equal(minimum_schedule, maximum_schedule):
+                raise RuntimeError(
+                    "SAC experience filtering requires a synchronized logical-update schedule "
+                    "across ranks"
+                )
         replay_indices = None
         sequence_batches = None
         for logical_update_idx in range(total_minibatches):
@@ -1847,62 +2052,91 @@ class PuffeSAC:
             start_idx = minibatch_idx * self.minibatch_size
             if pql_enabled:
                 mb_indices, segment_offsets = sequence_batches[minibatch_idx]
+                if experience_filter is not None:
+                    experience_filter.validate_candidate_count(mb_indices.numel())
+                    profile("filter_target", epoch)
                 pql_targets = self._prepare_pql_targets(mb_indices, segment_offsets)
+                if experience_filter is not None:
+                    profile("filter_score", epoch)
             else:
                 mb_indices = replay_indices[start_idx:start_idx + self.minibatch_size]
+                if experience_filter is not None:
+                    experience_filter.validate_candidate_count(mb_indices.numel())
             logical_batch_count = mb_indices.numel()
+            if experience_filter is None:
+                self.critic_optimizer.zero_grad(set_to_none=True)
+                critic_loss_value = 0.0
+                q1_value = 0.0
+                q2_value = 0.0
+                target_value = 0.0
+                for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
+                    micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
+                    micro_count = micro_indices.numel()
+                    profile("train_copy", epoch)
+                    mb_obs, mb_actions, mb_rewards, mb_next_obs, mb_discounts = (
+                        tensor.to(self.device, non_blocking=True)
+                        for tensor in self.replay.get_batch(micro_indices)
+                    )
+                    profile("train_forward", epoch)
+                    last_microbatch = micro_start + micro_count == logical_batch_count
+                    sync_context = (
+                        self.ddp_critic.no_sync()
+                        if self.distributed and not last_microbatch
+                        else nullcontext()
+                    )
+                    with sync_context:
+                        if pql_enabled:
+                            mb_targets = pql_targets[micro_start:micro_start + micro_count]
+                        elif target_policy is None:
+                            mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
+                        else:
+                            mb_targets = self._compute_targets(
+                                mb_rewards, mb_next_obs, mb_discounts, target_policy=target_policy,
+                            )
+                        critic_loss, q1, q2 = self._critic_loss(mb_obs, mb_actions, mb_targets)
+                        profile("learn", epoch)
+                        (critic_loss * (micro_count / logical_batch_count)).backward()
+                    critic_loss_value += critic_loss.detach().item() * micro_count / logical_batch_count
+                    q1_value += q1.item() * micro_count / logical_batch_count
+                    q2_value += q2.item() * micro_count / logical_batch_count
+                    target_value += mb_targets.mean().item() * micro_count / logical_batch_count
 
-            self.critic_optimizer.zero_grad(set_to_none=True)
-            critic_loss_value = 0.0
-            q1_value = 0.0
-            q2_value = 0.0
-            target_value = 0.0
-            for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
-                micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
-                micro_count = micro_indices.numel()
-                profile("train_copy", epoch)
-                mb_obs, mb_actions, mb_rewards, mb_next_obs, mb_discounts = (
-                    tensor.to(self.device, non_blocking=True)
-                    for tensor in self.replay.get_batch(micro_indices)
-                )
-                profile("train_forward", epoch)
-                last_microbatch = micro_start + micro_count == logical_batch_count
-                sync_context = (
-                    self.ddp_critic.no_sync()
-                    if self.distributed and not last_microbatch
-                    else nullcontext()
-                )
-                with sync_context:
-                    if pql_enabled:
-                        mb_targets = pql_targets[micro_start:micro_start + micro_count]
-                    elif target_policy is None:
-                        mb_targets = self._compute_targets(mb_rewards, mb_next_obs, mb_discounts)
-                    else:
-                        mb_targets = self._compute_targets(
-                            mb_rewards, mb_next_obs, mb_discounts, target_policy=target_policy,
-                        )
-                    critic_loss, q1, q2 = self._critic_loss(mb_obs, mb_actions, mb_targets)
-                    profile("learn", epoch)
-                    (critic_loss * (micro_count / logical_batch_count)).backward()
-                critic_loss_value += critic_loss.detach().item() * micro_count / logical_batch_count
-                q1_value += q1.item() * micro_count / logical_batch_count
-                q2_value += q2.item() * micro_count / logical_batch_count
-                target_value += mb_targets.mean().item() * micro_count / logical_batch_count
+                if self.config["max_grad_norm"] is not None:
+                    critic_grad_norm = torch.nn.utils.clip_grad_norm_(
+                        self.critic.parameters(), self.config["max_grad_norm"],
+                    )
+                    if diagnostics is not None:
+                        diagnostics.add_grad_norm("critic", critic_grad_norm, self.config["max_grad_norm"])
+                self.critic_optimizer.step()
 
-            if self.config["max_grad_norm"] is not None:
-                critic_grad_norm = torch.nn.utils.clip_grad_norm_(
-                    self.critic.parameters(), self.config["max_grad_norm"],
+                update_losses = dict(
+                    critic_loss=critic_loss_value,
+                    q1=q1_value,
+                    q2=q2_value,
+                    target=target_value,
                 )
-                if diagnostics is not None:
-                    diagnostics.add_grad_norm("critic", critic_grad_norm, self.config["max_grad_norm"])
-            self.critic_optimizer.step()
-
-            update_losses = dict(
-                critic_loss=critic_loss_value,
-                q1=q1_value,
-                q2=q2_value,
-                target=target_value,
-            )
+            else:
+                if pql_enabled:
+                    filter_targets = pql_targets
+                else:
+                    profile("filter_target", epoch)
+                    filter_targets = self._prepare_n_step_targets(mb_indices, target_policy)
+                    profile("filter_score", epoch)
+                candidate_scores = self._score_experience_filter_candidates(mb_indices, filter_targets)
+                profile("filter_select", epoch)
+                keep_mask, filter_metrics = experience_filter.select(
+                    candidate_scores, candidate_count_validated=True,
+                )
+                self._train_filtered_critic(
+                    mb_indices,
+                    filter_targets,
+                    keep_mask,
+                    filter_metrics["retained_count"],
+                    profile,
+                    epoch,
+                    diagnostics,
+                )
+                update_losses = {}
             if update_policy:
                 self.optimizer.zero_grad(set_to_none=True)
                 policy_loss_value = 0.0
@@ -2024,6 +2258,17 @@ class PuffeSAC:
                 key: self.helpers.dist_mean(value, self.device)
                 for key, value in sorted(self.losses.items())
             }
+        experience_filter = getattr(self, "experience_filter", None)
+        if experience_filter is not None:
+            metric_sums = self._filtered_critic_metric_sums
+            retained_rows = int(metric_sums[4].item())
+            if retained_rows:
+                self.losses.update({
+                    "critic_loss": (metric_sums[0] / retained_rows).item(),
+                    "q1": (metric_sums[1] / retained_rows).item(),
+                    "q2": (metric_sums[2] / retained_rows).item(),
+                    "target": (metric_sums[3] / retained_rows).item(),
+                })
         performance = {key: value["elapsed"] for key, value in self.profile}
         nstep_metrics = torch.tensor(
             [
@@ -2059,6 +2304,12 @@ class PuffeSAC:
             **{f"losses/{key}": value for key, value in self.losses.items()},
             **{f"performance/{key}": value for key, value in performance.items()},
         }
+        if experience_filter is not None:
+            logs.update(experience_filter.metrics())
+            logs["filter/target_steps"] = (
+                self.learner_updates - getattr(self, "_filter_target_updates_at_cycle_start", self.learner_updates)
+            )
+            logs["filter/cumulative_target_steps"] = self.learner_updates
         if getattr(self, "config", {}).get("return_estimator") == "pql":
             # Distribution summaries are explicitly rank-local, not averaged quantiles.
             logs.update({
@@ -2177,6 +2428,10 @@ class PuffeSAC:
             "target_entropy_controller_state_dict": (
                 target_entropy_controller.state_dict()
                 if target_entropy_controller is not None else None
+            ),
+            "experience_filter_state_dict": (
+                self.experience_filter.state_dict()
+                if getattr(self, "experience_filter", None) is not None else None
             ),
             "log_alpha": self.log_alpha.detach().cpu(),
             "optimizer_state_dict": self.optimizer.state_dict(),
@@ -2359,6 +2614,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             if startup_args["train"].get("evaluation_interval_epochs") is not None:
                 training_evaluation_scheduled = ppo.drive_benchmark.validate_training_evaluation_config(startup_args)
             train_args = startup_args["train"]
+            train_args["experience_filter"] = _normalize_experience_filter_config(
+                train_args.get("experience_filter")
+            )
             estimator = _validate_return_estimator(train_args, replay)
             n_steps = _validate_n_steps(train_args.get("n_steps", 1))
             if estimator == "pql" and behavior_policy_factory is not None:
@@ -2481,6 +2739,9 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
         else:
             # Keep the original flat config + injected-component API intact.
             config = {**args, "env": env_name}
+            config["experience_filter"] = _normalize_experience_filter_config(
+                config.get("experience_filter")
+            )
             estimator = _validate_return_estimator(config, replay)
             if estimator == "pql" and behavior_policy_factory is not None:
                 raise ValueError("PQL does not support PPO behavior_policy_factory")
