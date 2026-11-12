@@ -20,7 +20,7 @@ fail() {
 }
 
 run_stamp="$(date -u +%Y%m%dT%H%M%SZ)_$$"
-output_dir="$SCRIPT_DIR/runs/tes_experience_filtering_${run_stamp}"
+output_dir="$SCRIPT_DIR/runs/tes_actor_critic_filtering_${run_stamp}"
 launcher_args=(
     --config-dir project/soft_actor_critic_experience_filtering/configs/tes
     --trial-ids 98

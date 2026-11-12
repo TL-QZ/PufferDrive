@@ -889,9 +889,12 @@ class PuffeSAC:
         if config["experience_filter"] is not None:
             from project.soft_actor_critic_experience_filtering.filtering import (
                 validate_critic_filter_forward,
+                validate_actor_filter_forward,
             )
 
             validate_critic_filter_forward(critic)
+            if config["experience_filter"]["apply_to"] == "actor_critic":
+                validate_actor_filter_forward(policy)
         config = resolve_sac_batch_sizes(config, vecenv)
         config["n_steps"] = _validate_n_steps(config["n_steps"])
         _validate_return_estimator(config, replay)
@@ -1033,6 +1036,9 @@ class PuffeSAC:
 
             self.experience_filter = ExperienceFilter(config["experience_filter"], self.device)
             self._filtered_critic_metric_sums = torch.zeros(
+                5, device=self.device, dtype=torch.float64,
+            )
+            self._filtered_actor_metric_sums = torch.zeros(
                 5, device=self.device, dtype=torch.float64,
             )
         self.vecenv = vecenv
@@ -1713,7 +1719,7 @@ class PuffeSAC:
         if experience_filter is not None:
             experience_filter.begin_cycle()
             self._filtered_critic_metric_sums.zero_()
-            self._filter_target_updates_at_cycle_start = self.learner_updates
+            self._filtered_actor_metric_sums.zero_()
         if self.device.type == "cuda":
             torch.compiler.cudagraph_mark_step_begin()
         profile = self.profile
@@ -1970,6 +1976,10 @@ class PuffeSAC:
         return loss, q1.detach().mean(), q2.detach().mean()
 
     def _policy_loss(self, mb_obs):
+        loss_rows, entropy_rows = self._policy_loss_rows(mb_obs)
+        return loss_rows.mean(), entropy_rows.mean()
+
+    def _policy_loss_rows(self, mb_obs, record_diagnostics=True):
         with self.amp_context:
             logits = self.policy_train(mb_obs)
         logprobs = F.log_softmax(logits.float(), dim=-1)
@@ -1980,27 +1990,115 @@ class PuffeSAC:
         q2 = q2.float()
         minimum_q = torch.minimum(q1, q2)
         alpha = self.alpha
-        loss = (probs * (alpha * logprobs - minimum_q)).sum(-1).mean()
-        entropy = -(probs * logprobs).sum(-1).mean()
+        loss_rows = (probs * (alpha * logprobs - minimum_q)).sum(-1)
+        entropy_rows = -(probs * logprobs).sum(-1)
         diagnostics = getattr(self, "_collapse_diagnostics_tracker", None)
-        if diagnostics is not None:
+        if record_diagnostics and diagnostics is not None:
             diagnostics.add_policy(logits, probs, minimum_q, alpha)
-        return loss, entropy.detach()
+        return loss_rows, entropy_rows.detach()
 
-    def _update_target_entropy(self, entropy_sum, logical_batch_count, agent_steps=None):
+    def _train_filtered_actor(
+        self, replay_indices, keep_mask, global_retained_count, profile, epoch, diagnostics,
+    ):
+        """Fit retained rows with synchronized DDP rounds, including empty ranks."""
+        if global_retained_count == 0:
+            return None
+
+        retained_positions = torch.nonzero(keep_mask, as_tuple=False).flatten()
+        retained_positions_cpu = retained_positions.to(device="cpu")
+        local_retained_count = retained_positions_cpu.numel()
+        local_round_count = math.ceil(local_retained_count / self.max_minibatch_size)
+        round_count = torch.tensor(local_round_count, device=self.device, dtype=torch.int64)
+        if self.distributed:
+            torch.distributed.all_reduce(round_count, op=torch.distributed.ReduceOp.MAX)
+        global_round_count = int(round_count.item())
+        if global_round_count <= 0:
+            raise RuntimeError("Nonempty global SAC actor selection has no synchronized rounds")
+
+        self.optimizer.zero_grad(set_to_none=True)
+        local_metric_sums = torch.zeros(2, device=self.device, dtype=torch.float64)
+        for round_idx in range(global_round_count):
+            micro_start = round_idx * self.max_minibatch_size
+            micro_end = min(micro_start + self.max_minibatch_size, local_retained_count)
+            has_local_rows = micro_start < micro_end
+            if has_local_rows:
+                candidate_positions_cpu = retained_positions_cpu[micro_start:micro_end]
+                micro_indices = replay_indices[candidate_positions_cpu]
+                profile("train_copy", epoch)
+                mb_obs = self.replay.get_batch(micro_indices)[0].to(
+                    self.device, non_blocking=True,
+                )
+            else:
+                # DDP requires every rank to run the same number of forwards.
+                # The state-free policy validation makes this sentinel safe.
+                micro_indices = replay_indices[:1]
+                profile("train_copy", epoch)
+                mb_obs = self.replay.get_batch(micro_indices)[0].to(
+                    self.device, non_blocking=True,
+                )
+            profile("train_forward", epoch)
+            last_global_round = round_idx + 1 == global_round_count
+            sync_context = (
+                self.ddp_policy.no_sync()
+                if self.distributed and not last_global_round
+                else nullcontext()
+            )
+            with sync_context:
+                loss_rows, entropy_rows = self._policy_loss_rows(
+                    mb_obs, record_diagnostics=has_local_rows,
+                )
+                if has_local_rows:
+                    loss_sum = loss_rows.sum()
+                    gradient_loss = loss_sum * (self.world_size / global_retained_count)
+                    local_metric_sums += torch.stack((
+                        loss_sum.detach().to(torch.float64),
+                        entropy_rows.sum().to(torch.float64),
+                    ))
+                else:
+                    gradient_loss = loss_rows.sum() * 0.0
+                profile("learn", epoch)
+                gradient_loss.backward()
+
+        global_metric_sums = local_metric_sums.clone()
+        if self.distributed:
+            torch.distributed.all_reduce(global_metric_sums, op=torch.distributed.ReduceOp.SUM)
+
+        if self.config["max_grad_norm"] is not None:
+            actor_grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.policy.parameters(), self.config["max_grad_norm"],
+            )
+            if diagnostics is not None:
+                diagnostics.add_grad_norm("actor", actor_grad_norm, self.config["max_grad_norm"])
+        self.optimizer.step()
+        self.experience_filter.mark_actor_step(global_retained_count)
+        return {
+            "policy_loss_sum": global_metric_sums[0].item(),
+            "entropy_sum": global_metric_sums[1].item(),
+            "policy_loss": (global_metric_sums[0] / global_retained_count).item(),
+            "entropy": (global_metric_sums[1] / global_retained_count).item(),
+            "local_entropy_sum": local_metric_sums[1],
+            "local_retained_count": local_retained_count,
+            "actor_rows": global_retained_count,
+        }
+
+    def _update_target_entropy(
+        self, entropy_sum, logical_batch_count, agent_steps=None, global_mean_entropy=None,
+    ):
         target_entropy_controller = getattr(self, "target_entropy_controller", None)
         if target_entropy_controller is None:
             return
-        entropy_totals = torch.stack((
-            entropy_sum.detach().to(dtype=torch.float64),
-            torch.tensor(logical_batch_count, device=self.device, dtype=torch.float64),
-        ))
-        if self.distributed:
-            torch.distributed.all_reduce(entropy_totals, op=torch.distributed.ReduceOp.SUM)
+        if global_mean_entropy is None:
+            entropy_totals = torch.stack((
+                entropy_sum.detach().to(dtype=torch.float64),
+                torch.tensor(logical_batch_count, device=self.device, dtype=torch.float64),
+            ))
+            if self.distributed:
+                torch.distributed.all_reduce(entropy_totals, op=torch.distributed.ReduceOp.SUM)
+            global_mean_entropy = (entropy_totals[0] / entropy_totals[1]).item()
         if agent_steps is None:
             agent_steps = self.agent_steps
         target_entropy_controller.observe(
-            (entropy_totals[0] / entropy_totals[1]).item(),
+            global_mean_entropy,
             agent_steps=agent_steps,
         )
 
@@ -2040,6 +2138,7 @@ class PuffeSAC:
                 )
         replay_indices = None
         sequence_batches = None
+        completed_update_count = 0
         for logical_update_idx in range(total_minibatches):
             minibatch_idx = logical_update_idx % minibatches_per_epoch
             if minibatch_idx == 0:
@@ -2063,6 +2162,7 @@ class PuffeSAC:
                 if experience_filter is not None:
                     experience_filter.validate_candidate_count(mb_indices.numel())
             logical_batch_count = mb_indices.numel()
+            filter_metrics = None
             if experience_filter is None:
                 self.critic_optimizer.zero_grad(set_to_none=True)
                 critic_loss_value = 0.0
@@ -2137,42 +2237,92 @@ class PuffeSAC:
                     diagnostics,
                 )
                 update_losses = {}
+                if (experience_filter.config["apply_to"] == "actor_critic"
+                        and filter_metrics["retained_count"] == 0):
+                    self.sampled_transitions += logical_batch_count * self.world_size
+                    continue
+            actor_metrics = None
             if update_policy:
-                self.optimizer.zero_grad(set_to_none=True)
-                policy_loss_value = 0.0
-                entropy_sum = torch.zeros((), device=self.device, dtype=torch.float32)
-                for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
-                    micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
-                    micro_count = micro_indices.numel()
-                    profile("train_copy", epoch)
-                    mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device, non_blocking=True)
-                    profile("train_forward", epoch)
-                    last_microbatch = micro_start + micro_count == logical_batch_count
-                    sync_context = (
-                        self.ddp_policy.no_sync()
-                        if self.distributed and not last_microbatch
-                        else nullcontext()
+                if (experience_filter is not None
+                        and experience_filter.config["apply_to"] == "actor_critic"):
+                    actor_metrics = self._train_filtered_actor(
+                        mb_indices,
+                        keep_mask,
+                        filter_metrics["retained_count"],
+                        profile,
+                        epoch,
+                        diagnostics,
                     )
-                    with sync_context:
-                        policy_loss, entropy = self._policy_loss(mb_obs)
-                        profile("learn", epoch)
-                        (policy_loss * (micro_count / logical_batch_count)).backward()
-                    policy_loss_value += policy_loss.detach().item() * micro_count / logical_batch_count
-                    entropy_sum += entropy * micro_count
-
-                if self.config["max_grad_norm"] is not None:
-                    actor_grad_norm = torch.nn.utils.clip_grad_norm_(
-                        self.policy.parameters(), self.config["max_grad_norm"],
+                    policy_loss_value = actor_metrics["policy_loss"]
+                    mean_entropy = torch.tensor(
+                        actor_metrics["entropy"], device=self.device, dtype=torch.float32,
                     )
-                    if diagnostics is not None:
-                        diagnostics.add_grad_norm("actor", actor_grad_norm, self.config["max_grad_norm"])
-                self.optimizer.step()
+                    update_losses["policy_loss"] = policy_loss_value
+                    update_losses["entropy"] = mean_entropy.item()
+                else:
+                    self.optimizer.zero_grad(set_to_none=True)
+                    policy_loss_value = 0.0
+                    entropy_sum = torch.zeros((), device=self.device, dtype=torch.float32)
+                    for micro_start in range(0, logical_batch_count, self.max_minibatch_size):
+                        micro_indices = mb_indices[micro_start:micro_start + self.max_minibatch_size]
+                        micro_count = micro_indices.numel()
+                        profile("train_copy", epoch)
+                        mb_obs = self.replay.get_batch(micro_indices)[0].to(self.device, non_blocking=True)
+                        profile("train_forward", epoch)
+                        last_microbatch = micro_start + micro_count == logical_batch_count
+                        sync_context = (
+                            self.ddp_policy.no_sync()
+                            if self.distributed and not last_microbatch
+                            else nullcontext()
+                        )
+                        with sync_context:
+                            policy_loss, entropy = self._policy_loss(mb_obs)
+                            profile("learn", epoch)
+                            (policy_loss * (micro_count / logical_batch_count)).backward()
+                        policy_loss_value += policy_loss.detach().item() * micro_count / logical_batch_count
+                        entropy_sum += entropy * micro_count
 
-                mean_entropy = entropy_sum / logical_batch_count
+                    if self.config["max_grad_norm"] is not None:
+                        actor_grad_norm = torch.nn.utils.clip_grad_norm_(
+                            self.policy.parameters(), self.config["max_grad_norm"],
+                        )
+                        if diagnostics is not None:
+                            diagnostics.add_grad_norm("actor", actor_grad_norm, self.config["max_grad_norm"])
+                    self.optimizer.step()
+
+                    mean_entropy = entropy_sum / logical_batch_count
+                    if experience_filter is not None:
+                        if experience_filter.config["apply_to"] == "critic":
+                            actor_metrics = {
+                                "local_entropy_sum": entropy_sum,
+                                "local_retained_count": logical_batch_count,
+                                "actor_rows": filter_metrics["candidate_count"],
+                            }
+                            experience_filter.mark_actor_step(actor_metrics["actor_rows"])
+                        actor_metric_sums = torch.tensor(
+                            [
+                                policy_loss_value * logical_batch_count,
+                                entropy_sum.item(),
+                            ],
+                            device=self.device,
+                            dtype=torch.float64,
+                        )
+                        if self.distributed:
+                            torch.distributed.all_reduce(
+                                actor_metric_sums, op=torch.distributed.ReduceOp.SUM,
+                            )
+                        actor_metrics.update({
+                            "policy_loss_sum": actor_metric_sums[0].item(),
+                            "entropy_sum": actor_metric_sums[1].item(),
+                            "policy_loss": (actor_metric_sums[0] / actor_metrics["actor_rows"]).item(),
+                            "entropy": (actor_metric_sums[1] / actor_metrics["actor_rows"]).item(),
+                        })
+
                 if diagnostics is not None:
                     diagnostics.add_entropy_update_mean(mean_entropy)
-                update_losses["policy_loss"] = policy_loss_value
-                update_losses["entropy"] = mean_entropy.item()
+                if experience_filter is None or experience_filter.config["apply_to"] == "critic":
+                    update_losses["policy_loss"] = policy_loss_value
+                    update_losses["entropy"] = mean_entropy.item()
                 if self.config.get("learn_alpha", True):
                     target_entropy_controller = getattr(self, "target_entropy_controller", None)
                     target_entropy = (
@@ -2188,8 +2338,26 @@ class PuffeSAC:
                         self.log_alpha.grad.div_(self.world_size)
                     self.alpha_optimizer.step()
                     update_losses["alpha_loss"] = alpha_loss.detach().item()
-                    self._update_target_entropy(entropy_sum, logical_batch_count)
+                    if experience_filter is not None:
+                        experience_filter.mark_alpha_step()
+                    if experience_filter is None or experience_filter.config["apply_to"] == "critic":
+                        self._update_target_entropy(entropy_sum, logical_batch_count)
+                    else:
+                        self._update_target_entropy(
+                            actor_metrics["local_entropy_sum"],
+                            actor_metrics["local_retained_count"],
+                            global_mean_entropy=actor_metrics["entropy"],
+                        )
             update_losses["alpha"] = self.alpha.item()
+            if experience_filter is not None and actor_metrics is not None:
+                actor_rows = actor_metrics["actor_rows"]
+                self._filtered_actor_metric_sums[0] += actor_metrics["policy_loss_sum"]
+                self._filtered_actor_metric_sums[1] += actor_metrics["entropy_sum"]
+                self._filtered_actor_metric_sums[2] += actor_rows
+                if (experience_filter.config["apply_to"] == "actor_critic"
+                        and "alpha_loss" in update_losses):
+                    self._filtered_actor_metric_sums[3] += update_losses["alpha_loss"] * actor_rows
+                    self._filtered_actor_metric_sums[4] += actor_rows
 
             profile("train_misc", epoch)
             # Polyak-update all target parameters and buffers, including encoders.
@@ -2205,13 +2373,16 @@ class PuffeSAC:
                         target.lerp_(online[key], self.config["tau"])
                     else:
                         target.copy_(online[key])
+            if experience_filter is not None:
+                experience_filter.mark_target_step()
 
             self.learner_updates += 1
             self.sampled_transitions += logical_batch_count * self.world_size
+            completed_update_count += 1
             profile("train_misc", epoch)
             for key, value in update_losses.items():
                 losses[key] += value * logical_batch_count / total_sampled_transitions
-        return total_minibatches
+        return completed_update_count
 
     def _reduce_environment_metrics(self):
         if not self.distributed:
@@ -2269,6 +2440,16 @@ class PuffeSAC:
                     "q2": (metric_sums[2] / retained_rows).item(),
                     "target": (metric_sums[3] / retained_rows).item(),
                 })
+            actor_sums = self._filtered_actor_metric_sums
+            actor_rows = int(actor_sums[2].item())
+            if actor_rows:
+                self.losses.update({
+                    "policy_loss": (actor_sums[0] / actor_rows).item(),
+                    "entropy": (actor_sums[1] / actor_rows).item(),
+                })
+            alpha_rows = int(actor_sums[4].item())
+            if alpha_rows and experience_filter.config["apply_to"] == "actor_critic":
+                self.losses["alpha_loss"] = (actor_sums[3] / alpha_rows).item()
         performance = {key: value["elapsed"] for key, value in self.profile}
         nstep_metrics = torch.tensor(
             [
@@ -2306,10 +2487,6 @@ class PuffeSAC:
         }
         if experience_filter is not None:
             logs.update(experience_filter.metrics())
-            logs["filter/target_steps"] = (
-                self.learner_updates - getattr(self, "_filter_target_updates_at_cycle_start", self.learner_updates)
-            )
-            logs["filter/cumulative_target_steps"] = self.learner_updates
         if getattr(self, "config", {}).get("return_estimator") == "pql":
             # Distribution summaries are explicitly rank-local, not averaged quantiles.
             logs.update({

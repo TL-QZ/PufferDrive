@@ -1,4 +1,4 @@
-"""Distributed TD-error selection for the SAC critic update.
+"""Distributed TD-error selection for SAC learner updates.
 
 The learner owns target construction and replay access. This module owns the
 filter's configuration, global threshold state, selection counters, and resume
@@ -13,9 +13,10 @@ import torch
 from torch import nn
 
 
-FILTER_STATE_VERSION = 1
+FILTER_STATE_VERSION = 2
 FILTER_SCORE = "twin_max_abs_td_error"
-FILTER_TARGET = "critic"
+FILTER_TARGET = "actor_critic"
+LEGACY_FILTER_TARGET = "critic"
 FILTER_THRESHOLD_MODE = "ewma_max"
 DEFAULT_EWMA_BETA = 0.25
 DEFAULT_THRESHOLD_SCALE = 0.01
@@ -25,8 +26,10 @@ _CONFIG_KEYS = frozenset({
 })
 _COUNT_NAMES = (
     "candidate_count", "retained_count", "filtered_count", "empty_batches",
-    "local_empty_ranks", "critic_steps",
+    "local_empty_ranks", "critic_steps", "actor_rows", "actor_steps",
+    "alpha_steps", "target_steps",
 )
+_LEGACY_COUNT_NAMES = _COUNT_NAMES[:6]
 
 
 def _finite_real(value):
@@ -59,8 +62,12 @@ def normalize_experience_filter_config(value):
         raise ValueError("experience_filter.enabled must be a boolean")
     if value.get("score", FILTER_SCORE) != FILTER_SCORE:
         raise ValueError(f"experience_filter.score must be {FILTER_SCORE!r}")
-    if value.get("apply_to", FILTER_TARGET) != FILTER_TARGET:
-        raise ValueError(f"experience_filter.apply_to must be {FILTER_TARGET!r}")
+    apply_to = value.get("apply_to", FILTER_TARGET)
+    if apply_to not in (FILTER_TARGET, LEGACY_FILTER_TARGET):
+        raise ValueError(
+            "experience_filter.apply_to must be "
+            f"{FILTER_TARGET!r} or {LEGACY_FILTER_TARGET!r}"
+        )
     if value.get("threshold_mode", FILTER_THRESHOLD_MODE) != FILTER_THRESHOLD_MODE:
         raise ValueError(
             f"experience_filter.threshold_mode must be {FILTER_THRESHOLD_MODE!r}"
@@ -78,19 +85,19 @@ def normalize_experience_filter_config(value):
     return {
         "enabled": True,
         "score": FILTER_SCORE,
-        "apply_to": FILTER_TARGET,
+        "apply_to": apply_to,
         "threshold_mode": FILTER_THRESHOLD_MODE,
         "ewma_beta": float(ewma_beta),
         "threshold_scale": float(threshold_scale),
     }
 
 
-def validate_critic_filter_forward(critic):
-    """Reject built-in critic modules whose extra score forward changes state."""
+def _validate_state_free_filter_forward(module, role):
+    """Reject modules whose filter-only participation forward changes state."""
     batch_norm_type = nn.modules.batchnorm._BatchNorm
     dropout_type = nn.modules.dropout._DropoutNd
     unsupported = []
-    for module_name, module in critic.named_modules():
+    for module_name, module in module.named_modules():
         if not module_name:
             module_name = type(module).__name__
         if isinstance(module, batch_norm_type):
@@ -100,13 +107,24 @@ def validate_critic_filter_forward(critic):
     if unsupported:
         names = ", ".join(unsupported)
         raise ValueError(
-            "experience_filter requires a state-free, deterministic critic forward; "
+            "experience_filter requires a state-free, deterministic "
+            f"{role} forward; "
             f"found batch-normalization or dropout modules: {names}"
         )
 
 
+def validate_critic_filter_forward(critic):
+    """Reject built-in critic modules whose extra score forward changes state."""
+    _validate_state_free_filter_forward(critic, "critic")
+
+
+def validate_actor_filter_forward(actor):
+    """Reject stateful actors used for empty-rank DDP participation."""
+    _validate_state_free_filter_forward(actor, "actor")
+
+
 class ExperienceFilter:
-    """Maintain the shared EMA threshold and select retained critic rows."""
+    """Maintain the shared EMA threshold and select retained learner rows."""
 
     def __init__(self, config, device):
         normalized = normalize_experience_filter_config(config)
@@ -123,6 +141,7 @@ class ExperienceFilter:
         self.last_threshold = None
         self._cumulative = self._empty_counters()
         self._cycle = self._empty_counters()
+        self._actor_metric_history_complete = True
 
     @staticmethod
     def _empty_counters():
@@ -232,6 +251,24 @@ class ExperienceFilter:
         self._cumulative["critic_steps"] += 1
         self._cycle["critic_steps"] += 1
 
+    def mark_actor_step(self, actor_rows):
+        """Record a successful actor step and its global row exposure."""
+        if not isinstance(actor_rows, int) or isinstance(actor_rows, bool) or actor_rows <= 0:
+            raise ValueError("SAC experience-filter actor rows must be a positive integer")
+        for counters in (self._cumulative, self._cycle):
+            counters["actor_rows"] += actor_rows
+            counters["actor_steps"] += 1
+
+    def mark_alpha_step(self):
+        """Record one successful temperature optimizer step."""
+        self._cumulative["alpha_steps"] += 1
+        self._cycle["alpha_steps"] += 1
+
+    def mark_target_step(self):
+        """Record one completed Polyak target update."""
+        self._cumulative["target_steps"] += 1
+        self._cycle["target_steps"] += 1
+
     def metrics(self):
         """Return row-weighted cycle and lifetime counters for production logs."""
         cycle_candidates = self._cycle["candidate_count"]
@@ -250,7 +287,8 @@ class ExperienceFilter:
             ),
             "filter/empty_batches": self._cycle["empty_batches"],
             "filter/local_empty_ranks": self._cycle["local_empty_ranks"],
-            "filter/critic_steps": self._cycle["critic_steps"],
+            "filter/update_steps": self._cycle["critic_steps"],
+            "filter/actor_rows": self._cycle["actor_rows"],
             "filter/cumulative_candidate_count": self._cumulative["candidate_count"],
             "filter/cumulative_retained_count": self._cumulative["retained_count"],
             "filter/cumulative_filtered_count": self._cumulative["filtered_count"],
@@ -264,7 +302,9 @@ class ExperienceFilter:
             ),
             "filter/cumulative_empty_batches": self._cumulative["empty_batches"],
             "filter/cumulative_local_empty_ranks": self._cumulative["local_empty_ranks"],
-            "filter/cumulative_critic_steps": self._cumulative["critic_steps"],
+            "filter/cumulative_update_steps": self._cumulative["critic_steps"],
+            "filter/cumulative_actor_rows": self._cumulative["actor_rows"],
+            "filter/actor_metric_history_complete": self._actor_metric_history_complete,
             "filter/scoring_batches": self.scoring_batches,
             "filter/current_max": self.last_current_max,
             "filter/ema_max": self.ema_max,
@@ -283,16 +323,23 @@ class ExperienceFilter:
             "last_threshold": self.last_threshold,
             "cumulative": dict(self._cumulative),
             "cycle": dict(self._cycle),
+            "actor_metric_history_complete": self._actor_metric_history_complete,
         }
 
     def validate_state_dict(self, state):
         """Validate and normalize resume state without changing this object."""
         if not isinstance(state, Mapping):
             raise ValueError("Enabled SAC experience filter checkpoint state is missing")
-        if state.get("version") != FILTER_STATE_VERSION:
+        state_version = state.get("version")
+        if (not isinstance(state_version, int) or isinstance(state_version, bool)
+                or state_version not in (1, FILTER_STATE_VERSION)):
             raise ValueError("Unsupported SAC experience-filter checkpoint state version")
         if state.get("config") != self.config:
             raise ValueError("SAC experience-filter checkpoint settings do not match configuration")
+        if state_version == 1 and self.config["apply_to"] != LEGACY_FILTER_TARGET:
+            raise ValueError(
+                "Legacy SAC experience-filter checkpoints require apply_to='critic'"
+            )
 
         ema_initialized = state.get("ema_initialized")
         if not isinstance(ema_initialized, bool):
@@ -327,10 +374,11 @@ class ExperienceFilter:
         validated_counts = {}
         for counter_name in ("cumulative", "cycle"):
             counters = state.get(counter_name)
-            if not isinstance(counters, Mapping) or set(counters) != set(_COUNT_NAMES):
+            expected_names = _LEGACY_COUNT_NAMES if state_version == 1 else _COUNT_NAMES
+            if not isinstance(counters, Mapping) or set(counters) != set(expected_names):
                 raise ValueError(f"Invalid SAC experience-filter {counter_name} counters")
-            normalized_counts = {}
-            for name in _COUNT_NAMES:
+            normalized_counts = {name: 0 for name in _COUNT_NAMES}
+            for name in expected_names:
                 value = counters[name]
                 if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                     raise ValueError(f"Invalid SAC experience-filter {counter_name} counter {name}")
@@ -340,6 +388,18 @@ class ExperienceFilter:
                 raise ValueError(f"Inconsistent SAC experience-filter {counter_name} row counts")
             if normalized_counts["critic_steps"] > normalized_counts["candidate_count"]:
                 raise ValueError(f"Invalid SAC experience-filter {counter_name} critic-step count")
+            if (normalized_counts["actor_rows"] < normalized_counts["actor_steps"]
+                    or normalized_counts["actor_steps"] > normalized_counts["candidate_count"]
+                    or normalized_counts["alpha_steps"] > normalized_counts["actor_steps"]
+                    or normalized_counts["target_steps"] > normalized_counts["candidate_count"]):
+                raise ValueError(f"Invalid SAC experience-filter {counter_name} update counters")
+            actor_row_limit = (
+                normalized_counts["retained_count"]
+                if self.config["apply_to"] == FILTER_TARGET
+                else normalized_counts["candidate_count"]
+            )
+            if normalized_counts["actor_rows"] > actor_row_limit:
+                raise ValueError(f"Invalid SAC experience-filter {counter_name} actor-row count")
             validated_counts[counter_name] = normalized_counts
 
         if validated_counts["cumulative"]["candidate_count"] < validated_counts["cycle"]["candidate_count"]:
@@ -353,6 +413,12 @@ class ExperienceFilter:
             raise ValueError("SAC experience-filter critic steps exceed score batches")
         if scoring_batches < validated_counts["cumulative"]["empty_batches"]:
             raise ValueError("SAC experience-filter empty-batch count exceeds score batches")
+        actor_metric_history_complete = state.get("actor_metric_history_complete", False)
+        if state_version == FILTER_STATE_VERSION:
+            if not isinstance(actor_metric_history_complete, bool):
+                raise ValueError("Invalid SAC experience-filter actor metric history flag")
+        else:
+            actor_metric_history_complete = False
         return {
             "version": FILTER_STATE_VERSION,
             "config": dict(self.config),
@@ -362,6 +428,7 @@ class ExperienceFilter:
             "last_current_max": last_current_max,
             "last_threshold": last_threshold,
             **validated_counts,
+            "actor_metric_history_complete": actor_metric_history_complete,
         }
 
     def load_state_dict(self, state):
@@ -374,3 +441,4 @@ class ExperienceFilter:
         self.last_threshold = validated["last_threshold"]
         self._cumulative = dict(validated["cumulative"])
         self._cycle = dict(validated["cycle"])
+        self._actor_metric_history_complete = validated["actor_metric_history_complete"]

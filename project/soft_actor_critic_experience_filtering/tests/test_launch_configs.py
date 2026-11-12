@@ -16,7 +16,7 @@ SOURCE_CONFIGS = REPO_ROOT / "project" / "sac_gpu_4b_comparison" / "configs"
 EXPECTED_FILTER = {
     "enabled": True,
     "score": "twin_max_abs_td_error",
-    "apply_to": "critic",
+    "apply_to": "actor_critic",
     "threshold_mode": "ewma_max",
     "ewma_beta": 0.25,
     "threshold_scale": 0.01,
@@ -94,8 +94,8 @@ def _run_dry_run(algorithm: str, output_dir: Path, *extra_args: str) -> tuple[di
 @pytest.mark.parametrize(
     ("algorithm", "gpu_pair", "wandb_group"),
     [
-        ("tes", [0, 1], "tes_experience_filtering_trial98"),
-        ("pql", [2, 3], "pql_experience_filtering_trial98"),
+        ("tes", [0, 1], "tes_actor_critic_filtering_trial98"),
+        ("pql", [2, 3], "pql_actor_critic_filtering_trial98"),
     ],
 )
 def test_trial_98_dry_run_resolves_filter_budget_and_default_gpu_group(

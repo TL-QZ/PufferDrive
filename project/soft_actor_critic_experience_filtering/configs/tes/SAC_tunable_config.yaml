@@ -14,7 +14,7 @@
 
 
 # Run identifier used by logging and same-run checkpoint discovery. Use a unique name for each trial.
-run_name: sac_tes_experience_filtering
+run_name: sac_tes_actor_critic_filtering
 
 # Actor-only warmstart: local .pt plus source config.yaml. Null starts a fresh actor; does not restore critics/optimizers.
 load_model_path: null
@@ -30,7 +30,7 @@ wandb: true
 
 wandb_project: pufferdrive_vanilla_sac_tuning
 
-wandb_group: tes_experience_filtering_trial98
+wandb_group: tes_actor_critic_filtering_trial98
 
 neptune: false
 
@@ -48,11 +48,11 @@ tag: null
 
 # Shared learner settings and run controls. SAC-specific settings live in SAC_specific_config.yaml.
 train:
-  # Retain high-residual rows for critic updates in this isolated experiment.
+  # Use one high-TD-error subset for critic, actor, and alpha/TES updates.
   experience_filter:
     enabled: true
     score: twin_max_abs_td_error
-    apply_to: critic
+    apply_to: actor_critic
     threshold_mode: ewma_max
     ewma_beta: 0.25
     threshold_scale: 0.01
@@ -97,7 +97,7 @@ train:
   # Adam/AdamW actor/critic weight decay; not forwarded to Muon or applied to log-alpha.
   adam_weight_decay: 0.01
   # The launcher replaces this with a unique per-trial learner directory.
-  data_dir: experiments/soft_actor_critic_experience_filtering/tes
+  data_dir: experiments/soft_actor_critic_experience_filtering/tes_actor_critic
   # Explicit learner checkpoint: restores networks/optimizers/temperature/counters/RNG. Environment and replay restart; cannot combine with actor warmstart.
   resume_state_path: null
   # null disables periodic checkpoints; normal completion still saves the final actor and learner state.

@@ -1,8 +1,10 @@
 # SAC experience filtering: TD-error threshold design
 
-Status: implemented for TES and PQL; CPU/Gloo and launch preflight passed.
-No GPU training launched. CUDA/NCCL, compiled CUDA shapes, memory fit, throughput,
-and policy quality remain unverified.
+Status: corrected the filter scope to train the whole learner on one retained
+subset. The earlier `experience_filter_20261112T012430Z` runs use critic-only
+filtering; they are not results for the corrected algorithm. New configs and
+output identities use `actor_critic`. Live processes and their resolved configs
+are not changed by this source update.
 
 ## Launch and monitoring
 
@@ -30,8 +32,9 @@ through the production trial launcher. Generated runs/preflight outputs stay loc
 Plot `filter/retained_fraction` and `filter/filtered_fraction` in W&B. They are
 fractions from zero to one, computed from global row counts for the latest
 training cycle, and sum to one when candidates were scored. Cumulative rates
-are logged separately. These measure critic training exposure; actor rows remain
-unfiltered. Repeated visits to a replay row count as repeated exposures.
+are logged separately. In `actor_critic` mode, retained rows feed both critic and
+actor optimization, and their entropy feeds alpha/TES. Repeated visits to a
+replay row count as repeated exposures.
 
 Print the latest rates from a local trial (substitute the actual run directory):
 
@@ -48,19 +51,22 @@ The filter settings are in each variant's `SAC_tunable_config.yaml`, under
 set `threshold_scale: 0` with filtering enabled for the all-rows overhead control.
 Use separate output directories and run identities for each control. These are
 fresh experiments; enabled and disabled learner checkpoints are not interchangeable.
+The explicit legacy mode `apply_to: critic` retains the earlier behavior for
+reproducibility. Its checkpoints cannot resume into `actor_critic` mode.
 
 ## 1. Experiment and scope
 
-Test whether skipping small-residual critic examples saves learner time without
-hurting policy quality. Keep replay insertion, replacement, candidate ordering,
-actor updates, entropy/temperature learning, and evaluation protocol unchanged.
-The first variant filters critic loss rows only. Raw max-Q and actor-advantage
-filtering remain separate future experiments.
+Select one subset of each candidate batch and train the critic, actor, and
+entropy temperature on that subset. Keep replay insertion, replacement,
+candidate ordering, return definitions, and evaluation protocol unchanged.
+Targets and TD-error scores must still be computed for all candidates to decide
+which rows to retain. Raw max-Q and actor-advantage scoring remain separate
+future experiments.
 
 This is inspired by [Prioritized Experience Replay](https://arxiv.org/html/1511.05952),
 but uses hard exclusion for the current update instead of positive sampling
 probabilities for every transition. It deliberately changes the critic training
-distribution; importance weighting cannot recover the excluded contributions.
+distribution for both critic and actor; importance weighting cannot recover the excluded contributions.
 High residual is a proxy for learning opportunity, not a guarantee: noise and
 bootstrap errors can also produce large residuals.
 
@@ -101,7 +107,7 @@ train:
   experience_filter:
     enabled: true
     score: twin_max_abs_td_error
-    apply_to: critic
+    apply_to: actor_critic
     threshold_mode: ewma_max
     ewma_beta: 0.25
     threshold_scale: 0.01
@@ -125,14 +131,14 @@ an all-zero batch can retain none. Never silently relax the threshold.
    the global EMA, then compact retained indices and their aligned targets in
    original order. No resampling, ranking, padding of statistical samples, or
    changes to replay storage.
-4. Fit both critics on retained rows using the cached targets. Execute at most
-   one critic optimizer step per original logical batch. If no rank retains a
-   row, skip backward, clipping, and the critic optimizer step on every rank.
-5. Run actor and alpha/TES updates on the ORIGINAL candidate observations with
-   their existing conditions. Preserve the baseline Polyak target update once
-   per original logical batch, including batches with no critic step. Retain
-   baseline learner-update/sampling counter semantics; add explicit counters
-   for critic steps and retained exposures rather than redefining existing ones.
+4. Fit both critics on retained rows using the cached targets. Then train the
+   actor on those SAME retained observations, using the updated critic values.
+   Each original nonempty logical batch still produces one optimizer step per
+   enabled subsystem; this change does not repack rows across logical batches.
+5. Compute globally retained-row-weighted entropy for alpha and TES. Perform the
+   Polyak update after the successful learner update. If no rank retains a row,
+   skip critic, actor, alpha, TES observations, and Polyak updates on every rank.
+   Continue counting original candidate visits separately from actual updates.
 
 Target caching lasts only for the current logical batch; it is not a frozen
 cycle-target or frozen actor-Q experiment. Replay is unchanged, so every resident
@@ -140,9 +146,9 @@ row is eligible for rescoring on its next scheduled epoch traversal. A row may
 still expire through normal FIFO replacement without a critic update; log this
 as a possible consequence rather than promising every row is trained.
 
-Preserving target-update cadence when a critic step is skipped is intentional:
-changing it would introduce another experimental variable. The target may still
-move toward the unchanged online critic. Log target steps separately.
+The explicit legacy `critic` mode keeps its original full-candidate actor and
+alpha/TES updates and its target update even when the critic selection is empty.
+This compatibility behavior does not apply to the corrected `actor_critic` mode.
 
 ## 4. Distributed reduction and empty ranks
 
@@ -157,7 +163,9 @@ L = SUM_retained[(Q1 - target)^2 + (Q2 - target)^2] / K
 DDP averages rank gradients. Therefore each real local microbatch contributes
 `W / K * sum(per_row_loss)` before backward. Do not average local retained means:
 that would overweight ranks retaining fewer examples. Report losses and Q/target
-means with the same global row weighting.
+means with the same global row weighting. Apply this same normalization to actor
+gradients. Compute alpha/TES entropy from the sum of retained entropies divided
+by K, not the mean of rank means or the original candidate count.
 
 Unlike the existing PPO/profiling filters, do not trim every rank to the minimum
 retained count. One empty rank must not cancel useful critic training elsewhere.
@@ -169,13 +177,13 @@ round_count = MAX_rank(ceil(local_retained_count / microbatch_capacity))
 
 All ranks execute the same round count, using DDP no-sync except on the final
 round. A rank with no real rows left executes a graph-connected zero-loss forward
-on one valid original candidate observation through both critic heads. This is
+on one valid original candidate observation through the relevant critic or actor. This is
 communication participation only: it has zero gradient contribution, is excluded
 from sample/loss counters, and never becomes a retained training example. Use a
 zero sum of finite critic outputs, never an empty-tensor mean. Every rank executes
 the optimizer step when K > 0, even if its local retained count is zero.
 
-This strategy requires verifying that the critic has no stateful forward updates
+This strategy requires verifying that both actor and critic have no stateful forward updates
 (e.g. batch-normalization statistics) or stochastic effects that would make the
 extra participation forward change training state. If this condition fails,
 resolve the reduction architecture before implementation; do not silently accept
@@ -185,7 +193,7 @@ Assume the existing synchronized candidate schedule: each rank has a nonempty
 original batch and the same logical-update count. Check this contract in preflight.
 Collectively detect nonfinite scores before MAX/backward so all ranks abort with
 the same diagnostic rather than leaving peers in a collective. K = 0 is a shared
-branch; all ranks continue to the original actor/alpha/target path.
+branch; all ranks skip the whole learner update in `actor_critic` mode.
 
 ## 5. Isolation, persistence, and measurements
 
@@ -214,17 +222,21 @@ code path and old-checkpoint compatibility.
 | --- | --- |
 | `filter/{candidate,retained,filtered}_count` and `{retained,filtered}_fraction` | Global counts and row-weighted fractions for the latest cycle; `cumulative_` counterparts track the run |
 | `filter/{current_max,ema_max,threshold}` | Shared values from the last logical scoring batch |
-| `filter/{empty_batches,local_empty_ranks,critic_steps,target_steps}` | Global empty batches, sum of empty-rank occurrences, and shared optimizer/target steps; cumulative counterparts are separate |
+| `filter/actor_rows` and `filter/update_steps` | Actual global actor exposure and completed critic optimizer updates (shared learner updates in the prepared recipes); cumulative counterparts distinguish candidate visits from training |
 | `performance/{filter_target,filter_score,filter_select}` and existing performance logs | Target preparation, scoring, selection, and baseline learner/collection timing; include all costs in comparisons |
 | Existing evaluation, entropy, and retained-row critic loss/Q metrics | Unchanged evaluation protocol; critic summaries use the global retained-row denominator |
 
 Per-rank retention distributions, TD-error quantiles, and retained/rejected error
-means are follow-up diagnostics, not emitted by this implementation. Actor inputs
-remain unfiltered; candidate counts describe exposure for the prepared actor-on
-recipes, not a newly added independent actor-step counter.
+means are follow-up diagnostics, not emitted by this implementation. Legacy
+critic-only resumes must not fabricate historical actor/update counters that
+were never recorded; their metric-history scope must be explicit.
+For the prepared actor-enabled recipes, `filter/actor_rows` must equal
+`filter/retained_count` in `actor_critic` mode. This is a direct monitoring check
+that actor training follows the same selected subset.
 
 No speedup is assumed: all candidates still need targets and scoring forwards,
-retained rows need another critic forward, and the actor workload is unchanged.
+retained rows need another critic forward, while actor work now follows the
+same retained subset. Full-candidate target/scoring costs remain.
 DDP imbalance and variable compiled shapes may add overhead. Record compile
 warmup separately and include steady-state compaction costs. Do not invent
 retention floors or duplicate selected samples to stabilize batch size.
@@ -243,7 +255,8 @@ on the first scored batch, including an all-zero first batch.
 2. **Single-process parity:** disabled path matches baseline; scale-zero enabled
    path matches losses/updates within declared numerical tolerance. Vary physical
    microbatch size. Verify identical PQL targets before/after row selection and
-   unchanged actor inputs, alpha/TES cadence, replay order, and target cadence.
+   selected actor inputs, retained-weighted alpha/TES entropy, replay order,
+   and all-subsystem skipping on globally empty selections.
 3. **Two-rank CPU/Gloo:** compare against a concatenated single-process retained
    batch for uneven counts, one empty rank, unequal microbatch counts, and globally
    empty selection. Test shared EMA, nonfinite collective failure, synchronized
@@ -256,7 +269,7 @@ on the first scored batch, including an all-zero first batch.
    scale-zero overhead control, and EMA filtering. Fix beta at 0.25 initially;
    begin with scale 0.01 and select any further scales from observed retention.
    A matched-retention random-drop control can then separate score usefulness
-   from the effect of fewer critic examples. Report multiple seeds before making
+   from the effect of fewer learner examples. Report multiple seeds before making
    a policy-quality claim.
 
 ## Source anchors checked for this design
@@ -269,7 +282,27 @@ on the first scored batch, including an all-zero first batch.
 | `pufferlib/pufferl_sac.py::_prepare_pql_targets` | Intact segment-based lambda targets before gradient microbatches |
 | `project/PPO_SAC_Profiling/sac_variants.py` | Prior cycle-level advantage filtering; useful formula precedent, different target/selection contract |
 
-## Validation evidence (2026-11-11)
+## Shared-subset validation (2026-11-12)
+
+The focused filter/controller/learner suite passes **17 tests**, including exact
+retained actor inputs, retained-weighted alpha/TES entropy, all-rows TES/PQL
+parity, microbatch invariance, globally empty selection, frozen actor updates,
+legacy resume compatibility, and a production two-rank Gloo update compared
+with a concatenated selected-row reference. Four config/launcher tests also pass.
+
+The existing SAC learner, PQL, TES, loading, artifact, startup, warm-start,
+diagnostic, and distributed regression suites pass: **110 tests**, including
+five CPU/Gloo distributed tests. Independent production-code review found no
+unresolved correctness issue. Shell syntax and launcher dry-run tests pass.
+
+CUDA/NCCL execution, compiled-shape behavior, training speed, and policy quality
+have not been validated for this correction. The existing critic-only jobs
+were not restarted; new `actor_critic` runs need fresh output directories.
+
+## Historical validation: critic-only mode (2026-11-11)
+
+The following results describe the original implementation. They do not certify
+the corrected `actor_critic` implementation; its validation is recorded separately.
 
 | Check | Result |
 | --- | --- |

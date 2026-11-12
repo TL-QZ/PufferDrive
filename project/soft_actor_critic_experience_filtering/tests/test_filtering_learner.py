@@ -67,7 +67,8 @@ def _make_sequence_replay():
 
 
 def _make_training_learner(replay, actor_state, critic_state, *, return_estimator,
-                           experience_filter=None, threshold_scale=0.0, max_minibatch_size=2):
+                           experience_filter=None, threshold_scale=0.0, max_minibatch_size=2,
+                           apply_to="actor_critic"):
     learner = object.__new__(pufferl_sac.PuffeSAC)
     learner.device = torch.device("cpu")
     learner.uncompiled_policy = _TinyActor()
@@ -119,11 +120,12 @@ def _make_training_learner(replay, actor_state, critic_state, *, return_estimato
     learner.agent_steps = 4
     learner.experience_filter = (
         ExperienceFilter(
-            {"threshold_scale": threshold_scale}, torch.device("cpu"),
+            {"threshold_scale": threshold_scale, "apply_to": apply_to}, torch.device("cpu"),
         )
         if experience_filter else None
     )
     learner._filtered_critic_metric_sums = torch.zeros(5, dtype=torch.float64)
+    learner._filtered_actor_metric_sums = torch.zeros(5, dtype=torch.float64)
     return learner
 
 
@@ -147,6 +149,16 @@ def _parameters(module):
 
 def _gradients(module):
     return [None if parameter.grad is None else parameter.grad.detach().clone() for parameter in module.parameters()]
+
+
+def _assert_controller_state_close(first_state, second_state):
+    assert first_state.keys() == second_state.keys()
+    for key, first_value in first_state.items():
+        second_value = second_state[key]
+        if isinstance(first_value, float):
+            assert second_value == pytest.approx(first_value, rel=1e-6, abs=1e-7)
+        else:
+            assert second_value == first_value
 
 
 @pytest.mark.parametrize("return_estimator", ["n_step", "pql"])
@@ -187,7 +199,10 @@ def test_zero_scale_matches_unfiltered_adaptive_entropy_sac_update(return_estima
         ):
             torch.testing.assert_close(unfiltered_parameter, filtered_parameter, rtol=1e-5, atol=1e-6)
     torch.testing.assert_close(unfiltered.log_alpha, filtered.log_alpha, rtol=1e-5, atol=1e-6)
-    assert unfiltered.target_entropy_controller.state_dict() == filtered.target_entropy_controller.state_dict()
+    _assert_controller_state_close(
+        unfiltered.target_entropy_controller.state_dict(),
+        filtered.target_entropy_controller.state_dict(),
+    )
 
     unfiltered_effective = _effective_losses(unfiltered, unfiltered_losses)
     filtered_effective = _effective_losses(filtered, filtered_losses)
@@ -198,7 +213,7 @@ def test_zero_scale_matches_unfiltered_adaptive_entropy_sac_update(return_estima
     filter_metrics = filtered.experience_filter.metrics()
     assert filter_metrics["filter/candidate_count"] == 4
     assert filter_metrics["filter/retained_count"] == 4
-    assert filter_metrics["filter/critic_steps"] == 1
+    assert filter_metrics["filter/update_steps"] == 1
     assert filtered.target_entropy_controller.decay_count == 1
 
 
@@ -277,7 +292,10 @@ def test_pql_filter_scores_masks_gradients_and_updates_are_microbatch_invariant(
         assert first.experience_filter.state_dict()["scoring_batches"] == 1
         assert second.experience_filter.state_dict()["scoring_batches"] == 1
         assert first.experience_filter.state_dict()["cumulative"] == second.experience_filter.state_dict()["cumulative"]
-        assert first.target_entropy_controller.state_dict() == second.target_entropy_controller.state_dict()
+        _assert_controller_state_close(
+            first.target_entropy_controller.state_dict(),
+            second.target_entropy_controller.state_dict(),
+        )
         first_losses = _effective_losses(first, recorded_losses[0])
         second_losses = _effective_losses(second, recorded_losses[1])
         assert first_losses.keys() == second_losses.keys()
@@ -303,8 +321,10 @@ def test_filtering_prepares_full_pql_targets_and_keeps_original_target_alignment
     )
     prepared_target_batches = []
     critic_rows = []
+    actor_observation_batches = []
     original_prepare = learner._prepare_pql_targets
     original_critic_loss_sum = learner._critic_loss_sum
+    original_policy_loss_rows = learner._policy_loss_rows
 
     def record_prepared_targets(replay_indices, segment_offsets):
         targets = original_prepare(replay_indices, segment_offsets)
@@ -315,8 +335,13 @@ def test_filtering_prepares_full_pql_targets_and_keeps_original_target_alignment
         critic_rows.append((observations[:, 0].detach().clone(), targets.detach().clone()))
         return original_critic_loss_sum(observations, actions, targets)
 
+    def record_actor_rows(observations, record_diagnostics=True):
+        actor_observation_batches.append(observations.detach().clone())
+        return original_policy_loss_rows(observations, record_diagnostics=record_diagnostics)
+
     monkeypatch.setattr(learner, "_prepare_pql_targets", record_prepared_targets)
     monkeypatch.setattr(learner, "_critic_loss_sum", record_critic_rows)
+    monkeypatch.setattr(learner, "_policy_loss_rows", record_actor_rows)
 
     # Fixed candidate scores isolate position mapping while the production PQL
     # target preparation and filtered critic update run unchanged.
@@ -343,19 +368,89 @@ def test_filtering_prepares_full_pql_targets_and_keeps_original_target_alignment
     observed_targets = torch.cat([targets for _rows, targets in critic_rows])
     torch.testing.assert_close(observed_indices, retained_indices)
     torch.testing.assert_close(observed_targets, all_targets[retained_positions])
+    expected_actor_observations = learner.replay.get_batch(retained_indices)[0]
+    torch.testing.assert_close(torch.cat(actor_observation_batches), expected_actor_observations)
     metrics = learner.experience_filter.metrics()
     assert metrics["filter/candidate_count"] == 6
     assert metrics["filter/retained_count"] == 3
     assert metrics["filter/filtered_count"] == 3
-    assert metrics["filter/critic_steps"] == 1
+    assert metrics["filter/update_steps"] == 1
+    assert metrics["filter/actor_rows"] == 3
+    assert learner.experience_filter.state_dict()["cycle"]["actor_steps"] == 1
 
 
-def test_empty_critic_selection_still_updates_actor_alpha_entropy_and_target():
+def test_actor_critic_mode_weights_actor_alpha_and_entropy_to_retained_rows(monkeypatch):
+    learner = _make_training_learner(
+        _make_tensor_replay(), copy.deepcopy(_TinyActor().state_dict()),
+        copy.deepcopy(_TinyCritic().state_dict()), return_estimator="n_step",
+        experience_filter=True, threshold_scale=0.5, max_minibatch_size=2,
+    )
+    learner.optimizer = torch.optim.SGD(learner.policy.parameters(), lr=0.001)
+    learner.critic_optimizer = torch.optim.SGD(learner.critic.parameters(), lr=0.001)
+    learner.alpha_optimizer = torch.optim.SGD([learner.log_alpha], lr=0.01)
+    learner.target_entropy_controller = pufferl_sac.AdaptiveTargetEntropyController(
+        0.7,
+        ema_decay=0.0,
+        mean_threshold=10.0,
+        std_threshold=10.0,
+        decay_factor=0.5,
+        required_count=1,
+    )
+    candidate_index_batches = []
+
+    def fixed_scores(replay_indices, targets):
+        candidate_index_batches.append(replay_indices.detach().clone())
+        return torch.tensor([10.0, 8.0, 5.0, 2.0])
+
+    monkeypatch.setattr(
+        learner, "_score_experience_filter_candidates", fixed_scores,
+    )
+    actor_observation_batches = []
+
+    def selected_policy_loss_rows(observations, record_diagnostics=True):
+        actor_observation_batches.append(observations.detach().clone())
+        logits = learner.policy_train(observations)
+        retained_entropy_rows = observations[:, 0] + 0.5
+        return logits.sum(dim=-1), retained_entropy_rows.detach()
+
+    monkeypatch.setattr(learner, "_policy_loss_rows", selected_policy_loss_rows)
+    observed_entropies = []
+    original_observe = learner.target_entropy_controller.observe
+
+    def record_observe(entropy, *, agent_steps):
+        observed_entropies.append(entropy)
+        return original_observe(entropy, agent_steps=agent_steps)
+
+    monkeypatch.setattr(learner.target_entropy_controller, "observe", record_observe)
+    alpha_before = learner.log_alpha.detach().item()
+    losses = defaultdict(float)
+
+    updates = learner._train_sac_transition(losses, lambda *_args, **_kwargs: None, 0)
+
+    assert updates == 1
+    expected_indices = candidate_index_batches[0][:3]
+    expected_observations = learner.replay.get_batch(expected_indices)[0]
+    expected_entropy = (expected_observations[:, 0] + 0.5).mean().item()
+    expected_log_alpha = alpha_before - 0.01 * (expected_entropy - 0.7)
+    torch.testing.assert_close(torch.cat(actor_observation_batches), expected_observations)
+    assert observed_entropies == pytest.approx([expected_entropy])
+    assert learner.log_alpha.item() == pytest.approx(expected_log_alpha)
+    metrics = learner.experience_filter.metrics()
+    assert metrics["filter/candidate_count"] == 4
+    assert metrics["filter/retained_count"] == 3
+    assert metrics["filter/actor_rows"] == 3
+    assert learner.experience_filter.state_dict()["cycle"]["actor_steps"] == 1
+    assert learner.experience_filter.state_dict()["cycle"]["alpha_steps"] == 1
+    assert learner.experience_filter.state_dict()["cycle"]["target_steps"] == 1
+    assert learner.sampled_transitions == 4
+
+
+def test_legacy_critic_only_empty_selection_still_updates_actor_alpha_entropy_and_target():
     torch.manual_seed(37)
     learner = _make_training_learner(
         _make_tensor_replay(), copy.deepcopy(_TinyActor().state_dict()),
         copy.deepcopy(_TinyCritic().state_dict()), return_estimator="n_step",
-        experience_filter=True, threshold_scale=2.0,
+        experience_filter=True, threshold_scale=2.0, apply_to="critic",
     )
     learner.target_entropy_controller = pufferl_sac.AdaptiveTargetEntropyController(
         0.1,
@@ -379,13 +474,104 @@ def test_empty_critic_selection_still_updates_actor_alpha_entropy_and_target():
     assert updates == learner.learner_updates == 1
     assert learner.experience_filter.metrics()["filter/retained_count"] == 0
     assert learner.experience_filter.metrics()["filter/empty_batches"] == 1
-    assert learner.experience_filter.metrics()["filter/critic_steps"] == 0
+    assert learner.experience_filter.metrics()["filter/update_steps"] == 0
     assert any(not torch.equal(before, after) for before, after in zip(actor_before, _parameters(learner.policy)))
     assert all(torch.equal(before, after) for before, after in zip(critic_before, _parameters(learner.critic)))
     assert any(not torch.equal(before, after) for before, after in zip(target_before, _parameters(learner.target_critic)))
     assert not torch.equal(alpha_before, learner.log_alpha.detach())
     assert learner.target_entropy_controller.decay_count == 1
     assert learner.target_entropy_controller.target_entropy == pytest.approx(0.05)
+
+
+def test_actor_critic_global_empty_selection_skips_all_updates():
+    torch.manual_seed(39)
+    learner = _make_training_learner(
+        _make_tensor_replay(), copy.deepcopy(_TinyActor().state_dict()),
+        copy.deepcopy(_TinyCritic().state_dict()), return_estimator="n_step",
+        experience_filter=True, threshold_scale=2.0,
+    )
+    learner.target_entropy_controller = pufferl_sac.AdaptiveTargetEntropyController(
+        0.1,
+        ema_decay=0.0,
+        mean_threshold=10.0,
+        std_threshold=10.0,
+        decay_factor=0.5,
+        required_count=1,
+    )
+    actor_before = _parameters(learner.policy)
+    critic_before = _parameters(learner.critic)
+    target_before = _parameters(learner.target_critic)
+    alpha_before = learner.log_alpha.detach().clone()
+    controller_before = learner.target_entropy_controller.state_dict()
+    optimizer_states_before = [
+        copy.deepcopy(optimizer.state_dict())
+        for optimizer in (learner.optimizer, learner.critic_optimizer, learner.alpha_optimizer)
+    ]
+
+    updates = learner._train_sac_transition(
+        defaultdict(float), lambda *_args, **_kwargs: None, 0,
+    )
+
+    assert updates == learner.learner_updates == 0
+    assert learner.sampled_transitions == 4
+    for before, after in zip(actor_before, _parameters(learner.policy)):
+        torch.testing.assert_close(before, after)
+    for before, after in zip(critic_before, _parameters(learner.critic)):
+        torch.testing.assert_close(before, after)
+    for before, after in zip(target_before, _parameters(learner.target_critic)):
+        torch.testing.assert_close(before, after)
+    torch.testing.assert_close(alpha_before, learner.log_alpha.detach())
+    assert learner.target_entropy_controller.state_dict() == controller_before
+    for before, optimizer in zip(
+        optimizer_states_before,
+        (learner.optimizer, learner.critic_optimizer, learner.alpha_optimizer),
+    ):
+        assert optimizer.state_dict() == before
+    metrics = learner.experience_filter.metrics()
+    assert metrics["filter/candidate_count"] == 4
+    assert metrics["filter/retained_count"] == 0
+    assert metrics["filter/empty_batches"] == 1
+    for counter in ("critic_steps", "actor_rows", "actor_steps", "alpha_steps", "target_steps"):
+        assert learner.experience_filter.state_dict()["cycle"][counter] == 0
+
+
+def test_actor_critic_update_policy_false_keeps_actor_alpha_and_entropy_frozen():
+    torch.manual_seed(43)
+    learner = _make_training_learner(
+        _make_tensor_replay(), copy.deepcopy(_TinyActor().state_dict()),
+        copy.deepcopy(_TinyCritic().state_dict()), return_estimator="n_step",
+        experience_filter=True, threshold_scale=0.5,
+    )
+    actor_before = _parameters(learner.policy)
+    critic_before = _parameters(learner.critic)
+    target_before = _parameters(learner.target_critic)
+    alpha_before = learner.log_alpha.detach().clone()
+    controller_before = learner.target_entropy_controller.state_dict()
+
+    updates = learner._train_sac_transition(
+        defaultdict(float), lambda *_args, **_kwargs: None, 0, update_policy=False,
+    )
+
+    assert updates == learner.learner_updates == 1
+    assert learner.experience_filter.metrics()["filter/retained_count"] > 0
+    for before, after in zip(actor_before, _parameters(learner.policy)):
+        torch.testing.assert_close(before, after)
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(critic_before, _parameters(learner.critic))
+    )
+    assert any(
+        not torch.equal(before, after)
+        for before, after in zip(target_before, _parameters(learner.target_critic))
+    )
+    torch.testing.assert_close(alpha_before, learner.log_alpha.detach())
+    assert learner.target_entropy_controller.state_dict() == controller_before
+    metrics = learner.experience_filter.metrics()
+    assert metrics["filter/update_steps"] == 1
+    assert metrics["filter/actor_rows"] == 0
+    assert learner.experience_filter.state_dict()["cycle"]["actor_steps"] == 0
+    assert learner.experience_filter.state_dict()["cycle"]["alpha_steps"] == 0
+    assert learner.experience_filter.state_dict()["cycle"]["target_steps"] == 1
 
 
 class _TinyVecEnv:
@@ -412,7 +598,8 @@ class _NoopLogger:
     run_id = "filter-test"
 
 
-def _make_checkpoint_learner(monkeypatch, data_dir, *, threshold_scale=0.2):
+def _make_checkpoint_learner(monkeypatch, data_dir, *, threshold_scale=0.2,
+                             apply_to="actor_critic"):
     monkeypatch.setattr(pufferl, "Utilization", _NoopUtilization)
     monkeypatch.setattr(pufferl.PuffeRL, "print_dashboard", lambda self, clear=False: None)
     config = {
@@ -424,7 +611,10 @@ def _make_checkpoint_learner(monkeypatch, data_dir, *, threshold_scale=0.2):
         "minibatch_size": 2,
         "max_minibatch_size": 2,
         "checkpoint_interval": None,
-        "experience_filter": {"threshold_scale": threshold_scale},
+        "experience_filter": {
+            "threshold_scale": threshold_scale,
+            "apply_to": apply_to,
+        },
     }
     return pufferl_sac.PuffeSAC(
         config,
@@ -460,7 +650,7 @@ def test_production_checkpoint_round_trip_and_filter_state_validation(monkeypatc
         missing_state_target.load_training_state(missing_state_path)
 
     mismatched_target = _make_checkpoint_learner(
-        monkeypatch, tmp_path / "mismatched_target", threshold_scale=0.4,
+        monkeypatch, tmp_path / "mismatched_target", apply_to="critic",
     )
     with pytest.raises(ValueError, match="SAC experience-filter checkpoint settings do not match configuration"):
         mismatched_target.load_training_state(checkpoint_path)
