@@ -71,6 +71,7 @@ class Drive(pufferlib.PufferEnv):
         offroad_behavior="ignore",
         traffic_light_behavior="ignore",
         use_map_cache=0,
+        late_entry=0,
         use_neighbor_cache=1,
         capture_replay=False,
         replay_worker_idx=0,
@@ -211,6 +212,11 @@ class Drive(pufferlib.PufferEnv):
         if use_map_cache not in (0, 1):
             raise ValueError(f"use_map_cache must be 0 (off) or 1 (on). Got: {use_map_cache}")
         self.use_map_cache = use_map_cache
+        
+        if late_entry not in (0, 1):
+            raise ValueError(f"late_entry must be 0 (off) or 1 (on). Got: {late_entry}")
+        self.late_entry = late_entry
+
         self.capture_replay = bool(capture_replay)
         self.replay_worker_idx = replay_worker_idx
         self._replay_captures = []
@@ -474,6 +480,7 @@ class Drive(pufferlib.PufferEnv):
             seed=self.random_seed,
             min_agents_per_env=self.min_agents_per_env,
             max_agents_per_env=self.max_agents_per_env,
+            late_entry=self.late_entry,
             num_eval_scenarios=self.current_num_eval_scenarios,
             eval_map_indices=self.eval_map_indices,
             goal_radius=self.goal_radius,
@@ -552,6 +559,7 @@ class Drive(pufferlib.PufferEnv):
             "offroad_behavior": self.offroad_behavior,
             "traffic_light_behavior": self.traffic_light_behavior,
             "use_map_cache": self.use_map_cache,
+            "late_entry": self.late_entry,
             "use_neighbor_cache": self.use_neighbor_cache,
             "goal_radius": self.goal_radius,
             "min_goal_spacing": self.min_goal_spacing,
@@ -716,6 +724,7 @@ class Drive(pufferlib.PufferEnv):
                     seed=self.random_seed,
                     min_agents_per_env=self.min_agents_per_env,
                     max_agents_per_env=self.max_agents_per_env,
+                    late_entry=self.late_entry,
                     num_eval_scenarios=self.current_num_eval_scenarios,  # Use the dynamic size here
                     eval_map_indices=remaining_map_indices,
                     goal_radius=self.goal_radius,

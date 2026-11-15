@@ -1,5 +1,4 @@
 #include "drive.h"
-
 #include <Python.h>
 
 #define Env Drive
@@ -1630,6 +1629,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
     }
     int min_agents_per_env = unpack(kwargs, "min_agents_per_env");
     int max_agents_per_env = unpack(kwargs, "max_agents_per_env");
+    int late_entry = (int) unpack(kwargs, "late_entry");
     float goal_radius = (float) unpack(kwargs, "goal_radius");
     int num_eval_scenarios = unpack(kwargs, "num_eval_scenarios");
     PyObject *eval_map_indices = PyDict_GetItemString(kwargs, "eval_map_indices");
@@ -1790,6 +1790,7 @@ static PyObject *my_shared(PyObject *self, PyObject *args, PyObject *kwargs) {
         env->init_step = init_step;
         env->num_max_agents = max_agents_per_env;
         env->eval_mode = eval_mode;
+        env->late_entry = late_entry;
         env->goal_radius = goal_radius;
         env->resample_replay_to_dt = timing_config.resample_replay_to_dt;
         env->dt = timing_config.dt;
@@ -1864,6 +1865,7 @@ static int my_init(Env *env, PyObject *args, PyObject *kwargs) {
     env->reward_lane_center = (float) unpack(kwargs, "reward_lane_center");
     env->reward_center_bias = (float) unpack(kwargs, "reward_center_bias");
     env->reward_velocity = (float) unpack(kwargs, "reward_velocity");
+    env->late_entry = (int) unpack(kwargs, "late_entry");
     env->reward_reverse = (float) unpack(kwargs, "reward_reverse");
     env->reward_stop_line = (float) unpack(kwargs, "reward_stop_line");
     env->reward_timestep = (float) unpack(kwargs, "reward_timestep");
@@ -2023,6 +2025,7 @@ static int my_log(PyObject *dict, Env *env, Log *log, float n) {
     float total_distance_travelled = log->total_distance_travelled * n;
     float total_infractions = log->total_infractions * n;
     float avg_distance_per_infraction = total_distance_travelled / fmaxf(1.0f, total_infractions);
+    char persistence_metric_name[64];
 
     assign_to_dict(dict, "n", log->n);
     assign_to_dict(dict, "offroad_rate", log->offroad_rate);
@@ -2037,6 +2040,10 @@ static int my_log(PyObject *dict, Env *env, Log *log, float n) {
     assign_to_dict(dict, "lane_center_rate", log->lane_center_rate);
     assign_to_dict(dict, "dnf_rate", log->dnf_rate);
     assign_to_dict(dict, "score", log->score);
+    for (int goal_count_threshold = 1; goal_count_threshold <= MAX_PERSISTENCE_GOAL_COUNT; goal_count_threshold++) {
+        snprintf(persistence_metric_name, sizeof(persistence_metric_name), "persistence_rate_%d_goals", goal_count_threshold);
+        assign_to_dict(dict, persistence_metric_name, log->persistence_rate_at_goal_count[goal_count_threshold - 1]);
+    }
     assign_to_dict(dict, "avg_speed_per_agent", log->avg_speed_per_agent);
     assign_to_dict(dict, "avg_distance_per_infraction", avg_distance_per_infraction);
     assign_to_dict(dict, "total_distance_travelled_sum", total_distance_travelled);

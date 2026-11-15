@@ -126,6 +126,7 @@ struct Agent {
 
     int stopped; // 0/1 -> freeze if set
     int removed; // 0/1 -> remove from sim if set
+    int pending_entry; // 0/1 -> keeps a policy slot open; agent enters at its first valid log frame.
     int completed_goal_set; // 0/1 -> finished all goals before removal; score still counts it as a success    
     // Jerk dynamics
     float accel_long;

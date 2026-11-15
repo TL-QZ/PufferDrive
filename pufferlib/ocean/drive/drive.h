@@ -70,6 +70,7 @@ struct Log {
     float expert_static_car_count;
     float static_car_count;
     float score;
+    float persistence_rate_at_goal_count[MAX_PERSISTENCE_GOAL_COUNT];
     float offroad_rate;
     float collision_rate;
     float red_light_violation_rate;
@@ -242,6 +243,7 @@ struct Drive {
     int simulation_mode;
     int termination_mode;
     float inactive_agent_threshold;
+    int late_entry; // for replay mode: create agents logged trajectories that are invalid at the initial timestep and gives routed ones policy slots on entry.
     int terminate_on_goal;
     int eval_mode;
     int compute_eval_metrics;
@@ -723,6 +725,14 @@ static void update_agent_z(Drive *env, Agent *agent) {
     agent->sim_z = sum_z / check_count;
 }
 
+static bool lane_has_exit(const RoadMapElement *lane) {
+    for (int exit_idx = 0; exit_idx < lane->num_exits; exit_idx++){
+        if (lane->exit_lanes[exit_idx] != -1)
+            return true;
+    }
+    return false;
+}
+
 static int pick_random_exit_lane(
     Rng *rng_state,
     RoadMapElement *road_elements,
@@ -843,9 +853,30 @@ static bool route_point_at_distance(
             }
             current_lane_idx = route[cursor_idx];
         } else {
+            //current_lane_idx = pick_random_exit_lane(&env->rng_state, env->road_elements, current_lane_idx, NULL, 0);
+            //if (current_lane_idx == -1) {
+            //    return false; // dead-end: no outgoing lane to continue the free-roam walk
+            //}
+            int dead_end_lane_idx = current_lane_idx;
             current_lane_idx = pick_random_exit_lane(&env->rng_state, env->road_elements, current_lane_idx, NULL, 0);
-            if (current_lane_idx == -1) {
-                return false; // dead-end: no outgoing lane to continue the free-roam walk
+            if (current_lane_idx == -1){
+                // Dead end lane: the lane leaves the mapped region, which are the nuPlan location edges. 
+                // CARLA towns will never encounter this since they are already fully mapped.
+                // If the walk covered at least min_goal_spacing, place the goal at the end of the lane (the end of the map)
+                // instead of failing; the agent that reaches it leaves the map and respawns elsewhere.
+                float distance_covered_meters = distance_meters - remaining_distance_meters;
+                if (distance_covered_meters >= env->min_goal_spacing) {
+                    RoadMapElement *dead_end_lane = &env->road_elements[dead_end_lane_idx];
+                    int end_vertex_idx = dead_end_lane->segment_size - 1;
+                    *out_x = dead_end_lane->x[end_vertex_idx];
+                    *out_y = dead_end_lane->y[end_vertex_idx];
+                    *out_z = dead_end_lane->z[end_vertex_idx];
+                    *out_lane_idx = dead_end_lane_idx;
+                    *out_cursor_idx = dead_end_lane_idx;
+                    *out_s_on_lane = dead_end_lane->length;
+                    return true;
+                }
+                return false; // There is a dead end and the agent too close to place a goal (distance to dead end < min_goal_spacing).
             }
         }
         s_on_lane = 0.0f; // new lane: start measuring arc-length from its beginning
@@ -1100,6 +1131,7 @@ static bool generate_new_goals_from_route(Drive *env, Agent *agent) {
             goal_y,
             goal_z,
             goal_lane);
+        /*
         if (placed_goal_count < env->num_goals) {
             invalidate_agent(agent);
             agent->removed = 1;
@@ -1110,7 +1142,15 @@ static bool generate_new_goals_from_route(Drive *env, Agent *agent) {
             return false;
         }
         commit_goals(env, agent, goal_x, goal_y, goal_z, goal_lane, placed_goal_count, 0);
-        return true;
+        return true
+        */
+        if (placed_goal_count == env->num_goals) {
+            // The fresh route ended at a dead-end lane at the edge of the mapped area.
+            // Keep the goals that fit and have the route end be the last one, like replay below.
+            // An agent that finishes on a dead end is respawned by c_step.
+            commit_goals(env, agent, goal_x, goal_y, goal_z, goal_lane, placed_goal_count, 0);
+            return true;
+        }
     }
 
     // Replay: back-align the placed goals and pin the route endpoint (last vertex of the last lane) as the
@@ -2104,10 +2144,16 @@ static void add_log(Drive *env) {
         // Score: 1 per agent that completed the goal set it was assigned and was never stopped.
         // goal_count can be below num_goals when the route is short, so the assigned goal set is what the agent is evaluated on, not num_goals.
         // An agent removed after completing its set (route exhausted, no regeneration possible) still counts.
-        int completed_assigned_goal_set = (num_goals_reached >= env->num_goals || agent->completed_goal_set) ? 1 : 0;
+        // An exhausted goal set only counts as completed if at least one goal was actually reached (goal_count can be 0 on a short route).
+        int completed_assigned_goal_set = (num_goals_reached >= env->num_goals || (agent->completed_goal_set && num_goals_reached >= 1)) ? 1 : 0;
         int removed_before_completion = (agent->removed && !agent->completed_goal_set) ? 1 : 0;
         if (completed_assigned_goal_set && !removed_before_completion && !agent->stopped) {
             episode_log.score += 1.0f;
+        }
+        for (int goal_count_threshold = 1; goal_count_threshold <= MAX_PERSISTENCE_GOAL_COUNT; goal_count_threshold++) {
+            if (num_goals_reached >= goal_count_threshold && !agent->stopped) {
+                episode_log.persistence_rate_at_goal_count[goal_count_threshold - 1] += 1.0f;
+            }
         }
         if (!offroad && !collided && !red_light_violations && num_goals_reached < 1) {
             episode_log.dnf_rate += 1.0f;
@@ -2538,7 +2584,7 @@ static bool spawn_agent(Drive *env, int agent_idx, int num_agents) {
 
     if (env->goal_source == GOAL_SOURCE_MAP) {
         if (!generate_new_goals_from_map(env, agent)) {
-            printf("[GIGAFLOW WARNING] -> Failed to generate map goals for agent %d\n", agent_idx);
+            //printf("[GIGAFLOW WARNING] -> Failed to generate map goals for agent %d\n", agent_idx);
             return false;
         }
         return true;
@@ -2583,6 +2629,10 @@ static void set_start_position(Drive *env) {
             // move_expert will update them when they become valid
             if (agent->log_valid[step] != 1) {
                 invalidate_agent(agent);
+                if (env->late_entry && is_active){
+                    agent->removed = 1;
+                    agent->pending_entry = 1;
+                }
                 agent->sim_length = agent->log_length[step];
                 agent->sim_width = agent->log_width[step];
                 agent->sim_height = agent->log_height[step];
@@ -2754,7 +2804,7 @@ void set_active_agents(Drive *env) {
         Agent *agent = &env->agents[i];
 
         // Skip if not valid at initialization
-        if (agent->log_valid[env->init_step] != 1 && !is_log_replay) {
+        if (agent->log_valid[env->init_step] != 1 && !is_log_replay && !env->late_entry) {
             continue;
         }
 
@@ -2778,12 +2828,17 @@ void set_active_agents(Drive *env) {
 
         // Determine if this agent should be policy-controlled
         bool is_controlled = should_control_agent(env, i);
-
+        bool enters_later = env->late_entry && agent->log_valid[env->init_step] != 1;
+        if (is_controlled && enters_later && env->active_agent_count >= env->num_max_agents) {
+            is_controlled = false; // no free policy slot left: keep the logged trajectory as a replay expert.
+        }
+        
         if (is_controlled) {
             active_agent_indices[env->active_agent_count] = i;
             env->active_agent_count++;
             env->agents[i].active_agent = 1;
             env->agents[i].controller = resolve_agent_controller(env, i, 1, 0);
+            env->agents[i].pending_entry = enters_later ? 1 : 0;
         } else if (is_log_replay || env->init_mode != INIT_MODE_CREATE_ONLY_CONTROLLED) {
             static_agent_indices[env->static_agent_count] = i;
             env->static_agent_count++;
@@ -2869,6 +2924,8 @@ void move_expert(Drive *env, int agent_idx) {
         agent->prev_sin_heading = sinf(agent->log_heading[t - 1]);
     }
 }
+
+
 
 void remove_bad_trajectories(Drive *env) {
     if (env->control_mode == CONTROL_MODE_WOSAC) {
@@ -4417,6 +4474,50 @@ static void move_dynamics(Drive *env, int action_idx, int agent_idx) {
     return;
 }
 
+// Agents entering the simulation late. Give the policy agents their first simulated frame
+// once their log becomes valid.
+// This happens after the action loops in c_step, so the agent's first policy action is applied at the next step. 
+static void activate_pending_agents(Drive *env) {
+    for (int slot_idx = 0; slot_idx < env->active_agent_count; slot_idx++){
+        int agent_idx = env->active_agent_indices[slot_idx];
+        Agent *agent = &env->agents[agent_idx];
+        if (!agent->pending_entry){
+            continue;
+        }
+        int timestep = env->timestep;
+        // Check whether the agent's log is valid at the timestep. If not do not activate the agent. 
+        if (timestep >= agent->trajectory_size || agent->log_valid[timestep] != 1) {
+            continue;
+        }
+        // Place the agent on its logged pose for this frame through move_expert, 
+        // the same copy replay agents get every step.
+        move_expert(env, agent_idx);
+        // move_expert only refreshes the size in log replay mode, so the agent still has
+        // the size of its invalid init frame. Take the size from the entry frame instead,
+        // so that the radius and wheelbase are valid before the policy drives it.
+        agent->sim_length = agent->log_length[timestep];
+        agent->sim_width = agent->log_width[timestep];
+        agent->sim_height = agent->log_height[timestep];
+        update_agent_radius(agent);
+        agent->wheelbase = WHEELBASE_LENGTH_FRACTION * agent->sim_length;
+        
+        reset_agent_metrics(env, agent_idx);
+        reset_agent_state(agent);
+        sample_erratic_flags(env, agent);
+        generate_reward_coefs(env, agent);
+        agent->pending_entry = 0;
+        if (!generate_new_goals_from_route(env, agent)) {
+            // The remaining route is too short for any meaningful goal set to be generated. 
+            // Leave the agent slot empty for the remainder of the episode.
+            invalidate_agent(agent);
+            agent->removed = 1;
+            continue;
+        }
+        memset(&env->logs[slot_idx], 0, sizeof(Log));
+        compute_metrics(env, agent_idx, slot_idx);
+    }
+}
+
 #include "idm.h"
 
 void c_reset(Drive *env) {
@@ -4443,8 +4544,12 @@ void c_reset(Drive *env) {
         for (int x = 0; x < env->active_agent_count; x++) {
             int agent_idx = env->active_agent_indices[x];
 
-            // Respawn agent at new random position
-            if (spawn_agent(env, agent_idx, num_reset)) {
+            // Respawn agent at new random position; a failed spawn (no goal chain from that seed) resamples.
+            bool spawned = false;
+            for (int attempt = 0; attempt < MAX_GOAL_REGEN_ATTEMPTS && !spawned; attempt++) {
+                spawned = spawn_agent(env, agent_idx, num_reset);
+            }
+            if (spawned) {
                 num_reset++;
             } else {
                 // Failed spawn: ensure agent is properly invalidated
@@ -4490,6 +4595,13 @@ void c_reset(Drive *env) {
         reset_agent_state(agent);
         sample_erratic_flags(env, agent);
         generate_reward_coefs(env, agent);
+
+        if (env->late_entry && agent->pending_entry){
+            // The agent has not entered the simulation yet. reset_agent_state sets removed back to 0; 
+            // skip goal generation until the logged trajectory becomes valid and mark it removed again.
+            agent->removed = 1;
+            continue;
+        }
 
         if (env->goal_source == GOAL_SOURCE_GT) {
             int start = env->init_step > 0 ? env->init_step : 0;
@@ -4582,6 +4694,12 @@ void c_step(Drive *env) {
         }
     }
 
+    // For agents that enter late and whose log become valid. 
+    // The policy will take over the agents' first simulated frame here.
+    if (env->late_entry && env->simulation_mode == SIMULATION_MODE_REPLAY) {
+        activate_pending_agents(env);
+    }
+
     // Update stopped-duration for every agent (active + replayed/static), not
     // just policy-controlled ones, so the partner seconds_stopped observation is
     // populated even in control_sdc_only mode where only the ego is active.
@@ -4670,6 +4788,11 @@ void c_step(Drive *env) {
         // Both fall back to a full regen: rolling on dead-end, finite when exhausted.
         bool regen;
         if (env->goal_regen_mode == GOAL_REGEN_ROLLING) {
+            // Rolling does not exhaust its goal set, so completion is marked once the agent has reached num_goals this episode.
+            // Without this, an agent removed after reaching its goals (roll fails on a dead end and regen fails) loses its score.
+            if (env->logs[i].num_goals_reached >= env->num_goals) {
+                agent->completed_goal_set = 1;
+            }
             regen = !roll_goals(env, agent);
         } else if (agent->current_goal_idx >= agent->goal_count) {//else if (agent->current_goal_idx == agent->goal_count){
             // All goals in the assigned set have been reached: record the set as completed before attempting regeneration
@@ -4691,11 +4814,19 @@ void c_step(Drive *env) {
         //                                                      : generate_new_goals_from_route(env, agent);
         
         bool regen_ok = false;
-        for (int attempt = 0; attempt < 32 && !regen_ok; attempt++){
-            regen_ok = (env->goal_source == GOAL_SOURCE_MAP) ? generate_new_goals_from_map(env, agent)
-                                                             : generate_new_goals_from_route(env, agent);
+        bool finished_on_dead_end = env->simulation_mode == SIMULATION_MODE_GIGAFLOW
+                                 && agent->current_lane_idx != -1 
+                                 && !lane_has_exit(&env->road_elements[agent->current_lane_idx]);
+        if (finished_on_dead_end) {
+            // The goal set finished on a dead end lane, which is on the edge of the mapped area.
+            // The agent leaves the map at that location and respawns at a new random spawn with fresh goals with the same id.
+            regen_ok = spawn_agent(env, agent_idx, agent->id);
+        } else {
+            for (int attempt = 0; attempt < MAX_GOAL_REGEN_ATTEMPTS && !regen_ok; attempt++) {
+                regen_ok = (env->goal_source == GOAL_SOURCE_MAP) ? generate_new_goals_from_map(env, agent)
+                                                                 : generate_new_goals_from_route(env, agent);
+            }
         }
-        
         if (!regen_ok) {
             //fprintf(stderr, "[goal_regen] agent %d removed at t=%d after 32 attempts map=%s\n", agent_idx, env->timestep, env->map_name);            
             // No further goal can be generated; the agent is removed from the simulation and completion is recorded.

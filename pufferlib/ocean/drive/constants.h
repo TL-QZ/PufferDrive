@@ -108,7 +108,7 @@
 // Goal set refresh policy
 #define GOAL_REGEN_FINITE 0  // regenerate the full goal set once all are reached
 #define GOAL_REGEN_ROLLING 1 // slide window: drop reached goal, append one at the frontier
-
+#define MAX_GOAL_REGEN_ATTEMPTS 32 // Max attempts to regenerate goal if regeneration fails
 // Where goals are sampled from
 #define GOAL_SOURCE_ROUTE 0 // seed from the agent's own forward route
 #define GOAL_SOURCE_MAP 1   // seed from a uniformly sampled map lane
@@ -132,6 +132,7 @@
 
 #define MAX_SPEED 40.0f
 #define STEERING_LIMIT 0.667f
+#define WHEELBASE_LENGTH_FRACTION 0.6f
 static const float REAR_AXLE_RATIO = 0.5f;
 static const float ACCEL_LONG_LIMIT[2] = {-5.0f, 2.5f};
 static const float ACCEL_LAT_LIMIT[2] = {-4.0f, 4.0f};
@@ -203,6 +204,8 @@ static const int ROAD_OFFSETS[25][2]
 // =====================================================================================
 
 #define MAX_GOALS 20
+#define MAX_PERSISTENCE_GOAL_COUNT 5 // Logged for k = 1...MAX_PERSISTENCE_GOAL_COUNT. 
+                                     // Allows for architectures with different goal windows to be comparable.
 #define MAX_ROUTE_LENGTH 64
 #define ROUTE_TARGET_DISTANCE 1000.0f
 #define ROUTE_EXIT_MAX_CANDIDATES 5
