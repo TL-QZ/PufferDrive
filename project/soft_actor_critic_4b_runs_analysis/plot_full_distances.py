@@ -15,16 +15,20 @@ def main():
         rows = list(csv.DictReader(stream))
     if any(row['status'] != 'finished' for row in rows):
         raise RuntimeError('All native evaluations must finish before plotting.')
-    rows.sort(key=lambda row: row['case'] != 'ppo')
+    rows.sort(key=lambda row: (-float(row['goal_spacing_m']), row['case'] != 'ppo', row['case'].startswith('pql')))
     labels = {
         'tes': 'TES round 2', 'nstep4_native10': 'n-step 4',
         'nstep2_native10': 'n-step 2 TES', 'pql_round4_1_native10': 'PQL round 4.1',
         'pql_official1_native10': 'PQL official 1', 'ppo': 'PPO BASELINE',
         'pql_official2': 'PQL official 2',
+        'tes_gpu4b': 'TES 4B GPU', 'pql_gpu4b': 'PQL 4B GPU',
+        'tes_experience_filter': 'TES experience filter (actor/critic)',
+        'pql_experience_filter': 'PQL experience filter (actor/critic)',
     }
     names = [f"{labels[row['case']]} ({float(row['goal_spacing_m']):g} m goals)" for row in rows]
     colors = ['#111111' if row['case'] == 'ppo' else '#3769a5' if float(row['goal_spacing_m']) == 30 else '#d17b18' for row in rows]
-    figure, axes = plt.subplots(1, 2, figsize=(13, 5.5))
+    figure_height = max(5.5, 0.62 * len(rows) + 1.5)
+    figure, axes = plt.subplots(1, 2, figsize=(13, figure_height))
     for axis, metric, title in zip(axes, ['total_distance_travelled_km', 'avg_distance_per_infraction'],
                                   ['Total distance traveled (km)', 'Pooled distance per infraction (m)']):
         values = [float(row[metric]) for row in rows]

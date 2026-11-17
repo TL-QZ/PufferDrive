@@ -1,0 +1,19 @@
+{
+  "episodes": 2,
+  "probe_fractions": [0.1, 0.3, 0.5],
+  "agents_per_probe_frame": 2,
+  "actions": 12,
+  "repeats": 8,
+  "branch_batch_size": 24,
+  "seed": 20261114,
+  "models": {
+    "tes": {
+      "checkpoint": "project/sac_gpu_4b_comparison/runs/tes_gpu_4b_20261110/trial_98/learner/trainer_state.pt",
+      "gpu": 6
+    },
+    "pql": {
+      "checkpoint": "project/sac_gpu_4b_comparison/runs/pql_gpu_4b_20261110/trial_98/learner/trainer_state.pt",
+      "gpu": 7
+    }
+  }
+}

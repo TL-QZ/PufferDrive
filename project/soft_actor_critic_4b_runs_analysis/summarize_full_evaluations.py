@@ -37,6 +37,10 @@ RUN_LABELS = {
     'pql_round4_1_native10': 'SAC: PQL round 4.1',
     'pql_official1_native10': 'SAC: PQL official round 1',
     'pql_official2': 'SAC: PQL official round 2',
+    'tes_gpu4b': 'SAC: TES 4B GPU',
+    'pql_gpu4b': 'SAC: PQL 4B GPU',
+    'tes_experience_filter': 'SAC: TES experience filter (actor/critic)',
+    'pql_experience_filter': 'SAC: PQL experience filter (actor/critic)',
 }
 
 
@@ -138,7 +142,7 @@ def report_table(rows):
     }
     headings[4:] = [heading + (' ↓' if metric in LOWER_IS_BETTER else ' ↑')
                     for heading, metric in zip(headings[4:], TABLE_METRICS)]
-    output = ["**Bold = best; <u>underline = second-best</u> in each metric column.** ↑ higher is better; ↓ lower is better. Rankings use unrounded values across the displayed runs; ties share rank. Goal counts reflect each run's 10 m or 30 m spacing.", "",
+    output = ["**Bold = best; <u>underline = second-best</u> in each metric column.** ↑ higher is better; ↓ lower is better. Rankings use unrounded values within this goal-spacing group; ties share rank.", "",
               "| " + " | ".join(headings) + " |",
               "|" + "|".join(["---"] * 3 + ["---:"] * (len(headings) - 3)) + "|"]
     for row in rows:
@@ -154,6 +158,22 @@ def report_table(rows):
                 text = f'<u>{text}</u>'
             values.append(text)
         output.append("| " + " | ".join(values) + " |")
+    return output
+
+
+def report_tables(rows, heading_prefix="##"):
+    spacings = sorted({float(row["goal_spacing_m"]) for row in rows}, reverse=True)
+    output = []
+    for spacing in spacings:
+        spacing_rows = [row for row in rows if float(row["goal_spacing_m"]) == spacing]
+        spacing_rows.sort(key=lambda row: (row["algorithm"] != "PPO", row["case"].startswith("pql")))
+        if spacing == 30.0:
+            heading = f"{heading_prefix} Main setting — 30 m goal spacing"
+        elif spacing == 10.0:
+            heading = f"{heading_prefix} Secondary setting — 10 m goal spacing"
+        else:
+            heading = f"{heading_prefix} {spacing:g} m goal spacing"
+        output.extend([heading, "", *report_table(spacing_rows), ""])
     return output
 
 
@@ -253,7 +273,7 @@ def main():
         rows.append(row)
         checks.append(check)
 
-    rows.sort(key=lambda row: row['algorithm'] != 'PPO')
+    rows.sort(key=lambda row: (-float(row['goal_spacing_m']), row['algorithm'] != 'PPO', row['case'].startswith('pql')))
     available_sets_match = bool(scenario_sets) and all(
         values == next(iter(scenario_sets.values())) for values in scenario_sets.values()
     )
@@ -288,9 +308,13 @@ def main():
         writer.writerows(rows)
 
     finished = sum(check["complete"] for check in checks)
-    table = report_table(rows)
+    finished_episodes = sum(
+        int(check.get("num_episodes") or 0) for check in checks if check["complete"]
+    )
+    table = report_tables(rows)
+    results_table = report_tables(rows, heading_prefix="###")
     validation = (
-        f"All seven evaluated checkpoints (PPO plus six SAC runs) passed: 7,000 episodes, matched map/seed pairs across goal spacings, "
+        f"All {len(rows)} evaluated checkpoints passed: {finished_episodes:,} episodes, matched map/seed pairs across goal spacings, "
         "verified checkpoint/config/catalog hashes, and no rendered HTML."
         if all_complete else
         f"Pending or incomplete: {finished}/{len(rows)} jobs verified; "
@@ -303,23 +327,32 @@ def main():
         "Each row represents one training checkpoint and one evaluation seed. The recovered n-step-2, PQL round-4.1, and PQL official round-2 checkpoints came from learner-only recovery with replay and environments restarted.",
     ]
     report = ["# Full CARLA native-protocol final-checkpoint evaluation", "", manifest["protocol"], "",
-              "The current comparison uses all seven eligible final checkpoints in [native_manifest.json](native_manifest.json). The earlier six-job common-30 m comparison is retained in [historical_common30m](historical_common30m/).", "",
-              *table, "", "All summary metrics and episode counts: [full_carla_metrics.csv](full_carla_metrics.csv).", "",
+              f"The current comparison uses all {len(rows)} eligible final checkpoints in [native_manifest.json](native_manifest.json). The earlier six-job common-30 m comparison is retained in [historical_common30m](historical_common30m/).", "",
+              *table, "All summary metrics and episode counts: [full_carla_metrics.csv](full_carla_metrics.csv).", "",
               "Validation: " + validation, "", *[f"- {note}" for note in notes], ""]
     (OUTPUT / "full_carla_report.md").write_text("\n".join(report))
 
     techniques = (OUTPUT / 'sac_techniques.md').read_text()
+    if all_complete:
+        distance_comparison = [
+            "## Full-evaluation distance comparison", "",
+            "![Full CARLA distance metrics](full_carla_distances.png)", "",
+            "[PDF](full_carla_distances.pdf). Rebuild with `python project/soft_actor_critic_4b_runs_analysis/plot_full_distances.py` after regenerating the tables. [Independent metric recomputation](distance_verification.json) checks every reported summary metric against the episode CSVs.", "",
+        ]
+    else:
+        distance_comparison = [
+            "## Full-evaluation distance comparison", "",
+            "The distance plot and independent metric verification will be refreshed after all evaluations complete.", "",
+        ]
     results = ["# PPO baseline and SAC technique comparison", "",
-               "## Full-CARLA results — PPO baseline first", "",
-               "**PPO is the baseline in the first row; all SAC runs follow in the same table.** All full evaluations use 1,000 scenarios, seed 42, 6,000 steps and dt=0.1; goal spacing uses each run's native evaluation catalog (10 m or 30 m).", "",
-               *table, "", validation, "",
+               "## Full-CARLA results", "",
+               "The 30 m main setting appears first, with PPO first, TES runs together, then PQL runs together. The 10 m setting is reported separately, with PQL runs grouped together. Rankings are calculated within each spacing group. All full evaluations use 1,000 scenarios, seed 42, 6,000 steps and dt=0.1; goal spacing uses each run's native evaluation catalog.", "",
+               *results_table, validation, "",
                techniques, "",
-               "Goal spacing follows each run's evaluation protocol: 10 m for n-step-4, n-step-2, PQL round 4.1, and PQL official round 1; 30 m for TES round 2, PPO, and PQL official round 2. Catalog hashes and resolved min/max spacing are checked per job.", "",
+               "Goal spacing follows each run's evaluation protocol: 10 m for n-step-4, n-step-2, PQL round 4.1, and PQL official round 1; 30 m for TES round 2, PPO, PQL official round 2, both 4B GPU runs, and both experience-filter runs. Catalog hashes and resolved min/max spacing are checked per job.", "",
                "The total-distance column is the sum over all agents and episodes, shown in km. Distance per infraction divides the global distance sum by max(summed `total_infraction_count`, 1); that count records affected agent-episodes (collision, off-road, or red-light), not raw events. Rate metrics are percentages here; the CSV stores their original fractions. The aggregation follows [`pufferlib/utils.py`](../../pufferlib/utils.py).", "",
+               *distance_comparison,
                "See [full_carla_report.md](full_carla_report.md) for the protocol notes and [full_carla_metrics.csv](full_carla_metrics.csv) for every metric. [verification.json](verification.json) tracks job status, hash checks, resolved spacing and scenario identity. [resource_summary.json](resource_summary.json) covers samples from this native batch only.", "",
-               "## Full-evaluation distance comparison", "",
-               "![Full CARLA distance metrics](full_carla_distances.png)", "",
-               "[PDF](full_carla_distances.pdf). Rebuild with `python project/soft_actor_critic_4b_runs_analysis/plot_full_distances.py` after regenerating the tables. [Independent distance recomputation](distance_verification.json) checks both values against every episode CSV.", "",
                "## Training comparison context", "",
                "Learning curves remain historical `carla_fast` evaluations and are matched by received-agent steps in [learning_curve_report.md](learning_curve_report.md). They are not the full-CARLA final-checkpoint results above. The unfinished run remains excluded from final-checkpoint evaluation.", "",
                "The n-step-2, PQL round-4.1, and PQL official round-2 policies include learner-only recovery; replay and environments restarted. These are individual runs, not multi-seed algorithm estimates.", ""]

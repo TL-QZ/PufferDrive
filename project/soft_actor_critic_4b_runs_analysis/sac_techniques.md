@@ -1,4 +1,4 @@
-## Techniques and changes across all seven SAC runs
+## Techniques and changes across the original seven SAC runs
 
 The table describes **what was configured**, not a claim that one technique caused a score change. Run names match the results above; exact run IDs and source paths are in [setup_inventory.md](setup_inventory.md). The low-LR run is included here even though it has no full-evaluation result in this analysis.
 
@@ -36,3 +36,18 @@ All seven SAC runs retain the entropy term in the critic target, gamma=0.999, ta
 | Does the lower-LR, slower-TES, lower-refresh package help 4-step SAC? | n-step 4 round 2 ↔ low-LR n-step 4 TES | Several settings change together; compare learning curves at matched received steps, since the low-LR run is excluded from full evaluation here |
 
 For every comparison, read **total distance traveled and distance per infraction together**, then score, progress and safety rates. Goal counts depend directly on goal spacing. Lower collision rates can also accompany less movement, so neither safety nor distance alone establishes improvement. The n-step-2, PQL round-4.1 and PQL official round-2 histories include learner-only recovery with fresh replay and environments. These are single runs per setup; the available results support comparisons of configurations, not isolated causal effects.
+
+### Added GPU-replay and experience-filtering runs (30 m evaluation)
+
+These four completed runs use final checkpoints after at least 4B received-agent steps. Exact paths, training step counts, and frozen input hashes are in [native_manifest.json](native_manifest.json). They join the main 30 m evaluation group.
+
+| SAC run | Return / entropy settings | Optimization and collection | Filtering | Training → evaluation spacing |
+|---|---|---|---|---|
+| TES GPU 4B | One-step soft target; adaptive TES, standard trigger | Higher LR; 128K logical batch; 3,200 agents | Disabled | 20–200 m → 30 m |
+| PQL GPU 4B | Horizon 128, λ=0.95; adaptive TES, slower trigger | Higher LR; 64K logical batch; 800 agents | Disabled | 20–200 m → 30 m |
+| TES experience filtering | Same as TES GPU 4B | Same as TES GPU 4B | Shared actor/critic retained subset | 20–200 m → 30 m |
+| PQL experience filtering | Same as PQL GPU 4B | Same as PQL GPU 4B | Shared actor/critic retained subset | 20–200 m → 30 m |
+
+All four use GPU-resident replay (`cpu_offload=false`), 2,048,000 replay rows per learner rank, one update epoch, one-third replay replacement, and a 64K microbatch cap. Actor/critic/alpha learning rates are 5e-4/5e-4/3e-4. TES retains its standard entropy trigger; PQL retains the slower trigger described above. These settings differ from the original runs' three update epochs and half-replay replacement.
+
+The filtering runs are the completed `actor_critic_filter_20261112T163346Z` runs. Their shared subset trains critic and actor; retained entropy observations feed alpha/TES. Selection uses maximum absolute twin-critic TD error, an EMA of batch maxima with new-value weight 0.25, and threshold scale 0.01. Earlier critic-only attempts are excluded. Compare each filtered run with its corresponding GPU 4B baseline; these are single-run configuration comparisons, not repeated-seed causal estimates.

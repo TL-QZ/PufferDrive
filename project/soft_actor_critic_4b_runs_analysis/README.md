@@ -1,17 +1,17 @@
 # SAC 4B runs and PPO comparison
 
-**The current final-checkpoint comparison is in [RESULTS.md](RESULTS.md).** It uses the seven jobs in [native_manifest.json](native_manifest.json), checks each native benchmark catalog and resolved spacing, and refreshes statuses and metrics from the evaluation artifacts. Pending jobs remain blank in the reports.
+**The current final-checkpoint comparison is in [RESULTS.md](RESULTS.md).** It uses the eleven jobs in [native_manifest.json](native_manifest.json), checks each native benchmark catalog and resolved spacing, and refreshes statuses and metrics from the evaluation artifacts. Pending jobs remain blank in the reports.
 
 ## Full-CARLA comparison protocol
 
-All seven checkpoints use seed 42, 1,000 scenarios, 6,000 simulation steps, `dt=0.1`, mean actions, and no rendering. Goal spacing follows each run's benchmark protocol:
+All eleven checkpoints use seed 42, 1,000 scenarios, 6,000 simulation steps, `dt=0.1`, mean actions, and no rendering. Seven use the 30 m main setting and four use the 10 m secondary setting, reported separately:
 
 | Goal spacing | Checkpoints |
 |---:|---|
-| 10 m | n-step 4, n-step 2, PQL round 4.1, PQL official round 1 |
-| 30 m | TES round 2, PPO 4B, PQL official round 2 |
+| 30 m — main setting | PPO 4B, TES round 2, PQL official round 2, TES 4B GPU, PQL 4B GPU, TES experience filter (actor/critic), PQL experience filter (actor/critic) |
+| 10 m — secondary setting | n-step 4, n-step 2, PQL round 4.1, PQL official round 1 |
 
-TES and PPO reuse their previously completed 30 m full-CARLA results; the summarizer verifies their saved resolved benchmark settings against the native catalogs. The other five jobs use separate output directories and the catalog selected for each run. No 30 m result substitutes for a 10 m job. The previous six-job common-30 m reports are copied to [historical_common30m](historical_common30m/); the original `manifest.json` and result folders remain in place.
+TES and PPO reuse their previously completed 30 m full-CARLA results; the summarizer verifies their saved resolved benchmark settings against the native catalogs. The other nine jobs use separate output directories and the catalog selected for each run. No 30 m result substitutes for a 10 m job. Rankings are calculated within each spacing group. The previous six-job common-30 m reports are copied to [historical_common30m](historical_common30m/); the original `manifest.json` and result folders remain in place.
 
 The full report shows rates as percentages. Its total-distance column converts the sum across episode agents to kilometres; distance per infraction divides the summed distance by summed infractions. The machine-readable CSV retains raw rate fractions and both source distance metrics. See [verification.json](verification.json) for per-job status, checkpoint/config/catalog hashes, resolved goal spacing, episode counts, and map/seed identity checks.
 
@@ -27,7 +27,7 @@ Generated results, plots, render galleries, checkpoints, logs, and verification 
 
 | Artifact | Contents |
 |---|---|
-| [RESULTS.md](RESULTS.md) | Generated seven-job comparison and current validation state |
+| [RESULTS.md](RESULTS.md) | Generated eleven-job comparison and current validation state |
 | [full_carla_report.md](full_carla_report.md) | Full-CARLA protocol, comparison table, and aggregation notes |
 | [full_carla_metrics.csv](full_carla_metrics.csv) | All summary metrics and per-case metadata |
 | [native_manifest.json](native_manifest.json) | Checkpoint provenance, per-job catalogs and hashes, goal spacing, and exclusions |
@@ -40,6 +40,15 @@ Activate the repository environment before running the report generator:
 ```bash
 source .venv/bin/activate
 python -B project/soft_actor_critic_4b_runs_analysis/summarize_full_evaluations.py
+python -B project/soft_actor_critic_4b_runs_analysis/verify_full_metrics.py
 ```
 
-The summarizer reads existing evaluation artifacts and never launches jobs. Re-run it after evaluations finish to refresh the reports. The evaluation runner writes per-case status JSON and separate logs; `resource_usage.jsonl` is retained as the raw monitoring history.
+After all evaluations finish, run the summarizer to refresh reports from existing artifacts; it never launches jobs. `verify_full_metrics.py` independently recomputes every reported summary metric from the episode CSVs and writes `distance_verification.json`. The evaluation runner writes per-case status JSON and separate logs; `resource_usage.jsonl` is retained as the raw monitoring history.
+
+The four added jobs are `tes_gpu4b`, `pql_gpu4b`, `tes_experience_filter`, and
+`pql_experience_filter`. `prepare_additional_evaluations.py` froze their completed
+final checkpoints, saved configs, and native catalogs; it refuses duplicate
+registration. `finalize_additional_evaluations.py` waits for these four jobs,
+requires full comparison verification, recomputes metrics, and refreshes the
+distance plot. Its terminal outcome is written to
+`additional_4runs_completion.status.json`; evaluation failure stops finalization.
