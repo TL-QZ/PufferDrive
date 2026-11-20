@@ -52,6 +52,11 @@ def validate_config(config, world_size):
         if not isinstance(args.get("train"), dict):
             raise ValueError(f"{phase}.train must be a mapping")
         train_args = args["train"]
+        if train_args.get("evaluation_interval_agent_steps") is not None:
+            raise ValueError(
+                f"{phase}.train.evaluation_interval_agent_steps is unsupported by the "
+                "hybrid warm-start loop; use evaluation_interval_epochs"
+            )
         if train_args.get("resume_state_path") is not None:
             raise ValueError(f"{phase} resume is unsupported; start from a new run directory")
         if args.get("load_model_path") is not None or args.get("load_id") is not None:

@@ -41,7 +41,9 @@ def test_sac_config_keeps_evaluation_metadata_out_of_learner_keys():
     args = pufferl_sac.load_config(overrides=[])
 
     assert args["train"]["evaluation_interval_epochs"] is None
+    assert args["train"]["evaluation_interval_agent_steps"] is None
     assert args["train"]["evaluation_benchmarks"] == "carla_fast"
+    assert "evaluation_interval_agent_steps" in pufferl_sac.SAC_EVALUATION_KEYS
     assert not (pufferl_sac.SAC_EVALUATION_KEYS & pufferl_sac.SAC_TRAIN_KEYS)
 
 
@@ -182,7 +184,11 @@ def test_training_evaluation_runs_on_rank_zero_at_interval_and_final(
 
     monkeypatch.setattr(pufferl_sac, "PuffeSAC", _FakeSAC)
     monkeypatch.setattr(pufferl_sac, "_initialize_process_group", lambda *args: (False, "cpu", 2, global_rank))
-    monkeypatch.setattr(pufferl.drive_benchmark, "validate_training_evaluation_config", lambda args: True)
+    monkeypatch.setattr(
+        pufferl.drive_benchmark,
+        "validate_training_evaluation_config",
+        lambda args, **kwargs: True,
+    )
     monkeypatch.setattr(pufferl, "derive_rank_seeds", lambda *args: (1, 2))
     monkeypatch.setattr(pufferl, "torch_device", lambda device: "cpu")
     monkeypatch.setattr(pufferl, "_get_git_metadata", lambda: {})
@@ -213,3 +219,161 @@ def test_training_evaluation_runs_on_rank_zero_at_interval_and_final(
         assert logger.close_args == ("final_model.pt", False)
     else:
         assert logger.close_args is None
+
+
+def _run_agent_step_evaluation_training(
+    tmp_path,
+    monkeypatch,
+    *,
+    global_rank,
+    total_timesteps,
+    evaluation_interval_agent_steps,
+    increments,
+    initial_agent_steps=0,
+    resume_state_path=None,
+):
+    args = pufferl_sac.load_config(overrides=[])
+    args["train"].update(
+        total_timesteps=total_timesteps,
+        evaluation_interval_epochs=None,
+        evaluation_interval_agent_steps=evaluation_interval_agent_steps,
+        data_dir=str(tmp_path),
+        fresh_run=True,
+        resume_state_path=resume_state_path,
+    )
+    vecenv = _VecEnv()
+    actor = _Policy()
+    critic = _Policy()
+    logger = _Logger()
+    captured_evaluations = []
+    sac_instances = []
+    benchmark_results = {"carla_fast": {"episodes": [], "summary": {"num_episodes": 0}}}
+
+    class _FakeSAC:
+        def __init__(self, config, vecenv, policy, critic, replay, logger):
+            self.config = config
+            self.vecenv = vecenv
+            self.uncompiled_policy = policy
+            self.agent_steps = 0
+            self.epoch = 0
+            self.rank = global_rank
+            self.distributed = False
+            self.logger = logger or _Logger()
+            self.closed = False
+            self.evaluation_checkpoints = []
+            self.increment_idx = 0
+            sac_instances.append(self)
+
+        def load_training_state(self, path, same_run=False):
+            assert path == resume_state_path
+            assert same_run is False
+            self.agent_steps = initial_agent_steps
+
+        def evaluate(self):
+            pass
+
+        def train(self):
+            self.epoch += 1
+            self.agent_steps += increments[self.increment_idx]
+            self.increment_idx += 1
+            return {"epoch": self.epoch}
+
+        def save_evaluation_checkpoint(self, results):
+            self.evaluation_checkpoints.append((self.epoch, results))
+
+        def close(self):
+            self.closed = True
+            return "final_model.pt"
+
+    monkeypatch.setattr(pufferl_sac, "PuffeSAC", _FakeSAC)
+    monkeypatch.setattr(pufferl_sac, "_initialize_process_group", lambda *args: (False, "cpu", 2, global_rank))
+    monkeypatch.setattr(
+        pufferl.drive_benchmark,
+        "validate_training_evaluation_config",
+        lambda args, **kwargs: True,
+    )
+    if resume_state_path is not None:
+        monkeypatch.setattr(pufferl_sac, "_restore_checkpoint_architecture", lambda *args: None)
+        monkeypatch.setattr(
+            pufferl_sac,
+            "_resolve_resume_state_path",
+            lambda *args: (resume_state_path, False),
+        )
+    monkeypatch.setattr(pufferl, "derive_rank_seeds", lambda *args: (1, 2))
+    monkeypatch.setattr(pufferl, "torch_device", lambda device: "cpu")
+    monkeypatch.setattr(pufferl, "_get_git_metadata", lambda: {})
+    monkeypatch.setattr(pufferl, "_save_experiment_config", lambda *args: None)
+    monkeypatch.setattr(
+        pufferl,
+        "run_training_evaluation",
+        lambda **kwargs: (captured_evaluations.append(kwargs), benchmark_results)[1],
+    )
+
+    pufferl_sac.train(
+        env_name="puffer_drive",
+        args=args,
+        vecenv=vecenv,
+        policy=actor,
+        critic=critic,
+        replay=object(),
+        logger=logger,
+    )
+    return args, logger, captured_evaluations, sac_instances, benchmark_results
+
+
+@pytest.mark.parametrize(("global_rank", "expected_steps"), [(0, [11, 31, 35]), (1, [])])
+def test_training_evaluation_agent_step_cadence_handles_overshoot_and_rank(
+    tmp_path, monkeypatch, global_rank, expected_steps,
+):
+    _, logger, evaluations, sac_instances, results = _run_agent_step_evaluation_training(
+        tmp_path,
+        monkeypatch,
+        global_rank=global_rank,
+        total_timesteps=35,
+        evaluation_interval_agent_steps=10,
+        increments=[3, 8, 1, 19, 4],
+    )
+
+    assert [item["global_step"] for item in evaluations] == expected_steps
+    assert [item["epoch"] for item in evaluations] == (
+        [2, 4, 5] if global_rank == 0 else []
+    )
+    assert sac_instances[0].evaluation_checkpoints == [
+        (item["epoch"], results) for item in evaluations
+    ]
+    if global_rank == 0:
+        assert logger.close_args == ("final_model.pt", False)
+    else:
+        assert logger.close_args is None
+
+
+def test_training_evaluation_agent_step_exact_final_boundary_is_not_duplicated(tmp_path, monkeypatch):
+    _, _, evaluations, sac_instances, results = _run_agent_step_evaluation_training(
+        tmp_path,
+        monkeypatch,
+        global_rank=0,
+        total_timesteps=10,
+        evaluation_interval_agent_steps=5,
+        increments=[5, 5],
+    )
+
+    assert [item["global_step"] for item in evaluations] == [5, 10]
+    assert [item["epoch"] for item in evaluations] == [1, 2]
+    assert sac_instances[0].evaluation_checkpoints == [(1, results), (2, results)]
+
+
+def test_training_evaluation_agent_step_resume_starts_at_next_future_multiple(tmp_path, monkeypatch):
+    _, _, evaluations, sac_instances, results = _run_agent_step_evaluation_training(
+        tmp_path,
+        monkeypatch,
+        global_rank=0,
+        total_timesteps=40,
+        evaluation_interval_agent_steps=10,
+        increments=[19, 4],
+        initial_agent_steps=17,
+        resume_state_path="resume-state.pt",
+    )
+
+    assert [item["global_step"] for item in evaluations] == [36, 40]
+    assert [item["epoch"] for item in evaluations] == [1, 2]
+    assert sac_instances[0].evaluation_checkpoints == [(1, results), (2, results)]

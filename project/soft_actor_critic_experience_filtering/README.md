@@ -16,6 +16,11 @@ are not changed by this source update.
 Both use 2,048,000 replay rows per rank on GPU, one update epoch, one-third FIFO
 replacement, and 4B global received rows. Filtering uses beta 0.25 and scale 0.01.
 
+The existing configs retain their two-cycle evaluation cadence. For an optional
+global received-step cadence, see the [SAC comparison configuration instructions](../sac_gpu_4b_comparison/README.md#optional-evaluation-cadence-by-received-steps).
+Set `train.evaluation_interval_agent_steps: 32768000`, set the epoch interval to
+null, and clear the selected trial's launcher epoch override in an isolated copy.
+
 Prepare resolved configs and commands without starting training:
 
 ```bash

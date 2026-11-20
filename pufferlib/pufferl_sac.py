@@ -300,7 +300,9 @@ DEFAULT_CONFIG = dict(
 )
 
 SAC_TRAIN_KEYS = frozenset(DEFAULT_CONFIG) - {"env"} | {"data_dir"}
-SAC_EVALUATION_KEYS = frozenset({"evaluation_interval_epochs", "evaluation_benchmarks"})
+SAC_EVALUATION_KEYS = frozenset({
+    "evaluation_interval_epochs", "evaluation_interval_agent_steps", "evaluation_benchmarks",
+})
 DEFAULT_MINIBATCH_SIZE = 256
 PPO_CHECKPOINT_ENV_KEYS = frozenset({
     "action_type",
@@ -2768,6 +2770,8 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
     load_model_path = None
     training_evaluation_scheduled = False
     last_training_evaluation_epoch = None
+    training_evaluation_interval_agent_steps = None
+    next_training_evaluation_agent_steps = None
     try:
         if args is None or "train" in args:
             previous_sigint_handler = signal.getsignal(signal.SIGINT)
@@ -2788,9 +2792,13 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                 )
             if not isinstance(startup_args["train"].get("log_collapse_diagnostics", False), bool):
                 raise ValueError("log_collapse_diagnostics must be a boolean")
-            if startup_args["train"].get("evaluation_interval_epochs") is not None:
-                training_evaluation_scheduled = ppo.drive_benchmark.validate_training_evaluation_config(startup_args)
             train_args = startup_args["train"]
+            training_evaluation_interval_agent_steps = train_args.get("evaluation_interval_agent_steps")
+            if (train_args.get("evaluation_interval_epochs") is not None
+                    or training_evaluation_interval_agent_steps is not None):
+                training_evaluation_scheduled = ppo.drive_benchmark.validate_training_evaluation_config(
+                    startup_args, allow_agent_steps=True,
+                )
             train_args["experience_filter"] = _normalize_experience_filter_config(
                 train_args.get("experience_filter")
             )
@@ -2961,6 +2969,10 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
         resume_state_path = pufferl.config["resume_state_path"]
         if resume_state_path is not None:
             pufferl.load_training_state(resume_state_path, same_run=auto_resume)
+        if training_evaluation_interval_agent_steps is not None:
+            next_training_evaluation_agent_steps = (
+                pufferl.agent_steps // training_evaluation_interval_agent_steps + 1
+            ) * training_evaluation_interval_agent_steps
         if experiment_config is not None and global_rank == 0:
             ppo._save_experiment_config(experiment_config, pufferl.config["data_dir"])
         remaining_steps = max(0, pufferl.config["total_timesteps"] - pufferl.agent_steps)
@@ -2971,13 +2983,19 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
             logs = pufferl.train()
             if logs is not None:
                 all_logs.append(logs)
-            if (
-                training_evaluation_scheduled
-                and pufferl.epoch > 0
-                and pufferl.epoch % startup_args["train"]["evaluation_interval_epochs"] == 0
-                and pufferl.epoch != last_training_evaluation_epoch
-                and global_rank == 0
-            ):
+            scheduled_evaluation_due = False
+            if training_evaluation_scheduled and pufferl.epoch > 0:
+                if training_evaluation_interval_agent_steps is not None:
+                    scheduled_evaluation_due = (
+                        pufferl.agent_steps >= next_training_evaluation_agent_steps
+                    )
+                else:
+                    evaluation_interval_epochs = startup_args["train"]["evaluation_interval_epochs"]
+                    scheduled_evaluation_due = (
+                        pufferl.epoch % evaluation_interval_epochs == 0
+                        and pufferl.epoch != last_training_evaluation_epoch
+                    )
+            if scheduled_evaluation_due and global_rank == 0:
                 last_training_evaluation_epoch = pufferl.epoch
                 benchmark_results = ppo.run_training_evaluation(
                     env_name=env_name,
@@ -2989,6 +3007,10 @@ def train(env_name="puffer_drive", args=None, vecenv=None, policy=None, critic=N
                     run_dir=config["data_dir"],
                 )
                 pufferl.save_evaluation_checkpoint(benchmark_results)
+            if training_evaluation_interval_agent_steps is not None and scheduled_evaluation_due:
+                next_training_evaluation_agent_steps = (
+                    pufferl.agent_steps // training_evaluation_interval_agent_steps + 1
+                ) * training_evaluation_interval_agent_steps
             rank_zero_early_stop = (
                 pufferl.rank == 0 and logs is not None
                 and early_stop_fn is not None and early_stop_fn(logs)

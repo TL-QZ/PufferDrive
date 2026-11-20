@@ -1,0 +1,14 @@
+launcher:
+  trial_ids:
+  - 98
+  trial_evaluation_interval_epochs: {}
+  trial_total_timesteps:
+    98: 4000000000
+  trial_hours: null
+  grace_seconds: 600
+  smoke_trial_seconds: 60
+  smoke_grace_seconds: 600
+  gpu_pairs:
+  - - 2
+    - 3
+  max_concurrent: 1

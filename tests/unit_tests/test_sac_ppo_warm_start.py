@@ -28,6 +28,19 @@ def test_validate_config_rejects_pql_before_warm_start_resources():
         validate_config(config, world_size=1)
 
 
+@pytest.mark.parametrize("phase", ["ppo", "sac"])
+def test_validate_config_rejects_received_step_cadence_in_hybrid_loop(phase):
+    config = {
+        "ppo": {"train": {"total_timesteps": 1}},
+        "sac": {"train": {"total_timesteps": 1}},
+        "warm_start": {},
+        "provenance": {"expected_world_size": 1},
+    }
+    config[phase]["train"]["evaluation_interval_agent_steps"] = 10
+    with pytest.raises(ValueError, match="unsupported by the hybrid warm-start loop"):
+        validate_config(config, world_size=1)
+
+
 class _ActorBackbone(nn.Module):
     def __init__(self):
         super().__init__()

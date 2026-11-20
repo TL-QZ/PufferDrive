@@ -2,3 +2,4 @@ runs/
 preflight/
 .pytest_cache/
 __pycache__/
+results/

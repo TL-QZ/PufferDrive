@@ -1,0 +1,77 @@
+run_name: tes_received_eval_20261117T232100Z
+load_model_path: null
+load_id: null
+export_path: null
+wandb: true
+wandb_project: pufferdrive_vanilla_sac_tuning
+wandb_group: received_eval_20261117T232100Z
+neptune: false
+neptune_name: pufferai
+neptune_project: ablations
+tb: false
+no_model_upload: false
+tag: null
+train:
+  experience_filter:
+    enabled: true
+    score: twin_max_abs_td_error
+    apply_to: actor_critic
+    threshold_mode: ewma_max
+    ewma_beta: 0.25
+    threshold_scale: 0.01
+  seed: 0
+  final_model_name: final_model.pt
+  evaluation_interval_epochs: null
+  evaluation_benchmarks: carla_fast
+  torch_deterministic: false
+  cpu_offload: false
+  device: cuda
+  optimizer: adamw
+  anneal_lr: true
+  amp: true
+  precision: bfloat16
+  total_timesteps: 2000000000
+  learning_rate: 0.0005
+  gamma: 0.999
+  update_epochs: 1
+  max_grad_norm: 0.5
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  adam_eps: 1.0e-08
+  adam_weight_decay: 0.01
+  data_dir: experiments/soft_actor_critic_experience_filtering/tes_actor_critic
+  resume_state_path: null
+  checkpoint_interval: null
+  minibatch_size: 128000
+  max_minibatch_size: 64000
+  compile: true
+  compile_mode: default
+  compile_fullgraph: false
+  fresh_run: false
+  evaluation_interval_agent_steps: 32768000
+vec:
+  backend: Multiprocessing
+  num_envs: 20
+  num_workers: auto
+  batch_size: 10
+  zero_copy: true
+  seed: 42
+  overwork: false
+max_runs: 4
+sweep:
+  method: Random
+  metric: score
+  goal: maximize
+  downsample: 5
+controlled_exp:
+  train:
+    learning_rate: null
+    ent_coef: null
+profile:
+  total_timesteps: 20000
+autotune:
+  max_envs: 32
+  model_forward_s: 0.0
+  max_env_ram_gb: 16
+  max_batch_vram_gb: 0.05
+  time_per_test: 2

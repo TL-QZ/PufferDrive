@@ -533,7 +533,8 @@ def _finish_trial(trial, exit_code, hard_timeout, elapsed_seconds):
             missing.append(str(artifact_path.relative_to(trial_dir)))
 
     training_evaluation = None
-    if config["train"].get("evaluation_interval_epochs") is not None:
+    if (config["train"].get("evaluation_interval_epochs") is not None
+            or config["train"].get("evaluation_interval_agent_steps") is not None):
         selected_benchmarks = config["train"].get("evaluation_benchmarks")
         if isinstance(selected_benchmarks, str):
             selected_benchmarks = list(dict.fromkeys(

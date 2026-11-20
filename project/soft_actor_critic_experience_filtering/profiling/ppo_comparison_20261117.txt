@@ -1,0 +1,100 @@
+PPO versus TES: evaluation cadence and 4B runtime — 2026-11-17
+
+PPO source project: project/baseline_ppo_4b_carla.
+Completed run: experiments/baseline_ppo_4b_carla/
+baseline_ppo_4b_carla_2026-11-06_13-58-32_seed0.
+TES comparisons are the completed baseline and actor_critic-filtered runs
+identified in investigation_20261117.txt, not the October CPU-replay TES run.
+
+Evaluation cadence
+All three configs specify evaluation_interval_epochs=2. However:
+                            PPO          TES no filter   TES filtered
+Received simulator rows     4.01408B      4.00000B        4.00000B
+Collection/training cycles  245           2422            2437
+Received rows/cycle         16.384M       ~1.652M         ~1.641M
+Received rows/evaluation    32.768M       ~3.303M         ~3.283M
+Actual evaluations          123           1211            1219
+
+PPO fills 8.192M rollout slots per rank on two ranks each cycle. TES refreshes
+ceil(2.048M/3)=682,667 valid replay rows per rank; received rows are larger
+because not every received agent slot becomes a valid insertion. TES's
+received-row intervals above are run-wide means, not exact step triggers.
+
+PPO evaluation directories begin epoch_000002_step_32768000 and finish
+epoch_000245_step_4014080000. The odd final cycle gets a completion evaluation.
+PPO W&B epoch=490 is SUM-reduced across two ranks; it means 245 actual cycles.
+TES's logged epoch is the actual cycle count. Do not compare displayed epoch
+numbers directly.
+
+Both use carla_fast, 250 scenarios, 500 steps, seed42, mean actions, dt=.1 and
+30m goal spacing. Both train at dt=.3 with training goal spacing20–200m.
+Both use two RTX A6000s, GPU-resident experience, compilation, bf16 AMP and
+matching policy-backbone settings. PPO has actor/value networks; TES has an
+actor, twin online Q critics and target critics. PPO microbatch32K versus TES64K
+is another native-config difference; this is a workload accounting comparison,
+not a contemporaneous same-configuration controlled training experiment.
+
+Runtime hours (native run budgets)
+                            PPO          TES no filter   TES filtered
+Learner estimate            1.6638        16.2887         6.3807
+Collection estimate         1.0542         1.0065         0.9739
+Remaining elapsed time      1.5345        14.3827        13.9129
+Total logged/process time   4.2525        31.6779        21.2675
+
+PPO's time is logged learner uptime; its W&B runtime is4.2539h. TES's total
+is launcher process wall time. Boundaries differ slightly. Phase timers sample
+every fifth cycle and scale by5. Remaining elapsed time is a residual including
+benchmark evaluation, checkpointing, logging and setup, not an isolated timer.
+
+To compare training itself without the roughly10x evaluation-count mismatch,
+sum learner+collection and normalize PPO's0.352% budget overshoot back to4B:
+  PPO:             2.7085h
+  TES unfiltered: 17.2952h (6.386x PPO)
+  TES filtered:    7.3546h (2.715x PPO)
+These are normalized sampled estimates, not measured alternative runs.
+
+Why the filtered TES learner remains slower
+PPO trained on approximately2.333B retained row-exposures, including3passes.
+TES filtered trained on0.788B exposures with1pass/cycle, while evaluating
+targets/scores for9.982B candidate visits. Thus filtered TES actually performs
+fewer retained training exposures than PPO in this comparison.
+
+PPO records values during collection, computes GAE/returns once per rollout
+using the CUDA recurrence, filters scalar advantages once, and reuses retained
+advantages/returns over3passes. Its value-network collection work is included
+in collection time. It does not need new full-candidate online-Q scoring
+for each replay minibatch.
+
+TES prepares current bootstrap targets and online twin-Q TD-error scores for
+every candidate batch before selection. Its historical full-candidate target
+and score costs total5.078h, exceeding PPO's entire1.664h learner time. Only
+after this does it train the retained subset. The recent bounded two-GPU probe
+independently measured7.526s/cycle for those target+score passes, matching the
+historical7.501s/cycle estimate. This explains most of the remaining learner gap.
+
+Checkpoint difference
+PPO checkpoint_interval=500; it finishes at245cycles, saving at completion
+and close. Its evaluation branch does not call save_evaluation_checkpoint.
+TES checkpoint_interval=null does not suppress evaluation-triggered saves:
+every scheduled benchmark calls save_evaluation_checkpoint(), which saves a
+learner checkpoint. Its separate cost has not been isolated.
+
+Fair future comparison
+Use a shared GLOBAL RECEIVED-STEP evaluation trigger every32,768,000 steps,
+plus final evaluation, with the same benchmark and a separately matched
+checkpoint policy. TES interval20cycles approximates PPO's received-step
+spacing but is not exact because valid-insertion rates change. Keep learner,
+collection, benchmark and checkpoint timings separate. No config was changed
+or new training run launched for this comparison.
+
+Evidence
+Local PPO W&B summary and metadata were reread. The binary .wandb file SHA256
+matches the existing full-history reconstruction in
+project/PPO_SAC_Profiling/historical_summary.json, which contains all245cycles
+and reconstructed retained row-exposures. The123 saved evaluation directories
+were counted directly, and resolved benchmark protocols compared with TES.
+Generated numerical comparison: ../results/tes_speed_audit_20261117/ppo_comparison.json.
+Source: pufferlib/pufferl.py::Profile, _compute_advantages,
+_train_ppo_transition, train, mean_and_log and the main evaluation branch;
+pufferlib/pufferl_sac.py::_prepare_n_step_targets,
+_score_experience_filter_candidates and save_evaluation_checkpoint.

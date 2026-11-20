@@ -77,19 +77,38 @@ def _resolve_map_indices(map_dir, map_names):
     return indices
 
 
-def validate_training_evaluation_config(args):
+def validate_training_evaluation_config(args, *, allow_agent_steps=False):
     eval_config = args["eval"]
     train_config = args["train"]
-    evaluation_interval_epochs = train_config["evaluation_interval_epochs"]
-    if evaluation_interval_epochs is None:
-        return False
+    evaluation_interval_epochs = train_config.get("evaluation_interval_epochs")
+    evaluation_interval_agent_steps = train_config.get("evaluation_interval_agent_steps")
 
-    if (
+    if evaluation_interval_agent_steps is not None and not allow_agent_steps:
+        raise pufferlib.APIUsageError(
+            "train.evaluation_interval_agent_steps is only supported by SAC training"
+        )
+
+    if evaluation_interval_epochs is not None and (
         isinstance(evaluation_interval_epochs, bool)
         or not isinstance(evaluation_interval_epochs, int)
         or evaluation_interval_epochs <= 0
     ):
         raise pufferlib.APIUsageError("train.evaluation_interval_epochs must be a positive integer or null")
+    if evaluation_interval_agent_steps is not None and (
+        isinstance(evaluation_interval_agent_steps, bool)
+        or not isinstance(evaluation_interval_agent_steps, int)
+        or evaluation_interval_agent_steps <= 0
+    ):
+        raise pufferlib.APIUsageError(
+            "train.evaluation_interval_agent_steps must be a positive integer or null"
+        )
+    if evaluation_interval_epochs is not None and evaluation_interval_agent_steps is not None:
+        raise pufferlib.APIUsageError(
+            "Set only one of train.evaluation_interval_epochs and "
+            "train.evaluation_interval_agent_steps"
+        )
+    if evaluation_interval_epochs is None and evaluation_interval_agent_steps is None:
+        return False
 
     evaluation_benchmarks = train_config["evaluation_benchmarks"]
     if not isinstance(evaluation_benchmarks, str) or not evaluation_benchmarks.strip():

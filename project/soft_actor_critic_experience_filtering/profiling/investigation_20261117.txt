@@ -1,0 +1,174 @@
+TES filtering runtime investigation — 2026-11-17
+
+Question
+Why does retaining about 7% of experience not produce a comparable reduction
+in the time to train for 4B received simulator steps?
+
+Completed runs (authoritative historical result)
+Baseline: project/sac_gpu_4b_comparison/runs/tes_gpu_4b_20261110/trial_98
+Filtered: project/soft_actor_critic_experience_filtering/runs/
+actor_critic_filter_20261112T163346Z/tes_actor_critic_20261112T163346Z/trial_98
+The earlier experience_filter_20261112T012430Z critic-only run is excluded.
+
+Both runs finished exactly 4B received steps on two RTX A6000 GPUs. Resolved
+training configs differ only by the intended filter and run identity; the
+evaluation catalogs match. Hardware model matches but runs occurred at
+different times/on different GPU IDs, so this is not a contemporaneous causal
+benchmark. The short controls below use the same GPUs sequentially.
+
+                                Baseline        Filtered
+Actual full wall time           31.6779 h       21.2675 h
+Estimated learner time          16.2887 h        6.3807 h
+Estimated collection time        1.0065 h        0.9739 h
+Other wall time                 14.3827 h       13.9129 h
+Collection/training cycles           2422            2437
+Logical optimizer updates          38752           38992
+Benchmark evaluations                1211            1219
+
+Wall-time reduction: 32.86%, or 10.41 h saved, 1.4895x throughput.
+Estimated learner reduction: 60.83%, or 2.5528x learner speedup.
+The filter scored 9,981,952,000 candidate exposures and trained on 787,841,317
+of them: 7.89266%. Repeated replay visits count repeatedly. This is not the
+fraction of replay memory retained and not the fraction of simulator rows
+collected. Replay remains full; collection/replacement continues unchanged.
+Actor rows equal retained rows in every logged cycle. No global batch was empty.
+
+Where filtered learner time went
+Full-candidate target preparation: 10,935.4 s = 3.0376 h.
+Full-candidate online twin-critic scoring: 7,344.6 s = 2.0402 h.
+Remaining retained training, selection, optimizers and bookkeeping: 1.3029 h.
+Targets plus scores therefore account for 79.58% of filtered learner time.
+
+For 100 candidate rows, the implementation computes next-state targets for all
+100, evaluates both online critics to score all 100, and only then trains the
+roughly 8 selected rows. Selection does not eliminate the work needed to decide
+whether a row is selected. TES targets include next-state actor and target
+twin-critic forwards. Scoring adds an online twin-critic forward. Retained
+critic training performs its own forward/backward afterward.
+
+The filter retains 16 logical updates per cycle. It reduces rows within each
+update, not the number of Adam steps, target updates, or gradient reductions.
+The filtered historical run actually completed 0.62% more cycles/updates at
+the same received-step budget due to its collection/valid-transition trajectory.
+
+Evaluation is the largest remaining wall-time component
+The metric performance/eval means online simulation/replay collection, NOT
+scheduled policy evaluation. CARLA benchmark evaluation executes outside the
+learner Profile, every two cycles, followed by a checkpoint save. Each evaluates
+250 scenarios. Even when checkpoint_interval is null, evaluation still calls
+save_evaluation_checkpoint(), which calls save_checkpoint().
+
+An alternating-cycle uptime comparison gives about 38 seconds median extra
+time for evaluation plus checkpoint. The approximately 14 h residual is
+consistent with those repeated calls, but also includes logging, setup, final
+save/close and sampled-timer error. It is NOT a direct isolated measurement of
+evaluation or checkpoint writing. These costs do not scale with retained rows.
+
+Timer caveat
+Profile samples every fifth cycle, synchronizes CUDA, and multiplies sampled
+durations by five. Its cumulative phase totals are estimates; wall times from
+summary.json are actual whole-run durations. Nested performance/env is already
+inside performance/eval and must not be added again. Likewise, learner child
+phases sum to performance/train and must not be added on top of it.
+
+Implementation findings
+1. Full-candidate target and score work is required by this fresh TD-error
+   selection rule. It is the dominant remaining learner cost, not a bug that
+   can be removed by applying the retained mask earlier without changing the
+   scoring/target contract.
+2. TensorReplay.get_batch gathers all five fields even when target preparation
+   or scoring needs only a subset. Filtered actor/critic paths independently
+   compact selected indices and synchronize metadata. These are real
+   optimization opportunities, but their entire removable cost was not
+   isolated; they must not be credited with the total full-candidate cost.
+3. Filtered TES logged Dynamo recompile_limit=8 warnings near epochs 60/64
+   for DriveSACCritic.forward, with batch-size guards near 256 rows. The
+   unfiltered console has no such warning. Installed Torch 2.7.1 uses RUN_ONLY
+   for the affected frame: matching cached graphs remain usable; unmatched
+   invocations stop receiving new graph specializations. This is not evidence
+   that the entire learner became eager. Its runtime contribution is unmeasured.
+
+Source anchors
+pufferlib/pufferl_sac.py: _prepare_n_step_targets,
+_score_experience_filter_candidates, _train_filtered_critic,
+_train_filtered_actor, _train_sac_transition, save_evaluation_checkpoint,
+and the run() training/evaluation loop.
+pufferlib/pufferl.py: Profile and run_training_evaluation.
+pufferlib/sac_replay.py: TensorReplay.get_batch.
+project/soft_actor_critic_experience_filtering/filtering.py: select.
+
+Next optimization priorities (not implemented)
+For faster development turnover, first measure/reduce benchmark and checkpoint
+frequency: they dominate total wall time and do not require changing the SAC
+loss, though fewer evaluations/checkpoints change monitoring/recovery cadence.
+For learner-only speed, target/scoring forwards are the primary ceiling.
+Field-specific replay gathers and avoiding duplicate compaction are candidates
+that can preserve training semantics. Compile-cache behavior needs a dedicated
+controlled test before assigning it a speedup. Caching/stale scores, scoring
+fewer candidates, or merging retained rows across logical updates change the
+algorithm/update schedule and require separate experiments.
+
+Bounded live GPU verification
+Sequential controls used GPUs 0/1 on this server, two A6000s, production TES
+architecture, 2.048M replay rows/rank, 128K logical / 64K microbatches, one epoch,
+GPU replay, compilation and the same saved final filtered TES checkpoint.
+Each control ran one excluded warmup and two measured cycles. Online W&B,
+benchmark evaluation and checkpoints were disabled. Model/target weights,
+log_alpha, optimizer moments, LR schedules and entropy-controller state were
+restored. Filter EMA was restored for the actual-filter case. Replay and
+simulator state were new. No source experiment or checkpoint was overwritten.
+
+Control                    Retained     Learner/cycle    Collection/cycle
+No filter                  100.00%       24.030 s         1.196 s
+Filter, scale zero         100.00%       27.108 s         1.209 s
+Filter, production .01      33.44%       13.978 s         1.217 s
+Filter, detailed timers     33.44%       14.029 s         1.239 s
+
+The all-rows control adds 3.078 s / 12.81% learner overhead versus no filter.
+The actual-filter fresh-replay control gives 1.719x learner speedup. It does
+NOT reproduce the historical 7.89% retention, so it is not a replacement for
+the measured whole-run result. Retention in its two measured cycles was
+35.59% and 31.28%. Original replay was not checkpointed; exactly reproducing
+the old replay's selection would require a saved replay snapshot.
+
+Detailed rank-0 means (synchronized wall timing, inclusive spans):
+  Full-candidate target preparation: 4.508 s
+    Nested compute_targets:         4.444 s (already inside 4.508 s)
+  Full-candidate scoring:           3.018 s
+  Selection:                       0.0157 s
+  Retained critic update:           3.644 s
+  Retained actor update:            2.751 s
+  Actor/critic optimizer steps:     0.0156 / 0.0283 s (inside updates above)
+  Alpha optimizer step:            0.0039 s
+
+Do not add nested spans or synchronization-wait counters again. Detailed
+learner time is only 0.052 s above the plain filtered run here; its retention
+and exact row counts match. Target forwards still covered all 4,096,000 global
+candidate rows in every measured case. Actor/critic counts exactly matched
+retained rows on both ranks, all final parameters were finite, and all probes
+exited successfully. GPU allocations returned to 1 MiB/device after cleanup.
+
+The 7.526 s measured target+score cost closely matches the historical sampled
+7.501 s/cycle. Even free retained-row training would leave those forwards,
+collection, evaluation and checkpointing. Selection and the optimizer step
+calls themselves are small in this probe; they are not the main explanation.
+Gradient synchronization is included inside update spans and was not separately
+isolated. Compiler-limit warnings were not reproduced in these short probes;
+the historical warning's contribution remains unquantified.
+
+Discarded setup: an initial networks-only warm start retained 75-85% of rows
+after fresh Adam updates at the initial LR. It is kept in ignored artifacts
+for audit but excluded from the matched controls above. The standalone import
+path and filtered exposure counters were corrected before accepted filter
+measurements. Sidecar file writes occur after timed cycles. The earlier
+baseline_plain result includes sidecar writes and is superseded by
+baseline_restored. No failed/incomparable probe supports the conclusions.
+
+Artifacts and reproducibility
+analyze_history.py regenerates history.json with exact counters, sampled phase
+totals, actual wall time, cadence estimates and first-crossing 1B-step windows.
+profile_tes_filter.py provides bounded baseline/filter/all_keep GPU controls.
+summarize_probes.py validates all loss-row counters and finite final parameters.
+Generated artifacts are ignored under ../results/tes_speed_audit_20261117/.
+Production learner, source experiment configs and completed runs were not edited.
+No new official training run was launched, and no commit was created.
