@@ -7,6 +7,7 @@ from pathlib import Path
 import numpy as np
 
 from . import models as model_module
+from . import ppo_models as ppo_model_module
 from . import probe_env, run_probes
 from .run_layout import model_directory, records_directory
 
@@ -48,6 +49,9 @@ def capture(model_dir, probe_id, repeat_idx, device="cpu"):
     model_dir = model_directory(model_dir)
     records_dir = records_directory(model_dir)
     manifest = _read_json(records_dir / "manifest.json")
+    model_family = manifest.get("model_family", "sac")
+    if model_family not in {"sac", "ppo"}:
+        raise ValueError(f"Unsupported render model family: {model_family!r}")
     safe_probe_id = str(probe_id).replace("/", "__")
     probe_path = records_dir / "probes" / f"{safe_probe_id}.json"
     if not probe_path.is_file():
@@ -109,7 +113,7 @@ def capture(model_dir, probe_id, repeat_idx, device="cpu"):
         probe_horizon = int(manifest["run_settings"]["continuation_horizon"])
         run_seed = int(manifest["run_settings"].get("selection_seed", 20261122))
         template_seed = int(reference_metadata["layout_seed"])
-        expected_model_hashes = manifest["checkpoint"].get("source_audit", {}).get("model_hashes")
+        expected_model_hashes = _checkpoint_model_hashes(manifest)
     else:
         episode_npz = records_dir / "references" / f"episode_{episode_idx:03d}.npz"
         episode_json = records_dir / "references" / f"episode_{episode_idx:03d}.json"
@@ -124,7 +128,7 @@ def capture(model_dir, probe_id, repeat_idx, device="cpu"):
         probe_horizon = None
         run_seed = int(manifest["run_settings"]["seed"])
         template_seed = run_seed
-        expected_model_hashes = manifest["checkpoint"]["audit"]["model_hashes"]
+        expected_model_hashes = _checkpoint_model_hashes(manifest)
 
     map_path = str(Path(probe_record["scene"]["map_path"]).resolve())
     if run_probes.sha256_file(map_path) != probe_record["scene"].get("map_sha256"):
@@ -132,12 +136,15 @@ def capture(model_dir, probe_id, repeat_idx, device="cpu"):
     checkpoint_path = Path(manifest["checkpoint"]["path"]).resolve()
     if run_probes.sha256_file(checkpoint_path) != manifest["checkpoint"].get("sha256"):
         raise ValueError(f"Frozen checkpoint contents differ from the recorded probe: {checkpoint_path}")
-    checkpoint_config_path = Path(manifest["checkpoint"]["config_path"]).resolve()
-    if run_probes.sha256_file(checkpoint_config_path) != manifest["checkpoint"].get("config_sha256"):
+    checkpoint_config_path = Path(
+        manifest["checkpoint"].get("config_path", checkpoint_path.with_name("config.yaml"))
+    ).resolve()
+    expected_config_sha256 = manifest["checkpoint"].get("config_sha256")
+    if expected_config_sha256 and run_probes.sha256_file(checkpoint_config_path) != expected_config_sha256:
         raise ValueError(f"Checkpoint config contents differ from the recorded probe: {checkpoint_config_path}")
     model_config_path = checkpoint_path.with_name("config.yaml")
-    if run_probes.sha256_file(model_config_path) != manifest["checkpoint"].get("config_sha256"):
-        raise ValueError(f"FrozenModels config differs from the recorded checkpoint config: {model_config_path}")
+    if run_probes.sha256_file(model_config_path) != run_probes.sha256_file(checkpoint_config_path):
+        raise ValueError(f"Checkpoint-adjacent config differs from the recorded config: {model_config_path}")
 
     episode_seed = int(probe_record["scene"]["scene_seed"])
     agent_count = int(probe_record["scene"]["agent_count"])
@@ -150,9 +157,12 @@ def capture(model_dir, probe_id, repeat_idx, device="cpu"):
 
     template = probe_env.create_template(env_config, seed=template_seed)
     try:
-        models = model_module.FrozenModels(checkpoint_path, template.model_env, device=device)
+        if model_family == "ppo":
+            models = ppo_model_module.FrozenPPO(checkpoint_path, template.model_env, device=device)
+        else:
+            models = model_module.FrozenModels(checkpoint_path, template.model_env, device=device)
         if models.initial_hashes != expected_model_hashes:
-            raise ValueError("Loaded actor or critic weights do not match the recorded checkpoint audit")
+            raise ValueError("Loaded policy/value weights do not match the recorded checkpoint audit")
         tasks = run_probes.build_branch_tasks(
             str(probe_record["probe_id"]),
             run_seed,
@@ -200,6 +210,11 @@ def capture(model_dir, probe_id, repeat_idx, device="cpu"):
             "initial_probabilities": initial_probabilities.tolist(),
             "actions": [captured[action_idx] for action_idx in range(run_probes.NUM_ACTIONS)],
             "recorded_repeat_idx": repeat_idx,
+            "metric_labels": (
+                ["V(s)", "PPO target", "discounted return"]
+                if model_family == "ppo"
+                else ["Q min", "training target", "discounted reward return"]
+            ),
         }
     finally:
         template.close()
@@ -257,7 +272,9 @@ def _capture_branch_chunk(
             if task["task_id"] in selected_task_ids
         }
         initial_probabilities = None
-        pool_slot_counts = getattr(models.actor, "pool_slot_counts", None)
+        policy_model = getattr(models, "actor", getattr(models, "policy_model", None))
+        pool_slot_counts = getattr(policy_model, "pool_slot_counts", None)
+        initial_values = None
         for time_idx in range(scenario_limit):
             if not any(live[copy_idx] for copy_idx in selected_copy_indices):
                 break
@@ -270,6 +287,11 @@ def _capture_branch_chunk(
                 for copy_idx in range(1, len(tasks)):
                     if not np.allclose(probabilities[copy_idx, ego_idx], initial_probabilities, rtol=0.0, atol=1e-7):
                         raise AssertionError("Identical saved probe observations produced different frozen actor probabilities")
+                if hasattr(models, "values"):
+                    values_flat = models.values(flat_observations)
+                    initial_values = np.asarray(values_flat, dtype=np.float32).reshape(len(tasks), agent_count)
+                    if not np.allclose(initial_values[:, ego_idx], initial_values[0, ego_idx], rtol=0.0, atol=1e-6):
+                        raise AssertionError("Identical saved probe observations produced different PPO values")
             discrete_actions = np.zeros((len(tasks), agent_count), dtype=np.int32)
             for copy_idx in np.flatnonzero(live):
                 discrete_actions[copy_idx] = run_probes.sample_actions(probabilities[copy_idx], rngs[copy_idx])
@@ -364,13 +386,11 @@ def _capture_branch_chunk(
                                 f"Replay horizon {len(actual_rewards)} differs from recorded horizon "
                                 f"{saved_branch['observed_horizon']} for action {action_idx}"
                             )
-                        output[action_idx] = {
+                        action_output = {
                             "action_idx": action_idx,
                             "action_label": _action_label(action_idx, models.action_table_physical),
                             "initial_probability": float(initial_probabilities[action_idx]),
                             "observed_horizon": len(actual_rewards),
-                            "q_min": saved_branch["q_min"],
-                            "actual_critic_target": saved_branch["actual_critic_target"],
                             "recorded_return": float(saved_branch["discounted_reward_return"]),
                             "stop_reason": stop_reason,
                             "final_outcome": final_outcome_label(saved_branch, saved_arrays, branch_position),
@@ -383,6 +403,26 @@ def _capture_branch_chunk(
                                 frame_idx,
                             ),
                         }
+                        if hasattr(models, "values"):
+                            ppo_fields = ("initial_value", "ppo_value_target", "discounted_reward_return")
+                            if any(field not in saved_branch for field in ppo_fields):
+                                raise ValueError(f"PPO branch record is missing display fields {ppo_fields}")
+                            initial_value = float(saved_branch["initial_value"])
+                            replayed_value = float(initial_values[copy_idx, ego_idx])
+                            if not np.isclose(initial_value, replayed_value, rtol=0.0, atol=1e-5):
+                                raise RuntimeError(
+                                    f"PPO V(s) differs from its recorded value for action {action_idx}: "
+                                    f"replayed={replayed_value}, recorded={initial_value}"
+                                )
+                            action_output["display_values"] = [
+                                initial_value,
+                                float(saved_branch["ppo_value_target"]),
+                                float(saved_branch["discounted_reward_return"]),
+                            ]
+                        else:
+                            action_output["q_min"] = saved_branch["q_min"]
+                            action_output["actual_critic_target"] = saved_branch["actual_critic_target"]
+                        output[action_idx] = action_output
                         del frame_records[copy_idx]
             if not any(live[copy_idx] for copy_idx in selected_copy_indices):
                 break
@@ -505,3 +545,16 @@ def _read_json(path):
         return json.loads(Path(path).read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError(f"Cannot read saved calibration JSON {path}: {error}") from error
+
+
+def _checkpoint_model_hashes(manifest):
+    checkpoint = manifest.get("checkpoint", {})
+    audits = (
+        checkpoint.get("source_audit"),
+        checkpoint.get("audit"),
+        manifest.get("source_audit"),
+    )
+    for audit in audits:
+        if isinstance(audit, dict) and isinstance(audit.get("model_hashes"), dict):
+            return audit["model_hashes"]
+    return None

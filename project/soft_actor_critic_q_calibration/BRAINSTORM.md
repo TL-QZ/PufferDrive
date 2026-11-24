@@ -142,23 +142,28 @@ The critic evaluates the current SAC policy accurately. The caution comes from S
 
 ## Third run — Does a higher critic target predict a better driving outcome?
 
-I compared the 12 forced first actions within each starting state, with one rollout per action. For each checkpoint, the raw mean includes all 2,880 rollouts from 240 retained states pooled across bins. Pearson r and pairwise ranking accuracy are computed within each state and then averaged with equal weight across scored states. Parentheses give the number of states contributing to both scores, out of 240.
+I compared the 12 forced first actions within each starting state, with one rollout per action. For each checkpoint, the raw mean includes all 2,880 rollouts from 240 retained states pooled across bins. Pearson r and pairwise ranking accuracy are computed within each state and then averaged with equal weight across scored states. Parentheses give the number of states contributing to ranking accuracy, out of 240. Each checkpoint generated its own self-play starting states.
 
-| Outcome | PQL raw mean | PQL r | PQL accuracy (n) | TES raw mean | TES r | TES accuracy (n) |
-|---|---:|---:|---:|---:|---:|---:|
-| Episode return | 0.3145 | 0.565 | 69.1% (240) | -1.6668 | 0.321 | 58.6% (240) |
-| Sampled soft return | 0.2034 | 0.567 | 67.7% (240) | -0.2647 | 0.557 | 64.5% (240) |
-| Puffer score | 0.3839 | 0.252 | 59.5% (168) | 0.0010 | 0.195 | 66.3% (4) |
-| Number of goals reached | 0.8069 | 0.173 | 55.9% (57) | 0.0264 | -0.118 | 37.2% (8) |
-| Total distance traveled (m) | 223.9655 | 0.196 | 56.2% (240) | 187.0909 | -0.090 | 46.7% (240) |
-| Total infractions (lower is better) | 0.3205 | -0.183 | 57.8% (89) | 0.0559 | -0.335 | 71.4% (53) |
-| Average distance per infraction (m) | 223.9655 | 0.196 | 56.2% (240) | 187.0909 | -0.090 | 46.7% (240) |
-| Average speed (m/s) | 3.7828 | 0.179 | 56.4% (240) | 0.3188 | -0.250 | 43.2% (240) |
-| Collision reward component | -0.0415 | 0.173 | 58.6% (35) | -0.0301 | 0.116 | 59.5% (20) |
-| Off-road reward component | -0.1730 | 0.271 | 62.6% (75) | -0.0449 | 0.462 | 78.6% (35) |
+| Outcome | PQL mean | PQL r | PQL rank (n) | TES mean | TES r | TES rank (n) | PPO mean | PPO r | PPO rank (n) |
+|---|---|---|---|---|---|---|---|---|---|
+| Episode return | 0.3145 | 0.565 | 69.1% (240) | -1.6668 | 0.321 | 58.6% (240) | 0.1277 | 0.279 | 59.5% (240) |
+| Sampled soft return | 0.2034 | 0.567 | 67.7% (240) | -0.2647 | 0.557 | 64.5% (240) | — | — | — |
+| Puffer score | 0.3839 | 0.252 | 59.5% (168) | 0.0010 | 0.195 | 66.3% (4) | 0.2873 | 0.061 | 54.8% (156) |
+| Number of goals reached | 0.8069 | 0.173 | 55.9% (57) | 0.0264 | -0.118 | 37.2% (8) | 0.3750 | 0.100 | 55.9% (74) |
+| Total distance traveled (m) | 223.9655 | 0.196 | 56.2% (240) | 187.0909 | -0.090 | 46.7% (240) | 886.0439 | 0.109 | 53.1% (240) |
+| Total infractions (lower is better) | 0.3205 | -0.183 | 57.8% (89) | 0.0559 | -0.335 | 71.4% (53) | 0.3191 | -0.090 | 55.7% (144) |
+| Average distance per infraction (m) | 223.9655 | 0.196 | 56.2% (240) | 187.0909 | -0.090 | 46.7% (240) | 886.0439 | 0.109 | 53.1% (240) |
+| Average speed (m/s) | 3.7828 | 0.179 | 56.4% (240) | 0.3188 | -0.250 | 43.2% (240) | 2.6756 | -0.046 | 48.6% (240) |
+| Collision reward component | -0.0415 | 0.173 | 58.6% (35) | -0.0301 | 0.116 | 59.5% (20) | -0.0644 | -0.032 | 48.4% (69) |
+| Off-road reward component | -0.1730 | 0.271 | 62.6% (75) | -0.0449 | 0.462 | 78.6% (35) | -0.1224 | 0.203 | 62.5% (69) |
+| Discounted reward return | 0.1361 | 0.576 | 69.4% (240) | -0.6642 | 0.562 | 64.8% (240) | 0.0600 | 0.386 | 62.4% (240) |
 
 Ranking accuracy credits fewer infractions, smaller collision and off-road penalties (signed rewards closer to zero), and higher values for the other outcomes. For speed this measures preference for faster driving. Pearson r uses the recorded metric directly, so a negative infraction correlation means higher targets accompany fewer infractions. Equal-outcome pairs are excluded from ranking and tied targets receive half credit.
 
 Average distance per infraction equals total distance in these probes because each rollout records zero or one infraction and the denominator is bounded below by one. The TES Puffer score result draws on only four states with different outcomes across actions.
 
 [PQL plots](runs/third_20261122/pql/plots/driving_quality_plots/README.md) · [TES plots](runs/third_20261122/tes/plots/driving_quality_plots/README.md)
+
+PPO’s value head predicts one baseline for the starting state. I compare its branch-specific value target (baseline plus sampled GAE) against each rollout’s outcome. The target incorporates observed rewards, including some that enter the outcome. The discounted reward return gives a common reward-only comparison across all three checkpoints.
+
+[Three-checkpoint comparison](runs/third_20261122/TARGET_COMPARISON.md) · [PPO plots](runs/third_20261122/ppo/plots/driving_quality_plots/README.md)

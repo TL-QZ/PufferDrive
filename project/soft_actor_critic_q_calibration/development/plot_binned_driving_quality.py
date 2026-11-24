@@ -30,6 +30,25 @@ METRICS = {
     "reward_components/offroad": "Off-road reward component",
 }
 
+def outcome_metrics(model_name, *, include_common_return=False):
+    metrics = dict(METRICS)
+    if model_name == "ppo":
+        metrics = {}
+        for key, label in METRICS.items():
+            if key == "standard_soft_return":
+                metrics["discounted_reward_return"] = "Discounted reward return"
+            else:
+                metrics[key] = label
+    elif include_common_return:
+        metrics["discounted_reward_return"] = "Discounted reward return"
+    return metrics
+
+
+def branch_outcome(branch, key):
+    if key in ("standard_soft_return", "discounted_reward_return"):
+        return branch[key]
+    return branch["metrics_mean"][key]
+
 
 def state_scores(target, outcome, *, lower_is_better=False):
     """Return Pearson r and ordering agreement for one state's action outcomes."""
@@ -46,7 +65,7 @@ def state_scores(target, outcome, *, lower_is_better=False):
     return r, agreement.mean()
 
 
-def plot_scores(groups, model_name, output, metric_idx, metric, label):
+def plot_scores(groups, model_name, output, metric_idx, metric, label, target_label):
     filename_metric = metric.replace("/", "_")
     correlations = {key: np.array([state_scores(v[:, 0], v[:, metric_idx], lower_is_better=(metric == "total_infractions")) for v in states])
                     for key, states in groups.items()}
@@ -78,7 +97,7 @@ def plot_scores(groups, model_name, output, metric_idx, metric, label):
                 panel.spines[["top", "right"]].set_visible(False)
                 if col == 0:
                     panel.set_ylabel(axis_label + "\n" + ("Pearson r" if column == 0 else "Accuracy (%)"))
-        fig.suptitle(f"{model_name.upper()}  |  {statistic}: critic target vs {label.lower()}", fontsize=19)
+        fig.suptitle(f"{model_name.upper()}  |  {statistic}: {target_label.lower()} vs {label.lower()}", fontsize=19)
         note = ("Dashed line = zero correlation. Constant target or outcome gives no score."
                 if column == 0 else
                 "Dashed line = chance (50%). Equal outcomes are excluded; equal targets receive half credit.")
@@ -90,21 +109,21 @@ def plot_scores(groups, model_name, output, metric_idx, metric, label):
         plt.close(fig)
 
 
-def plot_pooled(states, name, output):
+def plot_pooled(states, name, output, metrics, target_label):
     views = [
         ("raw_values", "Raw rollout outcomes"),
         ("pearson_r", "Pearson r"),
         ("pairwise_ranking_accuracy", "Pairwise ranking accuracy"),
     ]
     scores = np.array([[state_scores(v[:, 0], v[:, i], lower_is_better=(metric == "total_infractions"))
-                        for i, metric in enumerate(METRICS, start=1)] for v in states])
+                        for i, metric in enumerate(metrics, start=1)] for v in states])
     for view, (folder, title) in enumerate(views):
-        rows = (len(METRICS) + 2) // 3
+        rows = (len(metrics) + 2) // 3
         fig, panels = plt.subplots(rows, 3, figsize=(16, 4.3 * rows), constrained_layout=True)
-        for unused in panels.flat[len(METRICS):]:
+        for unused in panels.flat[len(metrics):]:
             unused.set_visible(False)
         fig.suptitle(f"{name.upper()}  |  {title}", fontsize=18)
-        for i, (panel, label) in enumerate(zip(panels.flat, METRICS.values())):
+        for i, (panel, label) in enumerate(zip(panels.flat, metrics.values())):
             panel.set_title(label)
             panel.grid(axis="y", alpha=.17)
             panel.spines[["top", "right"]].set_visible(False)
@@ -113,7 +132,7 @@ def plot_pooled(states, name, output):
                     color = plt.get_cmap("tab20")(index % 20)
                     panel.plot(values[:, 0], values[:, i + 1], color=color, lw=.55, alpha=.47)
                     panel.scatter(values[:, 0], values[:, i + 1], color=color, s=8, alpha=.65, linewidths=0)
-                panel.set_xlabel("Critic training target")
+                panel.set_xlabel(target_label)
                 if label in (METRICS["total_infractions"], METRICS["num_goals_reached"]):
                     panel.yaxis.set_major_locator(MaxNLocator(integer=True))
                 continue
@@ -143,6 +162,10 @@ def plot_pooled(states, name, output):
 def plot_model(directory, *, by_bin=False):
     model = model_directory(directory)
     records = model / "records"
+    ppo = model.name == "ppo"
+    target_field = "ppo_value_target" if ppo else "actual_critic_target"
+    target_label = "PPO value target (V + GAE)" if ppo else "Critic training target"
+    metrics = outcome_metrics(model.name)
     states = []
     groups = defaultdict(list)
     selection = json.loads((records / "selection.json").read_text())
@@ -153,7 +176,7 @@ def plot_model(directory, *, by_bin=False):
         if (probe["state_id"] != state["state_id"] or probe["assigned_bin"] != state["assigned_bin"]
                 or sorted(b["action_idx"] for b in branches) != list(range(12))):
             raise ValueError(f"Invalid forced-action group in {stem}")
-        values = np.asarray([[b["actual_critic_target"], *(b[k] if k == "standard_soft_return" else b["metrics_mean"][k] for k in METRICS)]
+        values = np.asarray([[b[target_field], *(branch_outcome(b, key) for key in metrics)]
                              for b in branches], dtype=float)
         if not np.isfinite(values).all():
             raise ValueError(f"Missing target or outcome in {stem}")
@@ -165,13 +188,13 @@ def plot_model(directory, *, by_bin=False):
 
     output = plot_output_dir(model, "driving_quality_plots")
     if not by_bin:
-        plot_pooled(states, model.name, output)
+        plot_pooled(states, model.name, output, metrics, target_label)
         return
     output = output / "by_bin"
     output.mkdir(exist_ok=True)
     for folder in ("raw_values", "pearson_r", "pairwise_ranking_accuracy"):
         (output / folder).mkdir(exist_ok=True)
-    for metric_idx, (metric, label) in enumerate(METRICS.items(), start=1):
+    for metric_idx, (metric, label) in enumerate(metrics.items(), start=1):
         fig, panels = plt.subplots(3, 6, figsize=(21, 10), sharex=True, sharey=True)
         for row_idx, (axis, row_label) in enumerate(ROWS.items()):
             keys = sorted((key for key in groups if key[0] == axis), key=lambda key: key[1])
@@ -196,15 +219,15 @@ def plot_model(directory, *, by_bin=False):
                     panel.yaxis.set_major_locator(MaxNLocator(nbins=6, integer=True))
                 if col_idx == 0:
                     panel.set_ylabel(row_label + "\n" + label)
-        fig.suptitle(f"{model.name.upper()}  |  Critic target vs {label.lower()}", fontsize=20, y=0.98)
+        fig.suptitle(f"{model.name.upper()}  |  {target_label} vs {label.lower()}", fontsize=20, y=0.98)
         fig.text(.5, .925, "Each dot is one forced-action rollout. Each line connects actions from the same starting state in target order.",
                  ha="center", fontsize=12)
-        fig.supxlabel("Critic training target", y=.025)
+        fig.supxlabel(target_label, y=.025)
         fig.subplots_adjust(left=.065, right=.99, top=.865, bottom=.095, wspace=.12, hspace=.39)
         filename_metric = metric.replace("/", "_")
         fig.savefig(output / "raw_values" / f"critic_target_vs_{filename_metric}.png", dpi=150, facecolor="white")
         plt.close(fig)
-        plot_scores(groups, model.name, output, metric_idx, metric, label)
+        plot_scores(groups, model.name, output, metric_idx, metric, label, target_label)
 
 
 if __name__ == "__main__":

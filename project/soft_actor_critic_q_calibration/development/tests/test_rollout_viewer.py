@@ -74,3 +74,26 @@ def test_write_viewer_rejects_probability_mismatch(tmp_path):
 
     with pytest.raises(ValueError, match="does not match initial_probabilities"):
         rollout_viewer.write_viewer(payload, tmp_path / "probe.html")
+
+
+def test_write_viewer_labels_ppo_value_target_and_return(tmp_path):
+    payload = _payload()
+    payload["metric_labels"] = ["V(s)", "PPO target", "discounted return"]
+    payload["actions"] = [
+        {
+            key: value
+            for key, value in action.items()
+            if key not in {"q_min", "actual_critic_target", "recorded_return"}
+        }
+        | {"display_values": [0.75, 1.25 + action["action_idx"], -2.0 - action["action_idx"]]}
+        for action in payload["actions"]
+    ]
+
+    output_path = rollout_viewer.write_viewer(payload, tmp_path / "ppo-probe.html")
+    html = output_path.read_text(encoding="utf-8")
+
+    assert "Forced first action · V(s) / PPO target / discounted return" in html
+    assert 'const ACTION_METRIC_LABELS = ["V(s)","PPO target","discounted return"]' in html
+    assert 'const ACTION_BUTTON_LABELS = ["V(s)","Tgt","Ret"]' in html
+    assert "Q min" not in html
+    assert "const ACTION_SCORES = [[0.75,1.25,-2.0" in html

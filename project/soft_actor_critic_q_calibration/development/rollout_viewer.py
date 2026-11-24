@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 ACTION_COUNT = 12
+DEFAULT_METRIC_LABELS = ("Q min", "training target", "discounted reward return")
 JERK_LONG = (-15, -4, 0, 4)
 JERK_LAT = (-4, 0, 4)
 PAYLOAD_CHUNK_SIZE = 4 * 1024 * 1024
@@ -30,8 +31,9 @@ def write_viewer(payload, path):
     destination.parent.mkdir(parents=True, exist_ok=True)
     html = _standard_template(payload["actions"][0]["replay_bytes"])
     html = _bundle_replay_payloads(html, payload["actions"])
-    scores = [[action["q_min"], action["actual_critic_target"], action["recorded_return"]] for action in payload["actions"]]
-    html = _add_action_selector(html, scores)
+    metric_labels = payload.get("metric_labels", DEFAULT_METRIC_LABELS)
+    scores = _display_scores(payload)
+    html = _add_action_selector(html, scores, metric_labels)
     html = _add_comparison_view(html)
     endings = [action["final_outcome"] for action in payload["actions"]]
     html = _replace_once(
@@ -63,6 +65,15 @@ def _validate_payload(payload):
     if not isinstance(actions, list) or len(actions) != ACTION_COUNT:
         raise ValueError(f"payload.actions must contain {ACTION_COUNT} forced actions")
 
+    metric_labels = payload.get("metric_labels", DEFAULT_METRIC_LABELS)
+    if (
+        not isinstance(metric_labels, (list, tuple))
+        or len(metric_labels) != 3
+        or any(not isinstance(label, str) or not label for label in metric_labels)
+        or any(not re.fullmatch(r"[A-Za-z0-9 ()/._-]+", label) for label in metric_labels)
+    ):
+        raise ValueError("metric_labels must contain three plain text labels")
+
     probabilities = payload.get("initial_probabilities")
     if not isinstance(probabilities, (list, tuple)) or len(probabilities) != ACTION_COUNT:
         raise ValueError(f"payload.initial_probabilities must contain {ACTION_COUNT} values")
@@ -75,6 +86,7 @@ def _validate_payload(payload):
             raise ValueError(f"initial probability {action_index} must be finite and in [0, 1]")
         validated_probabilities.append(probability)
 
+    display_value_presence = []
     for expected_index, action in enumerate(actions):
         if not isinstance(action, dict) or int(action.get("action_idx", -1)) != expected_index:
             raise ValueError("actions must be ordered by action_idx from 0 through 11")
@@ -88,6 +100,32 @@ def _validate_payload(payload):
                 action_probability, validated_probabilities[expected_index], rel_tol=1e-5, abs_tol=1e-7
             ):
                 raise ValueError(f"action {expected_index} probability does not match initial_probabilities")
+
+        values = action.get("display_values")
+        display_value_presence.append(values is not None)
+        if values is not None:
+            if not isinstance(values, (list, tuple)) or len(values) != 3:
+                raise ValueError(f"action {expected_index} display_values must contain three values")
+            for metric_value in values:
+                if metric_value is not None and not math.isfinite(float(metric_value)):
+                    raise ValueError(f"action {expected_index} display_values must be finite or null")
+        elif not {"q_min", "actual_critic_target", "recorded_return"}.issubset(action):
+            raise ValueError(
+                f"action {expected_index} must provide display_values or SAC Q/target/return fields"
+            )
+
+    if any(display_value_presence) and not all(display_value_presence):
+        raise ValueError("all actions must use display_values when any action provides them")
+
+
+def _display_scores(payload):
+    if all("display_values" in action for action in payload["actions"]):
+        return [[None if value is None else float(value) for value in action["display_values"]]
+                for action in payload["actions"]]
+    return [
+        [action["q_min"], action["actual_critic_target"], action["recorded_return"]]
+        for action in payload["actions"]
+    ]
 
 
 
@@ -129,12 +167,24 @@ def _bundle_replay_payloads(html, actions):
     return html[:insertion_point] + replacement + html[insertion_point:]
 
 
-def _add_action_selector(html, scores):
+def _add_action_selector(html, scores, metric_labels=DEFAULT_METRIC_LABELS):
+    labels_json = json.dumps(list(metric_labels), separators=(",", ":"))
+    short_label_names = {
+        "V(s)": "V(s)",
+        "PPO target": "Tgt",
+        "discounted return": "Ret",
+        "Q min": "Q",
+        "training target": "Tgt",
+        "discounted reward return": "Ret",
+    }
+    short_labels_json = json.dumps(
+        [short_label_names.get(label, label) for label in metric_labels], separators=(",", ":")
+    )
     html = _replace_once(
         html,
         '<div class="label">Policy</div><div id="policy-grid" class="grid"></div>',
         '<div class="label">Policy</div><div id="policy-grid" class="grid"></div>'
-        '<div class="label">Forced first action · Q min / training target / return</div>'
+        f'<div class="label">Forced first action · {" / ".join(metric_labels)}</div>'
         '<div id="forced-action-grid" class="heat" aria-label="Forced first action selector"></div>'
         '<div class="heat-cap">jerk_long &#8595; / jerk_lat &#8594; · lighter = higher target</div>',
         "standard policy grid markup",
@@ -150,7 +200,9 @@ def _add_action_selector(html, scores):
     html = _replace_regex_once(
         html,
         re.compile(r"        const METRIC_LABELS = \[[^\n]*\];"),
-        f"        const ACTION_SCORES = {json.dumps(scores, allow_nan=False, separators=(',', ':'))};",
+        f"        const ACTION_SCORES = {json.dumps(scores, allow_nan=False, separators=(',', ':'))};\n"
+        f"        const ACTION_METRIC_LABELS = {labels_json};\n"
+        f"        const ACTION_BUTTON_LABELS = {short_labels_json};",
         "standard replay metric constants",
     )
     html = _replace_once(
@@ -230,11 +282,14 @@ def _add_action_selector(html, scores):
         "                markup += '<div class=\\\"heat-lab\\\">' + longValues[row].toFixed(1) + '</div>';\n"
         "                for (let column = 0; column < latValues.length; column++) {\n"
         "                    const actionIndex = row * latValues.length + column;\n"
-        "                    const [critic, target, episodeReturn] = ACTION_SCORES[actionIndex];\n"
-        "                    const label = 'Action ' + actionIndex + ': jerk_long ' + longValues[row] + ', jerk_lat ' + latValues[column] + ' · Q min: ' + critic + ' · training target: ' + (target ?? 'unavailable') + ' · discounted reward return: ' + episodeReturn;\n"
-        "                    const level = high > low ? (target - low) / (high - low) : 0.5;\n"
-        "                    const style = target === null ? '' : 'background:' + heatColor(level) + ';color:' + (level < 0.49 ? 'white' : '#101722');\n"
-        "                    markup += '<button type=\\\"button\\\" class=\\\"heat-cell forced-action-cell' + (actionIndex === selectedForcedAction ? ' selected' : '') + '\\\" data-action-index=\\\"' + actionIndex + '\\\" aria-pressed=\\\"' + (actionIndex === selectedForcedAction) + '\\\" style=\\\"' + style + '\\\" title=\\\"' + label + '\\\" aria-label=\\\"' + label + '\\\">' + '<span>Q</span><span>' + critic.toFixed(3) + '</span><span>Target</span><span>' + (target === null ? '—' : target.toFixed(3)) + '</span><span>Return</span><span>' + episodeReturn.toFixed(3) + '</span>' + '</button>';\n"
+        "                    const [value0, value1, value2] = ACTION_SCORES[actionIndex];\n"
+        "                    const [label0, label1, label2] = ACTION_METRIC_LABELS;\n"
+        "                    const [buttonLabel0, buttonLabel1, buttonLabel2] = ACTION_BUTTON_LABELS;\n"
+        "                    const label = 'Action ' + actionIndex + ': jerk_long ' + longValues[row] + ', jerk_lat ' + latValues[column] + ' · ' + label0 + ': ' + (value0 ?? 'unavailable') + ' · ' + label1 + ': ' + (value1 ?? 'unavailable') + ' · ' + label2 + ': ' + (value2 ?? 'unavailable');\n"
+        "                    const level = high > low ? (value1 - low) / (high - low) : 0.5;\n"
+        "                    const style = value1 === null ? '' : 'background:' + heatColor(level) + ';color:' + (level < 0.49 ? 'white' : '#101722');\n"
+        "                    const display = value => value === null ? '—' : value.toFixed(3);\n"
+        "                    markup += '<button type=\\\"button\\\" class=\\\"heat-cell forced-action-cell' + (actionIndex === selectedForcedAction ? ' selected' : '') + '\\\" data-action-index=\\\"' + actionIndex + '\\\" aria-pressed=\\\"' + (actionIndex === selectedForcedAction) + '\\\" style=\\\"' + style + '\\\" title=\\\"' + label + '\\\" aria-label=\\\"' + label + '\\\">' + '<span>' + buttonLabel0 + '</span><span>' + display(value0) + '</span><span>' + buttonLabel1 + '</span><span>' + display(value1) + '</span><span>' + buttonLabel2 + '</span><span>' + display(value2) + '</span>' + '</button>';\n"
         "                }\n"
         "            }\n"
         "            grid.innerHTML = markup;\n"
