@@ -96,6 +96,7 @@ def _generated_binding() -> str:
     replacement = (
         "static PyObject *vec_set_probe_mode(PyObject *self, PyObject *args);\n"
         "static PyObject *vec_get_probe_metadata(PyObject *self, PyObject *args);\n"
+        "static PyObject *vec_get_goal_geometry(PyObject *self, PyObject *args);\n"
         "static PyObject *vec_get_probe_fingerprints(PyObject *self, PyObject *args);\n\n"
         "static PyObject *vec_start_probe_horizon(PyObject *self, PyObject *args);\n\n"
         "static PyObject *vec_begin_probe_metrics(PyObject *self, PyObject *args);\n"
@@ -106,6 +107,7 @@ def _generated_binding() -> str:
         '    {"map_cache_live_count", map_cache_live_count_py, METH_NOARGS, "Map cache live count."}, \\\n'
         '    {"vec_set_probe_mode", vec_set_probe_mode, METH_VARARGS, "Enable deterministic probe boundaries."}, \\\n'
         '    {"vec_get_probe_metadata", vec_get_probe_metadata, METH_VARARGS, "Read compact probe metadata."}, \\\n'
+        '    {"vec_get_goal_geometry", vec_get_goal_geometry, METH_VARARGS, "Read exact ordered route goal geometry."}, \\\n'
         '    {"vec_get_probe_fingerprints", vec_get_probe_fingerprints, METH_VARARGS, "Hash meaningful native state."}, \\\n'
         '    {"vec_start_probe_horizon", vec_start_probe_horizon, METH_VARARGS, "Extend a verified probe scene horizon."}, \\\n'
         '    {"vec_begin_probe_metrics", vec_begin_probe_metrics, METH_VARARGS, "Snapshot per-scene ego metrics."}, \\\n'
@@ -116,7 +118,7 @@ def _generated_binding() -> str:
     source = _replace_once(
         source,
         '#include "../env_binding.h"\n',
-        '#include "probe_env_binding.h"\n\n#include "probe_export.h"\n#include "probe_horizon.h"\n',
+        '#include "probe_env_binding.h"\n\n#include "probe_export.h"\n#include "probe_horizon.h"\n#include "goal_geometry.h"\n',
         "private probe exports include",
     )
     return source
@@ -146,12 +148,14 @@ def source_fingerprint() -> str:
     generated_drive = _generated_drive_header().encode("utf-8")
     export = (NATIVE_DIR / "probe_export.h").read_bytes()
     horizon = (NATIVE_DIR / "probe_horizon.h").read_bytes()
+    goal_geometry = (NATIVE_DIR / "goal_geometry.h").read_bytes()
     for name, content in (
         ("probe_binding.c", generated_binding),
         ("probe_env_binding.h", generated_env),
         ("drive.h", generated_drive),
         ("probe_export.h", export),
         ("probe_horizon.h", horizon),
+        ("goal_geometry.h", goal_geometry),
         ("build_private_binding.py", Path(__file__).read_bytes()),
     ):
         digest.update(name.encode("utf-8"))
@@ -182,6 +186,7 @@ def build_private_binding(force_rebuild: bool = False) -> Path:
         (GENERATED_DRIVE_HEADER, _generated_drive_header().encode("utf-8")),
         (GENERATED_EXPORT_HEADER, (NATIVE_DIR / "probe_export.h").read_bytes()),
         (GENERATED_HORIZON_HEADER, (NATIVE_DIR / "probe_horizon.h").read_bytes()),
+        (BUILD_DIR / "goal_geometry.h", (NATIVE_DIR / "goal_geometry.h").read_bytes()),
     )
     for path, contents in generated:
         if not path.is_file() or path.read_bytes() != contents:

@@ -42,6 +42,8 @@ PROBE_HORIZON = 2560
 PPO_SEGMENT_ROWS = 128
 PPO_SEGMENT_TRANSITIONS = PPO_SEGMENT_ROWS - 1
 REPEATS = 1
+ROUND_FOUR_REPEATS = binned.ROUND_FOUR_REPEATS
+ROUND_FOUR_HORIZONS = binned.ROUND_FOUR_HORIZONS
 PPO_COLLECTOR_FORMAT_VERSION = 1
 
 
@@ -56,6 +58,11 @@ def build_argument_parser():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--worker-index", type=int, required=True)
     parser.add_argument("--workers", type=int, required=True)
+    parser.add_argument(
+        "--round-four",
+        action="store_true",
+        help="collect four action-paired repeats and exact-horizon outcome snapshots",
+    )
     return parser
 
 
@@ -236,7 +243,8 @@ def _policy_and_values(models, observations):
 
 
 def _run_branch_batch(scene_batch_type, template, map_path, agent_count, scene_seed,
-                      reference, probe, tasks, models, progress_callback=None):
+                      reference, probe, tasks, models, progress_callback=None,
+                      horizon_steps=()):
     import torch
 
     copy_count = len(tasks)
@@ -252,6 +260,7 @@ def _run_branch_batch(scene_batch_type, template, map_path, agent_count, scene_s
             "events": {name: [] for name in SAFETY_EVENTS}, "goals": [],
             "validity_gap": False, "scene_boundary": False, "probe_horizon_reached": False,
             "metrics_mean": None,
+            "horizon_metrics": {} if horizon_steps else None,
         }
         for task in tasks
     ]
@@ -371,12 +380,20 @@ def _run_branch_batch(scene_batch_type, template, map_path, agent_count, scene_s
                     live[copy_idx] = False
                     completed_indices.append(int(copy_idx))
 
-            if completed_indices:
+            horizon_reached = (time_idx + 1) in horizon_steps
+            if completed_indices or horizon_reached:
                 metrics_by_copy = batch.metrics(metrics_baseline, event_flags)
                 if not isinstance(metrics_by_copy, (list, tuple)) or len(metrics_by_copy) != copy_count:
                     raise RuntimeError("native probe metrics did not return one row per branch")
                 for copy_idx in completed_indices:
                     records[copy_idx]["metrics_mean"] = _normalize_eval_metrics(metrics_by_copy[copy_idx])
+                if horizon_reached:
+                    for copy_idx, record in enumerate(records):
+                        if len(record["valid"]) != time_idx + 1:
+                            continue
+                        record["horizon_metrics"][str(time_idx + 1)] = _build_horizon_snapshot(
+                            record, time_idx + 1, metrics_by_copy[copy_idx], models.gamma
+                        )
 
             if np.any(scene_done & live):
                 raise RuntimeError("native scene boundary failed to stop a live PPO probe branch")
@@ -401,6 +418,16 @@ def _discounted_sum(values, gamma):
         raise ValueError("discounted return requires a non-empty finite reward sequence")
     discounts = np.power(float(gamma), np.arange(values.size, dtype=np.float64))
     return float(np.dot(discounts, values))
+
+
+def _build_horizon_snapshot(record, horizon, metrics_mean, gamma):
+    """Capture outcome metrics after the exact final transition of a prefix."""
+    if len(record["valid"]) != horizon or len(record["rewards"]) != horizon:
+        raise ValueError("horizon snapshot requires a rollout that reached the requested step")
+    return {
+        "metrics_mean": _normalize_eval_metrics(metrics_mean),
+        "discounted_reward_return": _discounted_sum(record["rewards"][:horizon], gamma),
+    }
 
 
 def _assemble_probe_bundle(probe_id, episode_idx, map_path, map_sha, scene_seed, reference,
@@ -496,6 +523,11 @@ def _assemble_probe_bundle(probe_id, episode_idx, map_path, map_sha, scene_seed,
             "task_id": record["task"]["task_id"],
             "metrics_mean": record["metrics_mean"],
         }
+        if record["horizon_metrics"] is not None:
+            branch["horizon_metrics"] = record["horizon_metrics"]
+            branch["horizon_steps_recorded"] = sorted(
+                int(step) for step in record["horizon_metrics"]
+            )
         for event_name in SAFETY_EVENTS:
             branch[event_name] = bool(np.any(safety_arrays[event_name][:, branch_idx]))
         if has_terminal:
@@ -619,6 +651,27 @@ def _assemble_probe_bundle(probe_id, episode_idx, map_path, map_sha, scene_seed,
         arrays[f"event_{name}"] = values_
     for name, array_name in zip(metric_names, metric_array_names):
         arrays[array_name] = np.asarray([record["metrics_mean"][name] for record in branch_records], dtype=np.float64)
+    if any(record["horizon_metrics"] is not None for record in branch_records):
+        for horizon in ROUND_FOUR_HORIZONS:
+            reached = np.asarray([
+                str(horizon) in record["horizon_metrics"] for record in branch_records
+            ], dtype=np.bool_)
+            arrays[f"horizon_{horizon}_reached"] = reached
+            discounted_returns = np.full(branch_count, np.nan, dtype=np.float64)
+            metric_values = {
+                name: np.full(branch_count, np.nan, dtype=np.float64)
+                for name in metric_names
+            }
+            for branch_idx, record in enumerate(branch_records):
+                snapshot = record["horizon_metrics"].get(str(horizon))
+                if snapshot is None:
+                    continue
+                discounted_returns[branch_idx] = snapshot["discounted_reward_return"]
+                for name in metric_names:
+                    metric_values[name][branch_idx] = snapshot["metrics_mean"][name]
+            arrays[f"horizon_{horizon}_discounted_reward_return"] = discounted_returns
+            for name, values_at_horizon in metric_values.items():
+                arrays[f"horizon_{horizon}__eval_metrics__{name.replace('/', '__')}"] = values_at_horizon
     for name, value in reference_fields.items():
         arrays[f"scene_start__{name}"] = value
     return metadata, arrays
@@ -670,6 +723,8 @@ def run_collection(args):
     model_name = output_model_dir.name
     if model_name.lower() != "ppo":
         raise ValueError("PPO probe output directory must be named ppo")
+    repeat_count = ROUND_FOUR_REPEATS if args.round_four else REPEATS
+    horizon_steps = ROUND_FOUR_HORIZONS if args.round_four else ()
     selection_path = records_directory(output_model_dir) / "selection.json"
     selection = binned._load_selection(
         selection_path, source_records=source_records,
@@ -719,13 +774,16 @@ def run_collection(args):
             "worker_count": int(args.workers),
             "model_family": "ppo",
             "action_count": NUM_ACTIONS,
-            "repeats": REPEATS,
+            "repeats": repeat_count,
             "continuation_horizon": PROBE_HORIZON,
             "target_segment_rows": PPO_SEGMENT_ROWS,
             "target_segment_transitions": PPO_SEGMENT_TRANSITIONS,
             "branch_batch_size": NUM_ACTIONS,
             "device": str(args.device),
-            "continuation_seed_scope": "shared_across_forced_actions_for_each_state",
+            "continuation_seed_scope": (
+                "shared_across_forced_actions_within_repeat" if args.round_four
+                else "shared_across_forced_actions_for_each_state"
+            ),
             "target_importance_ratio": 1.0,
             "prefix_replay": "compact_native_joint_action_replay_with_endpoint_fingerprint",
             "eval_metric_collection": {
@@ -739,6 +797,8 @@ def run_collection(args):
                 "first 127 transitions feed V(s0)+GAE"
             ),
         }
+        if args.round_four:
+            run_settings["record_horizons"] = list(horizon_steps)
         manifest = open_or_create_manifest(records_dir, {
             "model_family": "ppo",
             "checkpoint": {
@@ -807,17 +867,17 @@ def run_collection(args):
                     probe_id = str(state["state_id"])
                     tasks = build_branch_tasks(
                         probe_id, seed, int(state["episode_index"]), int(state["frame_idx"]),
-                        int(state["slot"]), repeats=REPEATS, actions=NUM_ACTIONS,
+                        int(state["slot"]), repeats=repeat_count, actions=NUM_ACTIONS,
                     )
                     state_tasks[probe_id] = tasks
                     if probe_is_complete(
                         records_dir, probe_id, run_signature,
-                        expected_branch_count=NUM_ACTIONS, expected_repeats=REPEATS,
+                        expected_branch_count=NUM_ACTIONS * repeat_count, expected_repeats=repeat_count,
                         expected_action_count=NUM_ACTIONS,
                         expected_task_ids=[task["task_id"] for task in tasks],
                     ):
                         completed_states += 1
-                        completed_branches += NUM_ACTIONS
+                        completed_branches += NUM_ACTIONS * repeat_count
                         continue
                     incomplete_states.append(state)
                 if not incomplete_states:
@@ -855,20 +915,29 @@ def run_collection(args):
                             "reference_file": str(Path(state["source_shard"]).as_posix()),
                         }
 
-                        def report_progress(frame_count, live_count):
-                            if frame_count % 512 == 0:
-                                print(json.dumps({
-                                    "worker": args.worker_index,
-                                    "state_id": probe_id,
-                                    "branch_frames": frame_count,
-                                    "live_branches": live_count,
-                                }, sort_keys=True), flush=True)
+                        branch_records = []
+                        for repeat_idx in range(repeat_count):
+                            repeat_tasks = [
+                                task for task in state_tasks[probe_id]
+                                if int(task["repeat_idx"]) == repeat_idx
+                            ]
 
-                        branch_records = _run_branch_batch(
-                            probe_env.SceneBatch, template, str(map_path), agent_count,
-                            int(episode_metadata["scene_seed"]), reference, probe,
-                            state_tasks[probe_id], models, progress_callback=report_progress,
-                        )
+                            def report_repeat_progress(frame_count, live_count):
+                                if frame_count % 512 == 0:
+                                    print(json.dumps({
+                                        "worker": args.worker_index,
+                                        "state_id": probe_id,
+                                        "repeat_idx": repeat_idx,
+                                        "branch_frames": frame_count,
+                                        "live_branches": live_count,
+                                    }, sort_keys=True), flush=True)
+
+                            branch_records.extend(_run_branch_batch(
+                                probe_env.SceneBatch, template, str(map_path), agent_count,
+                                int(episode_metadata["scene_seed"]), reference, probe,
+                                repeat_tasks, models, progress_callback=report_repeat_progress,
+                                horizon_steps=horizon_steps,
+                            ))
                         binned._verify_replayed_state(branch_records, state, source_row)
                         probe_metadata, output_arrays = _assemble_probe_bundle(
                             probe_id, int(state["episode_index"]), str(map_path), map_hash,
@@ -876,7 +945,7 @@ def run_collection(args):
                             branch_records, models, num_goals=int(template.probe_config["num_goals"]),
                         )
                         probe_metadata.update({
-                            "format_version": PPO_COLLECTOR_FORMAT_VERSION,
+                            "format_version": 2 if args.round_four else PPO_COLLECTOR_FORMAT_VERSION,
                             "state_id": probe_id,
                             "assigned_bin": binned._assigned_bin(state),
                             "selection_state": state,
@@ -897,9 +966,12 @@ def run_collection(args):
                                 "target_segment_transitions": PPO_SEGMENT_TRANSITIONS,
                                 "prefix_frame_count": frame_idx,
                                 "action_count": NUM_ACTIONS,
-                                "repeats": REPEATS,
+                                "repeats": repeat_count,
                                 "branch_batch_size": NUM_ACTIONS,
-                                "continuation_seed_scope": "shared_across_forced_actions_for_each_state",
+                                "continuation_seed_scope": (
+                                    "shared_across_forced_actions_within_repeat" if args.round_four
+                                    else "shared_across_forced_actions_for_each_state"
+                                ),
                                 "prefix_replay": "compact_native_joint_action_replay_with_endpoint_fingerprint",
                             },
                             "scene": {
@@ -913,17 +985,19 @@ def run_collection(args):
                             },
                             "model_hashes": models.audit["model_hashes"],
                             "run_signature": run_signature,
-                            "branch_task_count": NUM_ACTIONS,
-                            "repeats": REPEATS,
+                            "branch_task_count": NUM_ACTIONS * repeat_count,
+                            "repeats": repeat_count,
                             "action_count": NUM_ACTIONS,
                             "branch_task_ids": [task["task_id"] for task in state_tasks[probe_id]],
                         })
+                        if args.round_four:
+                            probe_metadata["collection"]["record_horizons"] = list(horizon_steps)
                         probe_metadata["scene"]["scene_parameters"] = _scene_parameters(template.probe_config)
                         probe_metadata["selection_file"] = str(selection_path.relative_to(records_dir))
                         _, data_path = probe_paths(records_dir, probe_id)
                         save_probe(records_dir, probe_id, run_signature, probe_metadata, output_arrays)
                         completed_states += 1
-                        completed_branches += NUM_ACTIONS
+                        completed_branches += NUM_ACTIONS * repeat_count
                         binned._worker_progress(
                             records_dir, args.worker_index, args.workers,
                             status="running", run_signature=run_signature,
@@ -944,7 +1018,10 @@ def run_collection(args):
                 finally:
                     template.close()
 
-            summary = binned._update_collection_summary(records_dir, selection, run_signature)
+            summary = binned._update_collection_summary(
+                records_dir, selection, run_signature,
+                repeats=repeat_count, record_horizons=horizon_steps,
+            )
             binned._worker_progress(
                 records_dir, args.worker_index, args.workers,
                 status="complete", run_signature=run_signature,
@@ -972,7 +1049,10 @@ def run_collection(args):
 
 def main(argv=None):
     args = build_argument_parser().parse_args(argv)
-    binned.validate_args(args)
+    if args.workers < 1:
+        raise ValueError("--workers must be positive")
+    if not 0 <= args.worker_index < args.workers:
+        raise ValueError("--worker-index must be in [0, workers)")
     return run_collection(args)
 
 

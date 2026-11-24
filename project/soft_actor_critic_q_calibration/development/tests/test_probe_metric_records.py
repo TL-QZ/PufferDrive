@@ -23,6 +23,8 @@ class _FakeRng:
 class _FakeModels:
     def __init__(self):
         self.action_table = np.zeros((12, 2), dtype=np.float32)
+        self.gamma = 0.99
+        self.alpha = 0.1
 
     def policy(self, observations):
         probabilities = np.zeros((len(observations), 12), dtype=np.float32)
@@ -146,6 +148,7 @@ def test_branch_metrics_are_snapshotted_at_each_branch_completion():
         ],
         _FakeModels(),
         pql_horizon=8,
+        record_horizons=(1, 2),
     )
 
     batch = _FakeSceneBatch.instances[-1]
@@ -156,6 +159,11 @@ def test_branch_metrics_are_snapshotted_at_each_branch_completion():
     np.testing.assert_array_equal(batch.metric_calls[1][1], [[True, False, False, False], [False, False, True, False]])
     assert task_records[0]["metrics_mean"]["episode_timestep"] == 1.0
     assert task_records[1]["metrics_mean"]["episode_timestep"] == 2.0
+    assert task_records[0]["horizon_metrics"]["1"]["discounted_reward_return"] == 1.0
+    assert "2" not in task_records[0]["horizon_metrics"]
+    assert task_records[1]["horizon_metrics"]["1"]["discounted_reward_return"] == 1.0
+    assert task_records[1]["horizon_metrics"]["2"]["discounted_reward_return"] == 1.99
+    assert task_records[1]["horizon_metrics"]["2"]["standard_soft_return"] == 1.99
     assert all(record["metrics_agents_per_batch"] == 4 for record in task_records)
 
 
@@ -237,6 +245,55 @@ def test_probe_bundle_stores_scalar_metrics_in_json_and_npz(tmp_path):
         assert data["eval_metrics__driving__score"].dtype == np.float64
         assert data["eval_metrics__driving__score"].tolist() == [0.75]
         assert data["eval_metrics__average_speed"].tolist() == [3.5]
+
+
+def test_round_four_bundle_keeps_empty_horizon_metrics():
+    metric_values = {"episode_timestep": 1.0}
+    record = {
+        "task": {
+            "action_idx": 2,
+            "repeat_idx": 0,
+            "continuation_seed": 17,
+            "task_id": "probe/repeat_000/action_02",
+        },
+        "valid": [True],
+        "rewards": [1.0],
+        "log_probs": [-0.25],
+        "terminals": [True],
+        "truncations": [False],
+        "next_soft_values": [np.nan],
+        "events": {name: [False] for name in SAFETY_EVENTS},
+        "goals": [False],
+        "validity_gap": False,
+        "scene_boundary": False,
+        "initial_ego_observation": np.array([2.5, 0.0], dtype=np.float32),
+        "initial_q1": 1.0,
+        "initial_q2": 2.0,
+        "metrics_mean": metric_values,
+        "metrics_agents_per_batch": 4,
+        "horizon_metrics": {},
+    }
+    models = SimpleNamespace(
+        gamma=0.99,
+        alpha=0.1,
+        return_estimator="n_step",
+        audit={"checkpoint": "checkpoint.pt", "checkpoint_sha256": "hash"},
+    )
+    reference = {
+        "metadata_series": {},
+        "fingerprints": ["reference"],
+        "observation_fingerprints": ["observation"],
+        "frame_count": 1,
+        "boundary_captured": True,
+        "initial_metadata": {},
+    }
+    metadata, _ = _assemble_probe_bundle(
+        "episode_000/frame_00000/ego_0000", 0, "map.bin", "map-hash", 3,
+        reference, {"frame_idx": 0, "ego_idx": 0}, 2, [record], models,
+        lambda *args, **kwargs: {"terminal": np.array([True])},
+        pql_horizon=8, pql_lambda=0.95, num_goals=1, record_horizons=(8, 32),
+    )
+    assert metadata["branches"][0]["horizon_metrics"] == {}
 
 
 def test_probe_bundle_labels_explicit_horizon_truncation():

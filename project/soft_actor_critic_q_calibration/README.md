@@ -1,5 +1,7 @@
 # SAC Q calibration
 
+[Round-four horizon and ranking comparisons](runs/fourth_20261124/README.md)
+
 [PPO, PQL and TES target comparison](runs/third_20261122/TARGET_COMPARISON.md) · [Third-run binned rollout records](runs/third_20261122/README.md) · [Second-run reference distance distributions](runs/second_20261122/README.md) · [Browse first-run PQL renders](runs/first_20261114/pql/renders/README.md) · [Browse first-run PQL plots](runs/first_20261114/pql/plots/README.md) · [TES run](runs/first_20261114/tes/README.md) · [Development](development/README.md)
 
 ```text

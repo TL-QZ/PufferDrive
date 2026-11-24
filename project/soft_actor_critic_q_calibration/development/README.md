@@ -8,6 +8,7 @@ Shared implementation for all runs. Run commands from the repository root after 
 | `collect_geometry.py`, `geometry_batch.py`, `plot_geometry.py` | Reference distance collection across the eight CARLA maps and per-model cumulative distributions. [Second run](../runs/second_20261122/README.md) |
 | `ppo_models.py`, `collect_ppo_geometry.py`, `select_ppo_binned_probes.py`, `collect_ppo_probes.py` | PPO reference collection, state selection and forced-action continuations. [PPO value-target definition](../docs/PPO_ROUND_THREE.md) |
 | `compare_round_three.py` | Regenerate the pooled PQL, TES and PPO comparison from the three models’ saved probes. |
+| `analyze_round_four.py` | Repeat-averaged outcomes, horizon coverage, correlations and action-ranking analysis |
 | `launch_first.py`, `configs/` | Experiment configuration and launcher |
 | `plot_*.py`, `summarize_probes.py`, `analyze_run.py` | Analysis from saved records |
 | `run_layout.py`, `plot_paths.py` | Shared output organization and per-model entry points |

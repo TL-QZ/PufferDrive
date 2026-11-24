@@ -33,7 +33,10 @@ from .run_probes import (
 
 PROBE_HORIZON = 2560
 REPEATS = 1
+ROUND_FOUR_REPEATS = 4
 FORMAT_VERSION = 1
+HORIZON_METRICS_VERSION = 2
+ROUND_FOUR_HORIZONS = (8, 32, 128, 1280, 2560)
 GEOMETRY_FIELDS = (
     "nearest_observed_partner_center_distance_m",
     "nearest_observed_road_boundary_distance_m",
@@ -53,6 +56,10 @@ def build_argument_parser():
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--worker-index", type=int, required=True)
     parser.add_argument("--workers", type=int, required=True)
+    parser.add_argument("--repeats", type=int, default=REPEATS,
+                        help="independent continuation seeds per forced action")
+    parser.add_argument("--record-horizons", type=int, nargs="+", default=(),
+                        help="exact step horizons at which to snapshot outcomes")
     return parser
 
 
@@ -245,8 +252,34 @@ def _source_row_for_state(state, metadata, arrays):
             f"selected observation fingerprint differs from source geometry row: {state['state_id']}"
         )
     if "distances_m" in state:
+        corrections = state.get("distance_corrections_m", {})
+        has_goal_correction = "nearest_visible_goal_distance_m" in corrections
+        corrected_goal_distance = corrections.get("nearest_visible_goal_distance_m")
+        source_goal_distance = corrections.get("source_nearest_visible_goal_distance_m")
         for name, expected in state["distances_m"].items():
             observed = source_row["distances_m"].get(name)
+            if name == "nearest_visible_goal_distance_m" and has_goal_correction:
+                if source_goal_distance is None or observed is None:
+                    source_matches = source_goal_distance is None and observed is None
+                else:
+                    source_matches = np.isclose(
+                        float(source_goal_distance), observed, rtol=1e-6, atol=1e-5
+                    )
+                if not source_matches:
+                    raise ValueError(
+                        f"goal distance correction does not preserve its source value: {state['state_id']}"
+                    )
+                if expected is None or corrected_goal_distance is None:
+                    corrected_matches = expected is None and corrected_goal_distance is None
+                else:
+                    corrected_matches = np.isclose(
+                        float(expected), float(corrected_goal_distance), rtol=1e-6, atol=1e-5
+                    )
+                if not corrected_matches:
+                    raise ValueError(
+                        f"corrected goal distance differs from selected distance: {state['state_id']}"
+                    )
+                continue
             if expected is None or observed is None:
                 if expected is not None or observed is not None:
                     raise ValueError(f"selected distance nullness differs for {name}: {state['state_id']}")
@@ -327,7 +360,7 @@ def _worker_assignment(states, worker_index, workers):
     return list(states[worker_index::workers])
 
 
-def _update_collection_summary(records_dir, selection, run_signature):
+def _update_collection_summary(records_dir, selection, run_signature, *, repeats, record_horizons):
     records_dir = Path(records_dir)
     lock_path = records_dir / ".summary.lock"
     with lock_path.open("a+", encoding="utf-8") as stream:
@@ -356,20 +389,24 @@ def _update_collection_summary(records_dir, selection, run_signature):
                 for key in branch.get("metrics_mean", {})
             })
             summary = {
-                "format_version": FORMAT_VERSION,
+                "format_version": HORIZON_METRICS_VERSION if record_horizons else FORMAT_VERSION,
                 "run_signature": run_signature,
                 "selection_state_count": len(selected_states),
                 "completed_state_count": len(completed),
                 "selected_by_bin": dict(sorted(selected_by_bin.items())),
                 "completed_by_bin": dict(sorted(completed_by_bin.items())),
                 "action_count": NUM_ACTIONS,
-                "repeats": REPEATS,
+                "repeats": repeats,
+                "record_horizons": list(record_horizons),
                 "continuation_horizon": PROBE_HORIZON,
-                "expected_branch_count": len(selected_states) * NUM_ACTIONS,
+                "expected_branch_count": len(selected_states) * NUM_ACTIONS * repeats,
                 "completed_branch_count": branch_count,
                 "eval_metric_key_count": len(metric_keys),
                 "eval_metric_keys": metric_keys,
-                "complete": len(completed) == len(selected_states) and branch_count == len(selected_states) * NUM_ACTIONS,
+                "complete": (
+                    len(completed) == len(selected_states)
+                    and branch_count == len(selected_states) * NUM_ACTIONS * repeats
+                ),
                 "updated_at": current_utc(),
             }
             atomic_write_json(records_dir / "collection_summary.json", summary)
@@ -406,6 +443,13 @@ def validate_args(args):
         raise ValueError("--workers must be positive")
     if not 0 <= args.worker_index < args.workers:
         raise ValueError("--worker-index must be in [0, workers)")
+    if args.repeats <= 0:
+        raise ValueError("--repeats must be positive")
+    if (len(set(args.record_horizons)) != len(args.record_horizons)
+            or any(horizon <= 0 or horizon > PROBE_HORIZON for horizon in args.record_horizons)):
+        raise ValueError(f"--record-horizons must be unique values in [1, {PROBE_HORIZON}]")
+    if tuple(sorted(args.record_horizons)) != tuple(args.record_horizons):
+        raise ValueError("--record-horizons must be in increasing order")
 
 
 def main(argv=None):
@@ -473,11 +517,12 @@ def run_collection(args):
             "selection_seed": seed,
             "worker_count": int(args.workers),
             "action_count": NUM_ACTIONS,
-            "repeats": REPEATS,
+            "repeats": args.repeats,
             "continuation_horizon": PROBE_HORIZON,
             "branch_batch_size": NUM_ACTIONS,
+            "record_horizons": list(args.record_horizons),
             "device": str(args.device),
-            "continuation_seed_scope": "shared_across_forced_actions_for_each_state",
+            "continuation_seed_scope": "shared_across_forced_actions_within_each_repeat",
             "prefix_replay": "compact_native_joint_action_replay_with_endpoint_fingerprint",
             "eval_metric_collection": {
                 "compute_eval_metrics_during_prefix": False,
@@ -554,17 +599,17 @@ def run_collection(args):
                     probe_id = str(state["state_id"])
                     tasks = build_branch_tasks(
                         probe_id, seed, int(state["episode_index"]), int(state["frame_idx"]),
-                        int(state["slot"]), repeats=REPEATS, actions=NUM_ACTIONS,
+                        int(state["slot"]), repeats=args.repeats, actions=NUM_ACTIONS,
                     )
                     state_tasks[probe_id] = tasks
                     if probe_is_complete(
                         records_dir, probe_id, run_signature,
-                        expected_branch_count=NUM_ACTIONS, expected_repeats=REPEATS,
+                        expected_branch_count=len(tasks), expected_repeats=args.repeats,
                         expected_action_count=NUM_ACTIONS,
                         expected_task_ids=[task["task_id"] for task in tasks],
                     ):
                         completed_state_count += 1
-                        completed_branch_count += NUM_ACTIONS
+                        completed_branch_count += len(tasks)
                         continue
                     incomplete_states.append(state)
                 if not incomplete_states:
@@ -612,19 +657,31 @@ def run_collection(args):
                                     "live_branches": live_count,
                                 }, sort_keys=True))
 
-                        task_records = _run_branch_batch(
-                            probe_env.SceneBatch, template, str(map_path), agent_count,
-                            int(episode_metadata["scene_seed"]), reference, probe,
-                            state_tasks[probe_id], models, pql_horizon,
-                            progress_callback=report_branch_progress,
-                            probe_horizon=PROBE_HORIZON, compact_metadata=True, compact_prefix=True,
-                        )
+                        task_records = []
+                        for repeat_idx in range(args.repeats):
+                            repeat_tasks = [
+                                task for task in state_tasks[probe_id]
+                                if int(task["repeat_idx"]) == repeat_idx
+                            ]
+                            if len(repeat_tasks) != NUM_ACTIONS:
+                                raise RuntimeError(
+                                    f"repeat {repeat_idx} has {len(repeat_tasks)} tasks, expected {NUM_ACTIONS}"
+                                )
+                            task_records.extend(_run_branch_batch(
+                                probe_env.SceneBatch, template, str(map_path), agent_count,
+                                int(episode_metadata["scene_seed"]), reference, probe,
+                                repeat_tasks, models, pql_horizon,
+                                progress_callback=report_branch_progress,
+                                probe_horizon=PROBE_HORIZON, compact_metadata=True, compact_prefix=True,
+                                record_horizons=args.record_horizons,
+                            ))
                         _verify_replayed_state(task_records, state, source_row)
                         probe_metadata, output_arrays = _assemble_probe_bundle(
                             probe_id, int(state["episode_index"]), str(map_path), map_hash,
                             int(episode_metadata["scene_seed"]), reference, probe, agent_count,
                             task_records, models, compute_probe_measurements, pql_horizon, pql_lambda,
                             num_goals=int(template.probe_config["num_goals"]),
+                            record_horizons=args.record_horizons,
                         )
                         ego_start = probe_metadata["probe"]["ego_start"]
                         probe_metadata["probe"]["initial_ego_geometry"] = initial_geometry(
@@ -636,7 +693,7 @@ def run_collection(args):
                             Path(state["source_shard"]).as_posix()
                         )
                         probe_metadata.update({
-                            "format_version": FORMAT_VERSION,
+                            "format_version": HORIZON_METRICS_VERSION if args.record_horizons else FORMAT_VERSION,
                             "state_id": probe_id,
                             "assigned_bin": _assigned_bin(state),
                             "selection_state": state,
@@ -655,9 +712,10 @@ def run_collection(args):
                                 "continuation_horizon": PROBE_HORIZON,
                                 "prefix_frame_count": frame_idx,
                                 "action_count": NUM_ACTIONS,
-                                "repeats": REPEATS,
+                                "repeats": args.repeats,
                                 "branch_batch_size": NUM_ACTIONS,
-                                "continuation_seed_scope": "shared_across_forced_actions_for_each_state",
+                                "record_horizons": list(args.record_horizons),
+                                "continuation_seed_scope": "shared_across_forced_actions_within_each_repeat",
                                 "prefix_replay": "compact_native_joint_action_replay_with_endpoint_fingerprint",
                             },
                             "scene": {
@@ -671,8 +729,8 @@ def run_collection(args):
                             },
                             "model_hashes": models.audit["model_hashes"],
                             "run_signature": run_signature,
-                            "branch_task_count": NUM_ACTIONS,
-                            "repeats": REPEATS,
+                            "branch_task_count": len(state_tasks[probe_id]),
+                            "repeats": args.repeats,
                             "action_count": NUM_ACTIONS,
                             "branch_task_ids": [task["task_id"] for task in state_tasks[probe_id]],
                         })
@@ -682,7 +740,7 @@ def run_collection(args):
                         from .run_probes import save_probe
                         save_probe(records_dir, probe_id, run_signature, probe_metadata, output_arrays)
                         completed_state_count += 1
-                        completed_branch_count += NUM_ACTIONS
+                        completed_branch_count += len(state_tasks[probe_id])
                         _worker_progress(
                             records_dir, args.worker_index, args.workers,
                             status="running", run_signature=run_signature,
@@ -696,14 +754,17 @@ def run_collection(args):
                             "state_id": probe_id,
                             "completed_states": completed_state_count,
                             "assigned_states": len(assigned_states),
-                            "branches": NUM_ACTIONS,
+                            "branches": len(state_tasks[probe_id]),
                             "data_file": data_path.name,
                         }, sort_keys=True))
                         models.verify_frozen()
                 finally:
                     template.close()
 
-            summary = _update_collection_summary(records_dir, selection, run_signature)
+            summary = _update_collection_summary(
+                records_dir, selection, run_signature,
+                repeats=args.repeats, record_horizons=args.record_horizons,
+            )
             _worker_progress(
                 records_dir, args.worker_index, args.workers,
                 status="complete", run_signature=run_signature,

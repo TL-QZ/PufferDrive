@@ -3,10 +3,14 @@ import pytest
 
 from project.soft_actor_critic_q_calibration.development.collect_ppo_probes import (
     PPO_SEGMENT_ROWS,
+    ROUND_FOUR_HORIZONS,
+    ROUND_FOUR_REPEATS,
+    _build_horizon_snapshot,
     _native_ppo_advantages,
     _reward_for_ppo,
     prepare_ppo_segment,
 )
+from project.soft_actor_critic_q_calibration.development.run_probes import build_branch_tasks
 
 
 def _manual_gae(values, rewards, dones, gamma, gae_lambda):
@@ -129,3 +133,33 @@ def test_normalized_reward_matches_puffer_sign_log1p_transform():
 def test_native_advantage_helper_rejects_misaligned_arrays():
     with pytest.raises(ValueError, match="shared length"):
         _native_ppo_advantages([1.0, 2.0], [0.0], [0.0, 0.0], [1.0, 1.0], 0.9, 0.95)
+
+
+def test_round_four_horizons_are_exact_prefix_lengths():
+    assert ROUND_FOUR_HORIZONS == (8, 32, 128, 1280, 2560)
+    rewards = np.arange(1, 9, dtype=np.float32)
+    record = {"valid": [True] * 8, "rewards": rewards}
+    snapshot = _build_horizon_snapshot(record, 8, {"episode_return": 36.0}, 0.5)
+
+    assert snapshot["metrics_mean"] == {"episode_return": 36.0}
+    assert snapshot["discounted_reward_return"] == pytest.approx(
+        sum(float(reward) * 0.5**step for step, reward in enumerate(rewards))
+    )
+
+
+def test_round_four_horizon_is_absent_when_rollout_stops_short():
+    record = {"valid": [True] * 7, "rewards": np.ones(7, dtype=np.float32)}
+
+    with pytest.raises(ValueError, match="reached the requested step"):
+        _build_horizon_snapshot(record, 8, {}, 0.99)
+
+
+def test_round_four_tasks_pair_actions_within_each_distinct_repeat_seed():
+    tasks = build_branch_tasks("probe", 42, 3, 12, 5, repeats=ROUND_FOUR_REPEATS)
+    assert len(tasks) == ROUND_FOUR_REPEATS * 12
+
+    for repeat_idx in range(ROUND_FOUR_REPEATS):
+        repeat_tasks = [task for task in tasks if task["repeat_idx"] == repeat_idx]
+        assert [task["action_idx"] for task in repeat_tasks] == list(range(12))
+        assert len({task["continuation_seed"] for task in repeat_tasks}) == 1
+    assert len({task["continuation_seed"] for task in tasks}) == ROUND_FOUR_REPEATS

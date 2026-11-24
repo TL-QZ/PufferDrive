@@ -1,3 +1,5 @@
+import json
+
 import numpy as np
 import pytest
 
@@ -6,7 +8,10 @@ from project.soft_actor_critic_q_calibration.development.collect_binned_probes i
     _bin_label,
     _resolve_shard_path,
     _source_row_for_state,
+    _update_collection_summary,
     _worker_assignment,
+    build_argument_parser,
+    validate_args,
 )
 
 
@@ -75,6 +80,25 @@ def test_source_row_checks_selected_identity_fingerprints_and_geometry():
     assert source_row["fingerprint"] == "native-frame"
     assert source_row["distances_m"]["nearest_observed_road_boundary_distance_m"] is None
 
+    state["distances_m"]["nearest_visible_goal_distance_m"] = 19.0
+    state["distance_corrections_m"] = {
+        "nearest_visible_goal_distance_m": 19.0,
+        "source_nearest_visible_goal_distance_m": 25.0,
+        "current_goal_idx": 1,
+        "resolved_goal_idx": 2,
+        "fulfilled_goal_count": 1,
+        "goal_radius_m": 12.0,
+        "goal_distance_m": 19.0,
+    }
+    corrected_source_row = _source_row_for_state(
+        state, {"frame_count": 8, "agent_count": 6}, arrays
+    )
+    assert corrected_source_row["distances_m"]["nearest_visible_goal_distance_m"] == 25.0
+
+    state["distance_corrections_m"]["source_nearest_visible_goal_distance_m"] = 23.0
+    with pytest.raises(ValueError, match="source value"):
+        _source_row_for_state(state, {"frame_count": 8, "agent_count": 6}, arrays)
+
 
 def test_source_shard_cannot_escape_records_directory(tmp_path):
     records_dir = tmp_path / "records"
@@ -82,3 +106,52 @@ def test_source_shard_cannot_escape_records_directory(tmp_path):
 
     with pytest.raises(ValueError, match="escapes"):
         _resolve_shard_path(records_dir, "../../outside.npz")
+
+
+def test_round_four_summary_counts_all_repeats(tmp_path):
+    records_dir = tmp_path / "records"
+    probes_dir = records_dir / "probes"
+    probes_dir.mkdir(parents=True)
+    selection = {
+        "states": [{
+            "state_id": "Town01/episode_00000/frame_000008/agent_0001_slot_0001",
+            "assigned_bin": {"bin_id": "nearest_agent:00"},
+        }],
+    }
+    probe_metadata = {
+        "status": "complete",
+        "run_signature": "round-four-signature",
+        "state_id": selection["states"][0]["state_id"],
+        "assigned_bin": selection["states"][0]["assigned_bin"],
+        "branches": [
+            {"metrics_mean": {"episode_return": float(action_idx)}}
+            for action_idx in range(48)
+        ],
+    }
+    (probes_dir / "probe.json").write_text(json.dumps(probe_metadata))
+
+    summary = _update_collection_summary(
+        records_dir, selection, "round-four-signature", repeats=4,
+        record_horizons=(8, 32, 128, 1280, 2560),
+    )
+
+    assert summary["format_version"] == 2
+    assert summary["repeats"] == 4
+    assert summary["expected_branch_count"] == 48
+    assert summary["completed_branch_count"] == 48
+    assert summary["record_horizons"] == [8, 32, 128, 1280, 2560]
+    assert summary["complete"] is True
+
+
+def test_round_four_cli_accepts_repeats_and_ordered_horizons():
+    args = build_argument_parser().parse_args([
+        "--model-dir", "runs/fourth_20261124/pql",
+        "--source-model-dir", "runs/second_20261122/pql",
+        "--worker-index", "0", "--workers", "24",
+        "--repeats", "4", "--record-horizons", "8", "32", "128", "1280", "2560",
+    ])
+
+    validate_args(args)
+
+    assert args.repeats == 4
+    assert args.record_horizons == [8, 32, 128, 1280, 2560]

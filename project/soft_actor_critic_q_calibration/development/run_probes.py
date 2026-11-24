@@ -950,6 +950,7 @@ def _run_branch_batch(
     scene_batch_type, template, map_path, agent_count, scene_seed, reference,
     probe, tasks, models, pql_horizon, progress_callback=None, *,
     probe_horizon=None, compact_metadata=False, compact_prefix=False,
+    record_horizons=(),
 ):
     copy_count = len(tasks)
     frame_idx = int(probe["frame_idx"])
@@ -965,6 +966,7 @@ def _run_branch_batch(
             "goals": [], "validity_gap": False, "scene_boundary": False,
             "initial_q1": None, "initial_q2": None,
             "metrics_mean": None,
+            "horizon_metrics": {},
             "metrics_agents_per_batch": copy_count * int(agent_count),
         }
         for task in tasks
@@ -1097,7 +1099,9 @@ def _run_branch_batch(
                     live[copy_idx] = False
                     completed_copy_indices.append(int(copy_idx))
 
-            if completed_copy_indices:
+            horizon = time_idx + 1
+            capture_horizon = horizon in record_horizons
+            if completed_copy_indices or capture_horizon:
                 metrics_by_copy = batch.metrics(metrics_baseline, metric_event_flags)
                 if not isinstance(metrics_by_copy, (list, tuple)) or len(metrics_by_copy) != copy_count:
                     raise RuntimeError(
@@ -1108,6 +1112,22 @@ def _run_branch_batch(
                     branch_records[copy_idx]["metrics_mean"] = _normalize_eval_metrics(
                         metrics_by_copy[copy_idx]
                     )
+                if capture_horizon:
+                    for copy_idx, record in enumerate(branch_records):
+                        if len(record["valid"]) != horizon:
+                            continue
+                        rewards_to_horizon = np.asarray(record["rewards"], dtype=np.float64)
+                        log_probs_to_horizon = np.asarray(record["log_probs"], dtype=np.float64)
+                        discounts = np.power(models.gamma, np.arange(horizon, dtype=np.float64))
+                        discounted_return = float(np.dot(discounts, rewards_to_horizon))
+                        entropy_penalty = float(
+                            np.dot(discounts[1:], models.alpha * log_probs_to_horizon[1:])
+                        )
+                        record["horizon_metrics"][str(horizon)] = {
+                            "metrics_mean": _normalize_eval_metrics(metrics_by_copy[copy_idx]),
+                            "discounted_reward_return": discounted_return,
+                            "standard_soft_return": discounted_return - entropy_penalty,
+                        }
 
             if bootstrap_copy_indices:
                 target_values = models.next_values(np.asarray(bootstrap_observations, dtype=np.float32))
@@ -1128,7 +1148,7 @@ def _run_branch_batch(
 def _assemble_probe_bundle(
     probe_id, episode_idx, map_path, map_sha, scene_seed, reference, probe,
     agent_count, branch_records, models, compute_probe_measurements, pql_horizon, pql_lambda,
-    *, num_goals,
+    *, num_goals, record_horizons=(),
 ):
     branch_count = len(branch_records)
     observed_horizon = max(len(record["valid"]) for record in branch_records)
@@ -1202,6 +1222,8 @@ def _assemble_probe_bundle(
         if record["metrics_mean"] is None:
             raise RuntimeError(f"branch {task['task_id']} completed without eval metrics")
         scalar_metrics["metrics_mean"] = record["metrics_mean"]
+        if record_horizons:
+            scalar_metrics["horizon_metrics"] = record["horizon_metrics"]
         branch_json.append(sanitize_json(scalar_metrics))
 
     metric_names = sorted(branch_records[0]["metrics_mean"])
